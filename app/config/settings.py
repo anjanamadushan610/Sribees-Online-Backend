@@ -293,7 +293,42 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
-    # AWS S3 Storage Settings
+    # Media Storage
+    #
+    # The database stores ONLY a relative path (e.g. /uploads/categories/x.jpg).
+    # The absolute URL is composed at serialization time as
+    # MEDIA_BASE_URL + path. Swapping to S3/R2 is therefore a provider swap plus
+    # an env change — no rows to rewrite, no migration.
+    # =========================================================================
+    storage_backend: str = Field(
+        default="local",
+        description="Which StorageProvider to use: 'local' (disk) or 's3'.",
+    )
+    media_root: str = Field(
+        default="/app/media",
+        description=(
+            "Filesystem directory the local provider writes into. Must be a "
+            "mounted volume in production, or uploads die with the container."
+        ),
+    )
+    media_url_prefix: str = Field(
+        default="/uploads",
+        description="URL path the local provider's files are served under.",
+    )
+    media_base_url: str = Field(
+        default="",
+        description=(
+            "Origin prepended to stored relative paths to build absolute URLs "
+            "(e.g. https://api.sribees.com, or an S3/R2 public base later). "
+            "Empty means serve them as same-origin relative URLs."
+        ),
+    )
+    media_max_upload_size_mb: int = Field(
+        default=5, description="Maximum image upload size in megabytes"
+    )
+
+    # =========================================================================
+    # AWS S3 Storage Settings (unused while storage_backend='local')
     # =========================================================================
     aws_access_key_id: Optional[str] = Field(
         default=None, description="AWS access key ID"

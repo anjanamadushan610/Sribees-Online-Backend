@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.core.dependencies import get_current_admin
+from app.core.media import media_url
 from app.schemas.category import (
     CategoryCreate,
     CategoryUpdate,
@@ -26,6 +27,10 @@ router = APIRouter(tags=["Categories"])
 async def get_categories(
     hierarchical: bool = Query(False, description="Return categories in tree structure"),
     include_inactive: bool = Query(False, description="Include inactive categories"),
+    top_level_only: bool = Query(
+        False,
+        description="Only categories with no parent — what the mobile home screen shows",
+    ),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -33,12 +38,19 @@ async def get_categories(
 
     - **hierarchical**: If true, returns categories in parent-child tree structure
     - **include_inactive**: If true, includes inactive categories (admin use)
+    - **top_level_only**: If true, drops sub-categories. The mobile home screen
+      renders one image tile per top-level category, so it would otherwise fetch
+      the whole tree and throw most of it away.
     """
     try:
         if hierarchical:
             categories = await CategoryService.get_hierarchical(db)
         else:
             categories_raw = await CategoryService.get_all(db, include_inactive)
+            if top_level_only:
+                categories_raw = [
+                    c for c in categories_raw if not c.get("parent_category_id")
+                ]
             # Format for mobile app compatibility
             categories = [
                 {
@@ -47,7 +59,7 @@ async def get_categories(
                     "name": cat["name"],
                     "slug": cat["slug"],
                     "description": cat.get("description"),
-                    "image_url": cat.get("image_url"),
+                    "image_url": media_url(cat.get("image_url")),
                     "parent_category_id": str(cat["parent_category_id"]) if cat.get("parent_category_id") else None,
                     "is_active": cat["is_active"],
                     "product_count": cat.get("product_count", 0),
@@ -93,7 +105,7 @@ async def get_category(
             "name": category.name,
             "slug": category.slug,
             "description": category.description,
-            "image_url": category.image_url,
+            "image_url": media_url(category.image_url),
             "parent_category_id": str(category.parent_category_id) if category.parent_category_id else None,
             "is_active": category.is_active,
         }
@@ -133,7 +145,7 @@ async def create_category(
                 "name": category.name,
                 "slug": category.slug,
                 "description": category.description,
-                "image_url": category.image_url,
+                "image_url": media_url(category.image_url),
                 "parent_category_id": str(category.parent_category_id) if category.parent_category_id else None,
                 "is_active": category.is_active,
             },
@@ -186,7 +198,7 @@ async def update_category(
                 "name": updated_category.name,
                 "slug": updated_category.slug,
                 "description": updated_category.description,
-                "image_url": updated_category.image_url,
+                "image_url": media_url(updated_category.image_url),
                 "parent_category_id": str(updated_category.parent_category_id) if updated_category.parent_category_id else None,
                 "is_active": updated_category.is_active,
             },

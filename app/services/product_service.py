@@ -32,10 +32,29 @@ from app.schemas.product import (
     ProductUpdate,
     ProductVariantCreate,
 )
+from app.services.category_service import CategoryService
+from app.services.storage import get_storage
 
 
 class ProductService:
     """Service class for product operations."""
+
+    @staticmethod
+    async def _category_filter(db: AsyncSession, category_id: UUID):
+        """
+        Build the WHERE clause for "products in this category".
+
+        A category page must show everything filed underneath it, so this
+        matches a product whose ``category_id`` is the category *or* whose
+        ``subcategory_id`` is one of its children. Passing a sub-category's own
+        id still works — it simply has no children, and products pinned to it
+        carry it in ``subcategory_id``.
+        """
+        ids = await CategoryService.get_branch_ids(db, category_id)
+        return or_(
+            Product.category_id.in_(ids),
+            Product.subcategory_id.in_(ids),
+        )
 
     @staticmethod
     async def get_all(
@@ -43,6 +62,7 @@ class ProductService:
         limit: int = 20,
         offset: int = 0,
         category_id: Optional[UUID] = None,
+        subcategory_id: Optional[UUID] = None,
         is_featured: Optional[bool] = None,
         search: Optional[str] = None,
         min_price: Optional[Decimal] = None,
@@ -66,6 +86,7 @@ class ProductService:
             select(Product)
             .options(
                 selectinload(Product.category),
+                selectinload(Product.subcategory),
                 selectinload(Product.images)
             )
         )
@@ -79,7 +100,12 @@ class ProductService:
 
         # Apply filters
         if category_id:
-            query = query.where(Product.category_id == category_id)
+            query = query.where(
+                await ProductService._category_filter(db, category_id)
+            )
+
+        if subcategory_id:
+            query = query.where(Product.subcategory_id == subcategory_id)
 
         if is_featured is not None:
             query = query.where(Product.is_featured == is_featured)
@@ -137,6 +163,7 @@ class ProductService:
             select(Product)
             .options(
                 selectinload(Product.category),
+                selectinload(Product.subcategory),
                 selectinload(Product.images),
                 selectinload(Product.variants).selectinload(ProductVariant.variant_options).selectinload(VariantOption.variant_type)
             )
@@ -160,6 +187,7 @@ class ProductService:
             select(Product)
             .options(
                 selectinload(Product.category),
+                selectinload(Product.subcategory),
                 selectinload(Product.images),
                 selectinload(Product.variants)
             )
@@ -199,6 +227,7 @@ class ProductService:
             select(Product)
             .options(
                 selectinload(Product.category),
+                selectinload(Product.subcategory),
                 selectinload(Product.images)
             )
             .where(and_(Product.is_active == True, Product.is_featured == True))
@@ -255,6 +284,7 @@ class ProductService:
             compare_at_price=data.compare_at_price,
             cost_price=data.cost_price,
             category_id=data.category_id,
+            subcategory_id=data.subcategory_id,
             stock_quantity=data.stock_quantity,
             low_stock_threshold=data.low_stock_threshold,
             weight=data.weight,
@@ -333,15 +363,33 @@ class ProductService:
 
     @staticmethod
     async def remove_image(db: AsyncSession, image_id: UUID) -> None:
-        """Remove a product image."""
+        """
+        Remove a product image — both the row and the stored file.
+
+        The file is deleted through the StorageProvider, so this works the same
+        on disk today and in a bucket later. Deleting only the row would leak
+        the file forever; on the local backend that is an EC2 volume filling up
+        with images nothing references.
+        """
         result = await db.execute(
             select(ProductImage).where(ProductImage.image_id == image_id)
         )
         image = result.scalar_one_or_none()
 
-        if image:
-            await db.delete(image)
-            await db.commit()
+        if not image:
+            return
+
+        stored_path = image.image_url
+        await db.delete(image)
+        await db.commit()
+
+        # After the commit: an orphaned file is a wasted byte, but a deleted file
+        # whose row survived a rollback is a broken image on the storefront.
+        if stored_path:
+            try:
+                get_storage().delete(stored_path)
+            except Exception as exc:  # never fail the request over cleanup
+                logger.warning(f"Could not delete media for image {image_id}: {exc}")
 
     @staticmethod
     async def set_primary_image(
@@ -495,6 +543,7 @@ class ProductService:
         limit: int = 20,
         offset: int = 0,
         category_id: Optional[UUID] = None,
+        subcategory_id: Optional[UUID] = None,
         is_featured: Optional[bool] = None,
         search: Optional[str] = None,
         min_price: Optional[Decimal] = None,
@@ -511,6 +560,7 @@ class ProductService:
             select(Product, BranchInventory)
             .options(
                 selectinload(Product.category),
+                selectinload(Product.subcategory),
                 selectinload(Product.images),
             )
             .where(Product.is_active.is_(True))
@@ -519,7 +569,9 @@ class ProductService:
         base, eff_price, eff_discount = ProductService._branch_visibility_join(base, branch_id)
 
         if category_id:
-            base = base.where(Product.category_id == category_id)
+            base = base.where(await ProductService._category_filter(db, category_id))
+        if subcategory_id:
+            base = base.where(Product.subcategory_id == subcategory_id)
         if is_featured is not None:
             base = base.where(Product.is_featured == is_featured)
         if search:
@@ -566,6 +618,7 @@ class ProductService:
             select(Product, BranchInventory)
             .options(
                 selectinload(Product.category),
+                selectinload(Product.subcategory),
                 selectinload(Product.images),
                 selectinload(Product.variants)
                     .selectinload(ProductVariant.variant_options)
@@ -604,6 +657,7 @@ class ProductService:
             select(Product, BranchInventory)
             .options(
                 selectinload(Product.category),
+                selectinload(Product.subcategory),
                 selectinload(Product.images),
             )
             .where(
@@ -633,6 +687,7 @@ class ProductService:
             select(Product, BranchInventory)
             .options(
                 selectinload(Product.category),
+                selectinload(Product.subcategory),
                 selectinload(Product.images),
             )
             .where(
@@ -648,52 +703,6 @@ class ProductService:
             {"product": p, "effective": ProductService.compute_effective_data(p, inv)}
             for p, inv in rows
         ]
-
-    @staticmethod
-    async def list_branch_inventory(
-        db: AsyncSession,
-        branch_id: UUID,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> Tuple[List[Dict[str, Any]], int]:
-        """
-        Admin/Inventory Manager view: every global product with its branch
-        overrides (or defaults if no override row exists yet).
-
-        Uses an OUTER JOIN so even products without a branch_inventory row
-        are returned — managers can then create overrides.
-        """
-        query = (
-            select(Product, BranchInventory)
-            .outerjoin(
-                BranchInventory,
-                and_(
-                    BranchInventory.product_id == Product.product_id,
-                    BranchInventory.branch_id == branch_id,
-                ),
-            )
-            .options(
-                selectinload(Product.category),
-                selectinload(Product.images),
-            )
-            .where(Product.is_active.is_(True))
-            .order_by(Product.name)
-        )
-
-        count_q = select(func.count()).select_from(query.subquery())
-        total = (await db.execute(count_q)).scalar() or 0
-
-        query = query.limit(limit).offset(offset)
-        rows = (await db.execute(query)).unique().all()
-
-        items = []
-        for product, inv in rows:
-            eff = ProductService.compute_effective_data(product, inv)
-            items.append({
-                "product": product,
-                "effective": eff,
-            })
-        return items, total
 
     # ================================================================
     # Branch Inventory — COALESCE / fallback helpers
@@ -853,6 +862,7 @@ class ProductService:
             )
             .options(
                 selectinload(Product.category),
+                selectinload(Product.subcategory),
                 selectinload(Product.images),
             )
             .where(
@@ -980,9 +990,17 @@ class ProductService:
         inv: BranchInventory,
         **fields,
     ) -> BranchInventory:
-        """Apply provided stock fields to an existing inventory row."""
+        """
+        Apply the provided override fields to an existing inventory row.
+
+        Callers pass ``model_dump(exclude_unset=True)``, so a key being present
+        means the admin intended to set it — including to ``None``. That
+        matters: ``branch_price=None`` is how a Branch Manager *clears* a local
+        override and falls the product back to the global price, so None must
+        be written through rather than skipped.
+        """
         for key, value in fields.items():
-            if value is not None and hasattr(inv, key):
+            if hasattr(inv, key):
                 setattr(inv, key, value)
         await db.commit()
         await db.refresh(inv)
@@ -990,6 +1008,89 @@ class ProductService:
             f"Inventory row {inv.inventory_id} updated: fields={list(fields.keys())}"
         )
         return inv
+
+    @staticmethod
+    async def upsert_branch_override(
+        db: AsyncSession,
+        product_id: UUID,
+        branch_id: UUID,
+        **fields,
+    ) -> Tuple[BranchInventory, bool]:
+        """
+        Create or update the branch override for a (product, branch) pair.
+
+        This is how a Branch Manager pulls a product out of the Global Catalog
+        and into their branch: the first call inserts the ``branch_inventory``
+        row (making the product visible to customers in that branch), and later
+        calls update it. Returns ``(row, created)``.
+
+        Idempotent by (product_id, branch_id), which the unique constraint from
+        migration 019 guarantees.
+        """
+        existing = await db.execute(
+            select(BranchInventory).where(
+                and_(
+                    BranchInventory.product_id == product_id,
+                    BranchInventory.branch_id == branch_id,
+                )
+            )
+        )
+        inv = existing.scalar_one_or_none()
+
+        if inv is not None:
+            return await ProductService.update_inventory_row(db, inv, **fields), False
+
+        inv = BranchInventory(product_id=product_id, branch_id=branch_id, **fields)
+        db.add(inv)
+        await db.commit()
+        await db.refresh(inv)
+        logger.info(
+            f"Branch override created: product={product_id} branch={branch_id}"
+        )
+        return inv, True
+
+    @staticmethod
+    async def list_unstocked_products(
+        db: AsyncSession,
+        branch_id: UUID,
+        limit: int = 20,
+        offset: int = 0,
+        search: Optional[str] = None,
+    ) -> Tuple[List[Product], int]:
+        """
+        Global-catalog products that *branch_id* does not carry yet.
+
+        Backs the "Add product to my branch" picker: a Branch Manager can only
+        override what they don't already have a row for, so anything already in
+        branch_inventory is excluded.
+        """
+        carried = (
+            select(BranchInventory.product_id)
+            .where(BranchInventory.branch_id == branch_id)
+        )
+
+        query = (
+            select(Product)
+            .options(selectinload(Product.category), selectinload(Product.images))
+            .where(
+                Product.is_active.is_(True),
+                Product.product_id.not_in(carried),
+            )
+        )
+
+        if search:
+            pattern = f"%{search}%"
+            query = query.where(
+                or_(Product.name.ilike(pattern), Product.sku.ilike(pattern))
+            )
+
+        total = (
+            await db.execute(select(func.count()).select_from(query.subquery()))
+        ).scalar() or 0
+
+        query = query.order_by(Product.name).limit(limit).offset(offset)
+        products = (await db.execute(query)).scalars().all()
+        return list(products), total
 
     @staticmethod
     async def update_product_discount(

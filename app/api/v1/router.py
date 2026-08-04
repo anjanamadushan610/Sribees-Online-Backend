@@ -22,7 +22,6 @@ from app.api.v1 import (
     branch,
     cart,
     categories,
-    inventory,
     locations,
     marketing,
     notifications,
@@ -209,12 +208,6 @@ router.include_router(
     admin_locations.router,
     prefix="/admin/locations",
     tags=["Admin Location Management"],
-)
-
-router.include_router(
-    inventory.router,
-    prefix="/inventory",
-    tags=["Inventory Management"],
 )
 
 router.include_router(

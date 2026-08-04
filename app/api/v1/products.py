@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.config.redis import get_redis
 from app.core.dependencies import get_current_admin, get_current_user
+from app.core.media import media_url
 from app.schemas.product import (
     ProductCreate,
     ProductImageCreate,
@@ -27,6 +28,7 @@ from app.schemas.product import (
     ProductVariantCreate,
 )
 from app.services import branch_service
+from app.services.category_service import CategoryService
 from app.services.product_review_service import ProductReviewService
 from app.services.product_service import ProductService
 
@@ -80,22 +82,38 @@ def format_product(
         "updated_at": product.updated_at.isoformat() if product.updated_at else None,
     }
 
-    # Category
+    # Category. The flat ids sit alongside the nested objects so clients can
+    # filter/group without having to reach into the nested shape.
+    data["category_id"] = str(product.category_id) if product.category_id else None
+    data["subcategory_id"] = str(product.subcategory_id) if product.subcategory_id else None
+
     if product.category:
         data["category"] = {
             "category_id": str(product.category.category_id),
             "name": product.category.name,
             "slug": product.category.slug,
-            "image_url": product.category.image_url,
+            "image_url": media_url(product.category.image_url),
         }
     else:
         data["category"] = None
+
+    # Sub-category (a Category row whose parent_category_id == category_id)
+    subcategory = getattr(product, "subcategory", None)
+    if subcategory:
+        data["subcategory"] = {
+            "category_id": str(subcategory.category_id),
+            "name": subcategory.name,
+            "slug": subcategory.slug,
+            "image_url": media_url(subcategory.image_url),
+        }
+    else:
+        data["subcategory"] = None
 
     # Images
     data["images"] = [
         {
             "image_id": str(img.image_id),
-            "image_url": img.image_url,
+            "image_url": media_url(img.image_url),
             "alt_text": img.alt_text,
             "is_primary": img.is_primary,
             "sort_order": img.sort_order,
@@ -114,7 +132,7 @@ def format_product(
                 "price": float(v.price) if v.price else 0,
                 "compare_at_price": float(v.compare_at_price) if v.compare_at_price else None,
                 "stock_quantity": v.stock_quantity,
-                "image_url": v.image_url,
+                "image_url": media_url(v.image_url),
                 "is_active": v.is_active,
             }
             for v in product.variants
@@ -155,6 +173,7 @@ async def get_products(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     category_id: Optional[str] = None,
+    subcategory_id: Optional[str] = None,
     is_featured: Optional[bool] = None,
     search: Optional[str] = None,
     min_price: Optional[float] = None,
@@ -170,6 +189,9 @@ async def get_products(
 
     Only products that exist in ``branch_inventory`` for the user's branch
     with ``is_active=True`` and ``stock_quantity > 0`` are returned.
+
+    ``category_id`` matches the category and every sub-category under it;
+    ``subcategory_id`` narrows to a single leaf.
     """
     try:
         context = await _get_branch_context(redis, current_user.user_id)
@@ -183,12 +205,20 @@ async def get_products(
             except ValueError:
                 pass
 
+        subcat_uuid = None
+        if subcategory_id:
+            try:
+                subcat_uuid = UUID(subcategory_id)
+            except ValueError:
+                pass
+
         items, total = await ProductService.get_all_for_branch(
             db,
             branch_id=branch_id,
             limit=limit,
             offset=offset,
             category_id=cat_uuid,
+            subcategory_id=subcat_uuid,
             is_featured=is_featured,
             search=search,
             min_price=Decimal(str(min_price)) if min_price else None,
@@ -514,7 +544,7 @@ async def get_product_variants(
                     "price": float(v.price) if v.price else 0,
                     "compare_at_price": float(v.compare_at_price) if v.compare_at_price else None,
                     "stock_quantity": v.stock_quantity,
-                    "image_url": v.image_url,
+                    "image_url": media_url(v.image_url),
                     "is_active": v.is_active,
                 }
                 for v in variants
@@ -543,6 +573,11 @@ async def create_product(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Product with this slug already exists"
         )
+
+    try:
+        await CategoryService.validate_subcategory(db, data.category_id, data.subcategory_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     try:
         product = await ProductService.create(db, data)
@@ -587,6 +622,18 @@ async def update_product(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Product with this slug already exists"
             )
+
+    # Validate the category/sub-category pair the product ends up with, since a
+    # partial update may move only one half of it.
+    fields = data.model_dump(exclude_unset=True)
+    try:
+        await CategoryService.validate_subcategory(
+            db,
+            fields.get("category_id", product.category_id),
+            fields.get("subcategory_id", product.subcategory_id),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     try:
         updated_product = await ProductService.update(db, product, data)
@@ -663,7 +710,7 @@ async def add_product_image(
             "success": True,
             "data": {
                 "image_id": str(image.image_id),
-                "image_url": image.image_url,
+                "image_url": media_url(image.image_url),
                 "alt_text": image.alt_text,
                 "is_primary": image.is_primary,
                 "sort_order": image.sort_order,
@@ -738,7 +785,7 @@ async def add_product_variant(
                 "price": float(variant.price) if variant.price else 0,
                 "compare_at_price": float(variant.compare_at_price) if variant.compare_at_price else None,
                 "stock_quantity": variant.stock_quantity,
-                "image_url": variant.image_url,
+                "image_url": media_url(variant.image_url),
                 "is_active": variant.is_active,
             },
             "message": "Variant added successfully"

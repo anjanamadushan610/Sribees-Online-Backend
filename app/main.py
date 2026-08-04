@@ -242,6 +242,49 @@ app.include_router(v1_router, prefix="/api")
 
 
 # ============================================================================
+# Media (local disk storage backend)
+# ============================================================================
+# Serve uploaded media when the local provider is active. With STORAGE_BACKEND=s3
+# the files live in the bucket and are fetched straight from MEDIA_BASE_URL, so
+# nothing is mounted here — the app never proxies them.
+if (settings.storage_backend or "local").strip().lower() == "local":
+    from pathlib import Path
+
+    from fastapi.staticfiles import StaticFiles
+
+    _media_root = Path(settings.media_root)
+    # StaticFiles refuses to start if the directory is missing, which on a fresh
+    # volume it always is.
+    _media_root.mkdir(parents=True, exist_ok=True)
+
+    # Fail LOUDLY at boot if the directory is not writable, instead of letting
+    # the first admin upload discover it as an opaque 5xx. This is exactly how
+    # the root-owned-volume bug hid: the app was healthy, the mount existed, and
+    # only the write failed — hours later, in someone else's browser console.
+    _probe = _media_root / ".write-probe"
+    try:
+        _probe.write_bytes(b"ok")
+        _probe.unlink(missing_ok=True)
+        logger.info(
+            f"Serving media from {_media_root} at "
+            f"/{settings.media_url_prefix.strip('/')} (writable)"
+        )
+    except OSError as exc:
+        logger.error(
+            f"MEDIA_ROOT {_media_root} is NOT WRITABLE ({exc}). Uploads will "
+            f"fail. If this is a Docker volume, its mount point is most likely "
+            f"owned by root while the app runs as a non-root user — ensure the "
+            f"directory exists in the image and is chowned to the app user."
+        )
+
+    app.mount(
+        f"/{settings.media_url_prefix.strip('/')}",
+        StaticFiles(directory=str(_media_root)),
+        name="media",
+    )
+
+
+# ============================================================================
 # Development Server
 # ============================================================================
 

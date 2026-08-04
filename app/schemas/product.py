@@ -72,6 +72,10 @@ class ProductCreate(BaseModel):
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     category_id: Optional[UUID] = None
+    subcategory_id: Optional[UUID] = Field(
+        None,
+        description="Sub-category — must be a child of category_id",
+    )
     stock_quantity: int = Field(0, ge=0)
     low_stock_threshold: int = Field(10, ge=0)
     weight: Optional[Decimal] = None
@@ -93,6 +97,10 @@ class ProductUpdate(BaseModel):
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     category_id: Optional[UUID] = None
+    subcategory_id: Optional[UUID] = Field(
+        None,
+        description="Sub-category — must be a child of category_id",
+    )
     stock_quantity: Optional[int] = Field(None, ge=0)
     low_stock_threshold: Optional[int] = Field(None, ge=0)
     weight: Optional[Decimal] = None
@@ -339,30 +347,5 @@ class BranchInventoryResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
-
-# ============================================================================
-# Inventory Manager Schemas
-# ============================================================================
-
-class StockUpdateRequest(BaseModel):
-    """Request body for inventory manager to update stock & active status."""
-    stock_quantity: int = Field(..., ge=0, description="Branch-level stock quantity")
-    is_active: Optional[bool] = Field(
-        None,
-        description="Set False to hide this product from this branch",
-    )
-
-
-class PricingUpdateRequest(BaseModel):
-    """Request body for inventory manager to set branch pricing overrides."""
-    branch_price: Optional[Decimal] = Field(
-        None,
-        ge=0,
-        description="Override price for this branch. Set null to use global price.",
-    )
-    discount_percentage: Optional[float] = Field(
-        None,
-        ge=0,
-        le=100,
-        description="Override discount %. Set null to use global discount.",
-    )
+# Branch stock/pricing overrides are written through the BranchScope-governed
+# /admin/inventory surface (app/schemas/inventory.py), not from here.

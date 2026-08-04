@@ -40,8 +40,10 @@ FROM base AS development
 # Copy application code (overridden by volume mount in docker-compose)
 COPY . .
 
-# Create non-root user
-RUN adduser --disabled-password --gecos '' appuser \
+# Create non-root user. /app/media must exist and be owned by appuser before any
+# volume is mounted over it — see the production stage for why.
+RUN mkdir -p /app/media \
+    && adduser --disabled-password --gecos '' --uid 1000 appuser \
     && chown -R appuser:appuser /app
 USER appuser
 RUN mkdir -p logs
@@ -69,8 +71,18 @@ LABEL org.opencontainers.image.title="SRIBEESonline API" \
 # Copy application code
 COPY . .
 
-# Create non-root user
-RUN adduser --disabled-password --gecos '' appuser \
+# Create the media directory IN THE IMAGE, before chown.
+#
+# This is load-bearing. docker-compose mounts the `media_data` volume at
+# /app/media. When the mount target does not exist in the image, Docker creates
+# it owned by root — and this container runs as non-root `appuser`, so every
+# upload then fails with PermissionError (surfacing as a 502 on the upload
+# route) while the app itself stays perfectly healthy.
+#
+# With the directory present and owned by appuser at build time, Docker
+# initialises the empty volume from it and carries that ownership across.
+RUN mkdir -p /app/media \
+    && adduser --disabled-password --gecos '' --uid 1000 appuser \
     && chown -R appuser:appuser /app
 USER appuser
 RUN mkdir -p logs

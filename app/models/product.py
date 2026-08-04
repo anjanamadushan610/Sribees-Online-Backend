@@ -42,7 +42,20 @@ class Product(Base):
     price = Column(Numeric(10, 2), nullable=False, comment="Global base price")
     compare_at_price = Column(Numeric(10, 2), nullable=True)
     cost_price = Column(Numeric(10, 2), nullable=True)
-    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.category_id"), nullable=True)
+    category_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("categories.category_id"),
+        nullable=True,
+        index=True,
+        comment="Top-level category",
+    )
+    subcategory_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("categories.category_id"),
+        nullable=True,
+        index=True,
+        comment="Sub-category — its parent_category_id must equal category_id",
+    )
 
     stock_quantity = Column(Integer, default=0, comment="Global default stock")
     low_stock_threshold = Column(Integer, default=10)
@@ -78,7 +91,15 @@ class Product(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     # Relationships
-    category = relationship("Category", back_populates="products")
+    # `products` has TWO FKs into `categories` (category_id + subcategory_id), so
+    # both relationships must name their foreign_keys explicitly — otherwise
+    # SQLAlchemy raises AmbiguousForeignKeysError.
+    category = relationship(
+        "Category",
+        foreign_keys=[category_id],
+        back_populates="products",
+    )
+    subcategory = relationship("Category", foreign_keys=[subcategory_id])
     images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
     variants = relationship("ProductVariant", back_populates="product", cascade="all, delete-orphan")
     reviews = relationship("Review", back_populates="product", cascade="all, delete-orphan")

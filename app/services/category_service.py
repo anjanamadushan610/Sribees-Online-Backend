@@ -4,7 +4,7 @@ Category Service - Business Logic
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
@@ -173,13 +173,94 @@ class CategoryService:
 
     @staticmethod
     async def has_products(db: AsyncSession, category_id: UUID) -> bool:
-        """Check if category has any products."""
+        """Check if any product is assigned to this category, at either level."""
         # Import here to avoid circular imports
         from app.models.product import Product
 
         result = await db.execute(
             select(func.count(Product.product_id))
-            .where(Product.category_id == category_id)
+            .where(
+                or_(
+                    Product.category_id == category_id,
+                    Product.subcategory_id == category_id,
+                )
+            )
         )
         count = result.scalar()
         return count > 0
+
+    @staticmethod
+    async def has_children(db: AsyncSession, category_id: UUID) -> bool:
+        """Check if the category has sub-categories hanging off it."""
+        result = await db.execute(
+            select(func.count(Category.category_id))
+            .where(Category.parent_category_id == category_id)
+        )
+        return (result.scalar() or 0) > 0
+
+    @staticmethod
+    async def get_children(
+        db: AsyncSession,
+        parent_id: UUID,
+        include_inactive: bool = False,
+    ) -> List[Category]:
+        """Get the sub-categories of *parent_id* (one level down)."""
+        query = (
+            select(Category)
+            .where(Category.parent_category_id == parent_id)
+            .order_by(Category.name)
+        )
+        if not include_inactive:
+            query = query.where(Category.is_active.is_(True))
+
+        result = await db.execute(query)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def get_branch_ids(db: AsyncSession, category_id: UUID) -> List[UUID]:
+        """
+        Return *category_id* plus the ids of its sub-categories.
+
+        Browsing a top-level category must surface every product filed under
+        any of its sub-categories, not just the ones pinned directly to the
+        parent — so listing filters resolve the category to this id set.
+        """
+        children = await db.execute(
+            select(Category.category_id)
+            .where(Category.parent_category_id == category_id)
+        )
+        return [category_id, *children.scalars().all()]
+
+    @staticmethod
+    async def validate_subcategory(
+        db: AsyncSession,
+        category_id: Optional[UUID],
+        subcategory_id: Optional[UUID],
+    ) -> None:
+        """
+        Enforce the sub-category contract before a product is written.
+
+        A sub-category is only meaningful underneath its own parent, so:
+          * a sub-category requires a category,
+          * the sub-category row must exist, and
+          * its ``parent_category_id`` must be exactly ``category_id``.
+
+        Raises ``ValueError`` (callers map this to a 400) on violation.
+        """
+        if subcategory_id is None:
+            return
+
+        if category_id is None:
+            raise ValueError("A sub-category requires a parent category.")
+
+        if subcategory_id == category_id:
+            raise ValueError("A category cannot be its own sub-category.")
+
+        subcategory = await CategoryService.get_by_id(db, subcategory_id)
+        if subcategory is None:
+            raise ValueError("Sub-category not found.")
+
+        if subcategory.parent_category_id != category_id:
+            raise ValueError(
+                "Sub-category does not belong to the selected category."
+            )

@@ -49,6 +49,19 @@ services:
       DEBUG: "false"
       DATABASE_URL: postgresql+asyncpg://sribees_user:sribees_password_123@postgres_db:5432/sribeesonline
       REDIS_URL: redis://:sribees_redis_password@redis_cache:6379/0
+      # Media: local disk provider. MEDIA_BASE_URL is what turns the stored
+      # relative paths into absolute URLs, so it must be the public origin.
+      # Override any of these in .env (e.g. STORAGE_BACKEND=s3 later).
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      MEDIA_ROOT: /app/media
+      MEDIA_BASE_URL: ${MEDIA_BASE_URL:-https://api.sribees.com}
+    volumes:
+      # Uploads MUST outlive the container. Every deploy runs `docker compose
+      # down` and recreates it from a fresh image, so without this named volume
+      # every category and product image an admin uploaded is destroyed on the
+      # next push. This line is the difference between a working local-disk
+      # backend and one that silently loses data.
+      - media_data:/app/media
     ports:
       - "8000:8000"
     depends_on:
@@ -73,4 +86,7 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
+    driver: local
+  # Uploaded media (category tiles, product images, splash video).
+  media_data:
     driver: local

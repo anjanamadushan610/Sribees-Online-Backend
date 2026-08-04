@@ -17,6 +17,7 @@ from app.config.database import get_db
 from app.config.redis import get_redis
 from app.config.settings import settings
 from app.core.dependencies import require_roles
+from app.core.media import media_url
 from app.schemas.app_settings import (
     PlatformSettings,
     PlatformSettingsResponse,
@@ -24,7 +25,7 @@ from app.schemas.app_settings import (
     SplashVideoResponse,
 )
 from app.services.app_settings_service import AppSettingsService
-from app.services.storage_service import StorageService
+from app.services.storage import StorageError, get_storage
 
 router = APIRouter()
 
@@ -98,7 +99,8 @@ def _format_splash_response(setting) -> SplashVideoResponse:
     return SplashVideoResponse(
         setting_id=setting.setting_id,
         key=setting.key,
-        video_url=setting.value,
+        # Stored as a relative path; resolved to an absolute URL at the edge.
+        video_url=media_url(setting.value),
         description=setting.description,
         is_active=setting.is_active,
         updated_at=setting.updated_at,
@@ -191,44 +193,49 @@ async def upload_splash_video(
             },
         )
 
-    # Reset file pointer and upload to S3
+    # Store through the configured StorageProvider (local disk today, S3 later).
     import io
     fileobj = io.BytesIO(contents)
 
     try:
-        url = StorageService.upload_fileobj(
+        path = get_storage().save(
             fileobj=fileobj,
             filename=file.filename or "splash_video.mp4",
             folder="splash",
             content_type=file.content_type,
         )
-    except RuntimeError as exc:
+    except StorageError as exc:
+        # 500, not 502 — see admin_catalog._upload_image. The storage backend is
+        # in-process, so this is a server fault, not an upstream gateway's.
         logger.error(f"Splash video upload failed: {exc}")
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
                 "success": False,
                 "error": {
-                    "message": "Failed to upload video to storage. Please try again.",
+                    "message": "Could not store the video on the server. Please try again.",
                     "code": "STORAGE_UPLOAD_FAILED",
                 },
             },
         )
 
-    # Optionally delete the old video from S3
+    # Replace the previous video's file. Read the old value BEFORE overwriting
+    # the setting, or its path is gone and the file is orphaned forever.
     old_setting = await AppSettingsService.get_splash_video(db)
-    if old_setting and old_setting.value:
-        try:
-            StorageService.delete_by_url(old_setting.value)
-        except Exception:
-            logger.warning("Could not delete old splash video from S3 — continuing")
+    old_value = old_setting.value if old_setting else None
 
-    # Save URL in database
-    setting = await AppSettingsService.set_splash_video_url(db, url, is_active=True)
+    # The DB stores the relative path only; the absolute URL is composed on read.
+    setting = await AppSettingsService.set_splash_video_url(db, path, is_active=True)
+
+    if old_value and old_value != path:
+        try:
+            get_storage().delete(old_value)
+        except Exception:
+            logger.warning("Could not delete the previous splash video — continuing")
 
     # Invalidate Redis cache
     await redis.delete(SPLASH_CACHE_KEY)
-    logger.info(f"Splash video updated: {url}")
+    logger.info(f"Splash video updated: {path}")
 
     return {
         "success": True,

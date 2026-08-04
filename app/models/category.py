@@ -28,8 +28,22 @@ class Category(Base):
     # Self-referential relationship for parent-child categories
     parent = relationship("Category", remote_side=[category_id], backref="children")
 
-    # Relationship to products
-    products = relationship("Product", back_populates="category", lazy="dynamic")
+    # Relationship to products. `products` has two FKs into `categories`
+    # (category_id + subcategory_id), so this must pin the one it pairs with.
+    products = relationship(
+        "Product",
+        back_populates="category",
+        foreign_keys="Product.category_id",
+        lazy="dynamic",
+    )
+
+    # Products whose *sub*-category is this row (leaf-level assignment).
+    subcategory_products = relationship(
+        "Product",
+        foreign_keys="Product.subcategory_id",
+        lazy="dynamic",
+        viewonly=True,
+    )
 
     def __repr__(self):
         return f"<Category {self.name}>"

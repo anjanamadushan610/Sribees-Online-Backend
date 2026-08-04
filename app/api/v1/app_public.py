@@ -22,8 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.redis import get_redis
+from app.core.media import media_url_for_client
 from app.services.app_settings_service import AppSettingsService
-from app.services.storage_service import StorageService
 
 router = APIRouter()
 
@@ -84,15 +84,20 @@ async def get_splash_config(
         await redis.setex(SPLASH_CACHE_KEY, SPLASH_CACHE_TTL, json.dumps(payload))
         logger.debug("Splash config cached in Redis")
 
-    # 4. Rewrite URL for the requesting client (e.g. Android emulator)
-    raw_url = payload.get("data", {}).get("splash_video_url")
-    rewritten = StorageService.rewrite_url_for_client(raw_url, x_client_platform)
-    if rewritten != raw_url:
+    # 4. Resolve the stored path into an absolute URL for THIS client.
+    #
+    # The cache deliberately holds the raw stored value (a relative path), not a
+    # resolved URL: resolution happens per-request, so changing MEDIA_BASE_URL —
+    # or moving to S3 — takes effect immediately without flushing Redis, and one
+    # client's emulator rewrite can never be cached and served to another.
+    raw_value = payload.get("data", {}).get("splash_video_url")
+    resolved = media_url_for_client(raw_value, x_client_platform)
+    if resolved != raw_value:
         payload = {
             **payload,
             "data": {
                 **payload["data"],
-                "splash_video_url": rewritten,
+                "splash_video_url": resolved,
             },
         }
 
