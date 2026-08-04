@@ -2,7 +2,7 @@
 # SRIBEESonline — CI Pipeline (Lint & Test)
 #
 # Triggers on push to main/staging and on pull requests.
-# Actual deployment is handled by deploy-backend-ec2.yml (Docker Hub + EC2)
+# Actual deployment is handled by deploy-backend-ec2.yml (ghcr.io + EC2)
 #
 # Jobs:
 #   1. test — lint & run backend tests

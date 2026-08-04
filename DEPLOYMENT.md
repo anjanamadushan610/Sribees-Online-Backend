@@ -13,14 +13,14 @@ Nginx/TLS, database migrations, and day-2 operations.
 ## 1. TL;DR — what happens on `git push`
 
 ```
-push to  main  of  SRIBEESonline-Backend
+push to  main  of  sribees-backend
         │
         ├─▶ CI — Lint & Test         (.github/workflows/deploy.yml)
         │      ruff + mypy + pytest against ephemeral Postgres+Redis
         │
         └─▶ CD — Build & Deploy      (.github/workflows/deploy-backend-ec2.yml)
                1. Build production Docker image (multi-stage)
-               2. Push to Docker Hub  →  <user>/sribees-backend:latest  + :<git-sha>
+               2. Push to ghcr.io  →  ghcr.io/<owner>/sribees-backend:latest  + :<git-sha>
                3. SSH into EC2 (appleboy/ssh-action)
                4. Install Docker / Nginx / Certbot if missing
                5. Write .env  (from ENV_CONTENT secret)
@@ -40,13 +40,15 @@ backed by PostgreSQL (pgvector) and Redis, all in Docker on a single EC2 instanc
 
 | Repo | URL | Role |
 |---|---|---|
-| **Monorepo** | `github.com/anjanamadushan310/SRIBEESonline` | Development mono-repo (`mobile/`, `admin/`, `fastapi_backend/`). |
-| **Backend (deploy)** | `github.com/anjanamadushan310/SRIBEESonline-Backend` | **Standalone repo the CD pipeline runs from.** Mirror of `fastapi_backend/`. `.github/workflows/` live at its root. |
+| **Backend (deploy)** | `github.com/anjanamadushan610/sribees-backend` | **Repo the CD pipeline runs from.** `fastapi_backend/` *is* this repo's root, so `.github/workflows/` sit at the top level. |
+| **Admin dashboard** | `github.com/anjanamadushan610/sribees-admin-frontend` | React admin dashboard (`admin/`). |
+| **Mobile client** | `github.com/anjanamadushan610/sribees-client-mobile` | Flutter customer app (`mobile/`). |
 
-> ⚠️ The GitHub Actions workflows are defined **inside `fastapi_backend/`** in the
-> monorepo, but they only fire when that content is pushed to the **root** of the
-> standalone `SRIBEESonline-Backend` repo (they use `context: .` / `file: ./Dockerfile`).
-> Keep the two in sync, or the backend won't deploy from a monorepo push.
+> The three folders under the local `SRIBEESonline/` working directory are
+> **independent git repos**, each with its own `origin`. There is no shared
+> monorepo remote, so pushing `fastapi_backend/` publishes the backend and
+> nothing else — the workflows fire from that repo's own root
+> (they use `context: .` / `file: ./Dockerfile`).
 
 **Branches**
 - `main` → production (build image, deploy to EC2).
@@ -141,9 +143,10 @@ Steps:
 
 ### Job 1 — `build-and-push`
 1. `docker/build-push-action` builds the **`production`** target with GitHub Actions layer cache (`type=gha`).
-2. Pushes two tags to Docker Hub:
-   - `<DOCKERHUB_USERNAME>/sribees-backend:latest`
-   - `<DOCKERHUB_USERNAME>/sribees-backend:<git-sha>`  ← immutable, used for rollbacks
+2. Pushes two tags to the **GitHub Container Registry** (authenticated with the
+   automatic `GITHUB_TOKEN`, so no registry secret is needed):
+   - `ghcr.io/anjanamadushan610/sribees-backend:latest`
+   - `ghcr.io/anjanamadushan610/sribees-backend:<git-sha>`  ← immutable, used for rollbacks
 3. Base64-encodes `docker/ec2-docker-compose.yml` and passes it to the deploy job as an output (avoids heredoc/SSH quoting issues).
 
 ### Job 2 — `deploy` (SSH via `appleboy/ssh-action`, `script_stop: true`)
@@ -156,7 +159,7 @@ Runs this idempotent bootstrap on the EC2 host:
 | 3 | Create deploy dir `~/sribees-backend`, chown to the SSH user |
 | 4 | Write `.env` from the **`ENV_CONTENT`** secret, `chmod 600` |
 | 5 | Decode the compose template, substitute `__DOCKER_IMAGE__` → `:latest`, validate with `docker compose config` |
-| 6 | `docker login` + `docker compose pull fastapi_backend` |
+| 6 | `docker login ghcr.io` (run-scoped `GITHUB_TOKEN`) + `docker compose pull fastapi_backend`, then `docker logout` |
 | 7 | `docker compose down` → `up -d postgres_db redis_cache` → wait 10s → `up -d fastapi_backend` |
 | 8 | `docker compose exec fastapi_backend alembic upgrade head` *(falls back to "skipped" — see §9)* |
 | 9 | Write Nginx server block → `proxy_pass http://127.0.0.1:8000`, enable site, `nginx -t` |
@@ -170,12 +173,16 @@ Runs this idempotent bootstrap on the EC2 host:
 
 | Secret | Purpose |
 |---|---|
-| `DOCKERHUB_USERNAME` | Docker Hub user; also namespaces the image |
-| `DOCKERHUB_TOKEN` | Docker Hub Personal Access Token (push + pull) |
 | `EC2_HOST` | EC2 public IP or DNS |
 | `EC2_USERNAME` | SSH user (e.g. `ubuntu`) |
 | `EC2_SSH_KEY` | SSH private key (PEM) |
 | `ENV_CONTENT` | **Entire `.env` file contents** injected onto the host at deploy time |
+
+> Registry credentials are **not** in this list. Both the push (runner) and the
+> pull (EC2) authenticate to `ghcr.io` with the `GITHUB_TOKEN` that Actions mints
+> per run, via the `packages: write` / `packages: read` job permissions. The
+> published package is private to the repo by default; making it public would let
+> the EC2 pull without logging in at all.
 
 **`ENV_CONTENT` should include at minimum:**
 ```dotenv
