@@ -40,9 +40,9 @@ backed by PostgreSQL (pgvector) and Redis, all in Docker on a single EC2 instanc
 
 | Repo | URL | Role |
 |---|---|---|
-| **Backend (deploy)** | `github.com/anjanamadushan610/sribees-backend` | **Repo the CD pipeline runs from.** `fastapi_backend/` *is* this repo's root, so `.github/workflows/` sit at the top level. |
-| **Admin dashboard** | `github.com/anjanamadushan610/sribees-admin-frontend` | React admin dashboard (`admin/`). |
-| **Mobile client** | `github.com/anjanamadushan610/sribees-client-mobile` | Flutter customer app (`mobile/`). |
+| **Backend (deploy)** | `github.com/anjanamadushan310/new-sribees-backend` | **Repo the CD pipeline runs from.** `fastapi_backend/` *is* this repo's root, so `.github/workflows/` sit at the top level. |
+| **Admin dashboard** | `github.com/anjanamadushan310/new-sribees-frontend` | React admin dashboard (`admin/`). |
+| **Mobile client** | `github.com/anjanamadushan310/new-sribees-mobile` | Flutter customer app (`mobile/`). |
 
 > The three folders under the local `SRIBEESonline/` working directory are
 > **independent git repos**, each with its own `origin`. There is no shared
@@ -145,8 +145,11 @@ Steps:
 1. `docker/build-push-action` builds the **`production`** target with GitHub Actions layer cache (`type=gha`).
 2. Pushes two tags to the **GitHub Container Registry** (authenticated with the
    automatic `GITHUB_TOKEN`, so no registry secret is needed):
-   - `ghcr.io/anjanamadushan610/sribees-backend:latest`
-   - `ghcr.io/anjanamadushan610/sribees-backend:<git-sha>`  ← immutable, used for rollbacks
+   - `ghcr.io/anjanamadushan310/new-sribees-backend:latest`
+   - `ghcr.io/anjanamadushan310/new-sribees-backend:<git-sha>`  ← immutable, used for rollbacks
+
+   The path is derived from `${{ github.repository }}`, so it follows the repo
+   automatically if it is ever renamed or moved to another account.
 3. Base64-encodes `docker/ec2-docker-compose.yml` and passes it to the deploy job as an output (avoids heredoc/SSH quoting issues).
 
 ### Job 2 — `deploy` (SSH via `appleboy/ssh-action`, `script_stop: true`)
