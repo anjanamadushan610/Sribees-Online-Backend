@@ -19,11 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.redis import get_redis
-from app.core.dependencies import (
-    get_current_admin,
-    get_current_user,
-    get_current_user_optional,
-)
+from app.core.dependencies import get_current_admin, get_current_user_optional
 from app.core.media import media_url
 from app.schemas.product import (
     ProductCreate,
@@ -148,26 +144,6 @@ def format_product(
     return data
 
 
-async def _get_branch_context(redis: Redis, user_id):
-    """Resolve branch context from Redis; raise 400 if not set."""
-    context = await branch_service.get_branch_context(redis, user_id)
-    if context is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "success": False,
-                "error": {
-                    "message": (
-                        "No branch selected. Please select a delivery address "
-                        "to view products."
-                    ),
-                    "code": "NO_BRANCH_CONTEXT",
-                },
-            },
-        )
-    return context
-
-
 async def _get_branch_context_for_request(
     redis: Redis, request: Request, current_user
 ):
@@ -219,6 +195,7 @@ async def _get_branch_context_for_request(
 
 @router.get("", response_model=dict)
 async def get_products(
+    request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     category_id: Optional[str] = None,
@@ -231,19 +208,22 @@ async def get_products(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user_optional),
 ):
     """
     Get products with filtering, pagination and **branch visibility enforcement**.
 
-    Only products that exist in ``branch_inventory`` for the user's branch
+    Works for guests as well as authenticated users — guests are resolved
+    via the ``X-Device-Id`` header (same convention as branch resolution).
+
+    Only products that exist in ``branch_inventory`` for the resolved branch
     with ``is_active=True`` and ``stock_quantity > 0`` are returned.
 
     ``category_id`` matches the category and every sub-category under it;
     ``subcategory_id`` narrows to a single leaf.
     """
     try:
-        context = await _get_branch_context(redis, current_user.user_id)
+        context = await _get_branch_context_for_request(redis, request, current_user)
         branch_id = UUID(context["branch_id"])
         offset = (page - 1) * limit
 
@@ -307,16 +287,20 @@ async def get_products(
 
 @router.get("/featured", response_model=dict)
 async def get_featured_products(
+    request: Request,
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user_optional),
 ):
     """
-    Get featured products visible in the user's branch.
+    Get featured products visible in the resolved branch.
+
+    Works for guests as well as authenticated users — guests are resolved
+    via the ``X-Device-Id`` header (same convention as branch resolution).
     """
     try:
-        context = await _get_branch_context(redis, current_user.user_id)
+        context = await _get_branch_context_for_request(redis, request, current_user)
         branch_id = UUID(context["branch_id"])
 
         items = await ProductService.get_featured_for_branch(db, branch_id, limit)
@@ -383,18 +367,22 @@ async def get_home_feed(
 
 @router.get("/search", response_model=dict)
 async def search_products(
+    request: Request,
     q: str = Query(..., min_length=1),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user_optional),
 ):
     """
     Search products by name or description, filtered by branch visibility.
+
+    Works for guests as well as authenticated users — guests are resolved
+    via the ``X-Device-Id`` header (same convention as branch resolution).
     """
     try:
-        context = await _get_branch_context(redis, current_user.user_id)
+        context = await _get_branch_context_for_request(redis, request, current_user)
         branch_id = UUID(context["branch_id"])
         offset = (page - 1) * limit
 
@@ -434,18 +422,22 @@ async def search_products(
 
 @router.get("/category/{category_id}", response_model=dict)
 async def get_products_by_category(
+    request: Request,
     category_id: str,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user_optional),
 ):
     """
     Get products by category, filtered by branch visibility.
+
+    Works for guests as well as authenticated users — guests are resolved
+    via the ``X-Device-Id`` header (same convention as branch resolution).
     """
     try:
-        context = await _get_branch_context(redis, current_user.user_id)
+        context = await _get_branch_context_for_request(redis, request, current_user)
         branch_id = UUID(context["branch_id"])
         offset = (page - 1) * limit
 
@@ -492,18 +484,22 @@ async def get_products_by_category(
 
 @router.get("/{product_id}", response_model=dict)
 async def get_product(
+    request: Request,
     product_id: str,
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user_optional),
 ):
     """
     Get a single product by ID or slug.
 
-    Returns ``404`` if the product is not active / stocked in the user's
+    Works for guests as well as authenticated users — guests are resolved
+    via the ``X-Device-Id`` header (same convention as branch resolution).
+
+    Returns ``404`` if the product is not active / stocked in the
     resolved branch — even if it exists in the Global Catalog.
     """
-    context = await _get_branch_context(redis, current_user.user_id)
+    context = await _get_branch_context_for_request(redis, request, current_user)
     branch_id = UUID(context["branch_id"])
 
     # Resolve the product_id (may be UUID or slug)
@@ -559,15 +555,19 @@ async def get_product(
 
 @router.get("/{product_id}/variants", response_model=dict)
 async def get_product_variants(
+    request: Request,
     product_id: str,
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user_optional),
 ):
     """
     Get variants for a product (only if the product is visible in the branch).
+
+    Works for guests as well as authenticated users — guests are resolved
+    via the ``X-Device-Id`` header (same convention as branch resolution).
     """
-    context = await _get_branch_context(redis, current_user.user_id)
+    context = await _get_branch_context_for_request(redis, request, current_user)
     branch_id = UUID(context["branch_id"])
 
     try:
