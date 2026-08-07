@@ -102,37 +102,102 @@ async def init_db() -> None:
 
         logger.info("✅ PostgreSQL connected and tables initialized successfully")
 
-        # Seed default super admin user if not present
-        async with get_db_context() as db:
-            from uuid import uuid4
-
-            from sqlalchemy import select
-
-            from app.core.security import hash_password
-            from app.models.admin import Admin, AdminRole
-
-            # Check if superadmin already exists
-            email = "superadmin@freshcart.lk"
-            result = await db.execute(select(Admin).where(Admin.email == email))
-            existing_admin = result.scalar_one_or_none()
-
-            if not existing_admin:
-                logger.info("Seeding default super admin user...")
-                super_admin = Admin(
-                    admin_id=uuid4(),
-                    email=email,
-                    password_hash=hash_password("Admin@123"),
-                    full_name="Super Admin",
-                    role=AdminRole.SUPER_ADMIN,
-                    is_active=True
-                )
-                db.add(super_admin)
-                await db.commit()
-                logger.info("✅ Default super admin seeded successfully!")
+        await _seed_admin_accounts()
 
     except Exception as e:
         logger.error(f"❌ PostgreSQL connection/initialization failed: {e}")
         raise
+
+
+# Branches the demo admins are scoped to. Seeded first, because a branch
+# manager without a branch_id can see nothing.
+_SEED_BRANCHES = [
+    # (code, name,            district,  province)
+    ("CMB", "Colombo Main",   "Colombo", "Western"),
+    ("KDY", "Kandy Central",  "Kandy",   "Central"),
+    ("GLE", "Galle Fort",     "Galle",   "Southern"),
+]
+
+# The accounts documented in admin/ADMIN_CREDENTIALS.md.
+#
+# NOTE ON ROLES: AdminRole has no `staff` member, so staff1.colombo is mapped to
+# CUSTOMER_SUPPORT — the narrowest role available. If staff are meant to do more
+# than support can, AdminRole needs a real STAFF member and a matching
+# permission set; this mapping is a placeholder, not a design decision.
+_SEED_ADMINS = [
+    # (email,                             full_name,               role,                            branch_code)
+    ("superadmin@sribeesonline.lk",      "Super Admin",            "SUPER_ADMIN",       None),
+    ("manager.colombo@sribeesonline.lk", "Colombo Branch Manager", "BRANCH_MANAGER",    "CMB"),
+    ("manager.kandy@sribeesonline.lk",   "Kandy Branch Manager",   "BRANCH_MANAGER",    "KDY"),
+    ("manager.galle@sribeesonline.lk",   "Galle Branch Manager",   "BRANCH_MANAGER",    "GLE"),
+    ("staff1.colombo@sribeesonline.lk",  "Colombo Staff",          "CUSTOMER_SUPPORT",  "CMB"),
+    ("inventory@sribeesonline.lk",       "Inventory Manager",      "INVENTORY_MANAGER", None),
+    ("support@sribeesonline.lk",         "Customer Support",       "CUSTOMER_SUPPORT",  None),
+]
+
+_SEED_PASSWORD = "Admin@123"
+
+
+async def _seed_admin_accounts() -> None:
+    """
+    Seed the documented demo branches and admin accounts.
+
+    Idempotent: each row is created only when absent, so this is safe to run on
+    every boot and will not overwrite a password that has since been changed.
+
+    Hashing goes through the app's own hash_password (Argon2) rather than
+    embedding precomputed hashes in a SQL migration, so the code that writes a
+    hash is always the code that verifies it.
+    """
+    from sqlalchemy import select
+
+    from app.core.security import hash_password
+    from app.models.admin import Admin, AdminRole
+    from app.models.branch import Branch
+
+    async with get_db_context() as db:
+        branch_ids: dict[str, object] = {}
+        created_branches = 0
+
+        for code, name, district, province in _SEED_BRANCHES:
+            existing = (
+                await db.execute(select(Branch).where(Branch.code == code))
+            ).scalar_one_or_none()
+            if existing is None:
+                existing = Branch(
+                    name=name, code=code, district=district,
+                    province=province, is_active=True,
+                )
+                db.add(existing)
+                await db.flush()  # assign branch_id before the admins reference it
+                created_branches += 1
+            branch_ids[code] = existing.branch_id
+
+        created_admins = []
+        for email, full_name, role_name, branch_code in _SEED_ADMINS:
+            existing = (
+                await db.execute(select(Admin).where(Admin.email == email))
+            ).scalar_one_or_none()
+            if existing is not None:
+                continue
+            db.add(Admin(
+                email=email,
+                password_hash=hash_password(_SEED_PASSWORD),
+                full_name=full_name,
+                role=getattr(AdminRole, role_name),
+                branch_id=branch_ids.get(branch_code) if branch_code else None,
+                is_active=True,
+            ))
+            created_admins.append(email)
+
+        if created_branches or created_admins:
+            await db.commit()
+            logger.info(
+                "✅ Seeded %d branch(es) and %d admin account(s): %s",
+                created_branches, len(created_admins), ", ".join(created_admins) or "none",
+            )
+        else:
+            logger.info("Admin accounts already present — nothing to seed.")
 
 
 async def close_db() -> None:
