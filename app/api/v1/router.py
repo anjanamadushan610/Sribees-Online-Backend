@@ -9,6 +9,7 @@ from app.api.v1 import (
     admin,
     admin_analytics,
     admin_auth,
+    admin_banners,
     admin_branches,
     admin_catalog,
     admin_coupons,
@@ -19,6 +20,7 @@ from app.api.v1 import (
     admin_users,
     app_public,
     auth,
+    banners,
     branch,
     cart,
     categories,
@@ -220,6 +222,21 @@ router.include_router(
     marketing.router,
     prefix="/admin/marketing",
     tags=["Marketing Management"],
+)
+
+# Admin Banner management (/admin/banners). Branch-scoped via inject_branch_filter;
+# restricted to super_admin/branch_manager/marketing_manager.
+router.include_router(
+    admin_banners.router,
+    prefix="/admin/banners",
+    tags=["Admin Banners"],
+)
+
+# Public home-screen banner carousel (/banners) — branch-scoped, guest-friendly.
+router.include_router(
+    banners.router,
+    prefix="/banners",
+    tags=["Banners"],
 )
 
 router.include_router(
