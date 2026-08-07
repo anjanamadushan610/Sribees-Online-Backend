@@ -12,14 +12,18 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.redis import get_redis
-from app.core.dependencies import get_current_admin, get_current_user
+from app.core.dependencies import (
+    get_current_admin,
+    get_current_user,
+    get_current_user_optional,
+)
 from app.core.media import media_url
 from app.schemas.product import (
     ProductCreate,
@@ -147,6 +151,51 @@ def format_product(
 async def _get_branch_context(redis: Redis, user_id):
     """Resolve branch context from Redis; raise 400 if not set."""
     context = await branch_service.get_branch_context(redis, user_id)
+    if context is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "error": {
+                    "message": (
+                        "No branch selected. Please select a delivery address "
+                        "to view products."
+                    ),
+                    "code": "NO_BRANCH_CONTEXT",
+                },
+            },
+        )
+    return context
+
+
+async def _get_branch_context_for_request(
+    redis: Redis, request: Request, current_user
+):
+    """
+    Resolve branch context for either an authenticated user or a guest.
+
+    Mirrors the session-id convention used by branch resolution
+    (see ``branch.py`` POST /resolve-by-location): authenticated users are
+    keyed by ``user_id``, guests are keyed by ``guest:{X-Device-Id}``.
+    """
+    if current_user is not None:
+        session_id = str(current_user.user_id)
+    else:
+        device_id = request.headers.get("X-Device-Id") or request.headers.get("x-device-id")
+        if not device_id or not device_id.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "success": False,
+                    "error": {
+                        "message": "X-Device-Id header required for guest requests",
+                        "code": "DEVICE_ID_REQUIRED",
+                    },
+                },
+            )
+        session_id = f"guest:{device_id.strip()}"
+
+    context = await branch_service.get_branch_context(redis, session_id)
     if context is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -293,21 +342,26 @@ async def get_featured_products(
 
 @router.get("/home-feed", response_model=dict)
 async def get_home_feed(
+    request: Request,
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user_optional),
 ):
     """
     Home-page Quick Sale feed.
 
-    Returns the highest-discount products for the user's branch
-    (resolved from Redis session context).  Prices, discounts and stock
-    are resolved via COALESCE fallback (branch override -> global default).
+    Works for guests as well as authenticated users — guests are resolved
+    via the ``X-Device-Id`` header (same convention as branch resolution).
 
-    Returns ``400 NO_BRANCH_CONTEXT`` if no branch is selected.
+    Returns the highest-discount products for the resolved branch.
+    Prices, discounts and stock are resolved via COALESCE fallback
+    (branch override -> global default).
+
+    Returns ``400 NO_BRANCH_CONTEXT`` if no branch is selected, or
+    ``400 DEVICE_ID_REQUIRED`` if called as a guest without X-Device-Id.
     """
-    context = await _get_branch_context(redis, current_user.user_id)
+    context = await _get_branch_context_for_request(redis, request, current_user)
     branch_id = UUID(context["branch_id"])
     items = await ProductService.get_quick_sale_products(db, branch_id, limit)
 
