@@ -18,6 +18,9 @@ name: Build & Deploy Backend (Zero-Manual-Setup)
 on:
   push:
     branches: [ main ]
+  # Allows a redeploy to be triggered from the Actions tab. Without this the
+  # only way to re-run a deploy is to invent a commit.
+  workflow_dispatch:
 
 env:
   # ghcr.io path is derived from the repo itself: ghcr.io/<owner>/<repo>.
