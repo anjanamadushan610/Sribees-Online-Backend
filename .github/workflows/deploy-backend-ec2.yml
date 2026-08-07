@@ -99,16 +99,16 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
           envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE
-          script_stop: true
+          # MUST stay false. script_stop makes the action test every command's
+          # exit status itself and return on the first non-zero one. That check
+          # sits outside bash, so it ignores `set +e` AND the rule that a
+          # command may fail harmlessly as an `if` condition — so every
+          # `if some-probe; then ... else ... fi` below aborts the deploy the
+          # moment the probe answers "no". The script sets -euo pipefail itself,
+          # which stops on real errors while letting conditionals work.
+          script_stop: false
           script: |
             set -euo pipefail
-
-            # TEMPORARY. The deploy dies with exit 1, no stderr, inside a
-            # window where errexit is disabled — so the abort is not an
-            # ordinary command failure. An EXIT trap fires however bash
-            # terminates and names the last command it was running.
-            trap 'rc=$?; echo "TRAP-EXIT rc=$rc last=[${BASH_COMMAND:-?}] line=${LINENO:-?}"' EXIT
-            trap 'rc=$?; echo "TRAP-ERR  rc=$rc cmd=[${BASH_COMMAND:-?}] line=${LINENO:-?}"' ERR
 
             echo "==== 1. UPDATE & INSTALL CORE DEPENDENCIES ===="
             sudo apt-get update -y
@@ -116,25 +116,10 @@ jobs:
 
             echo "==== 2. INSTALL DOCKER (if missing) ===="
 
-            # TEMPORARY DIAGNOSTICS. The deploy has been dying here with exit 1
-            # and no output at all — neither branch of the if below printed,
-            # which rules out the check itself and points at the shell. Trace
-            # exactly what happens, and make the probe unable to abort the run.
-            echo "DEBUG shell=$0 bash=${BASH_VERSION:-NONE} user=$(id -un 2>&1) home=${HOME:-UNSET}"
-            echo "DEBUG set-options=$-"
-            set +e
-            command -v docker >/dev/null 2>&1
-            DOCKER_RC=$?
-            command -v sudo >/dev/null 2>&1
-            SUDO_RC=$?
-            set -e
-            echo "DEBUG docker_rc=$DOCKER_RC sudo_rc=$SUDO_RC"
-            set -x
-
             # `command -v` not `which`: newer Ubuntu releases dropped the which
             # binary from debianutils, so `which docker` can exit 127. command -v
             # is a POSIX shell builtin and is always present.
-            if [ "$DOCKER_RC" -eq 0 ]; then
+            if command -v docker >/dev/null 2>&1; then
               echo "Docker already installed."
             else
               echo "Installing Docker..."
@@ -159,12 +144,11 @@ jobs:
             else
               sudo apt-get install -y docker-compose-plugin
             fi
-            set +x
 
             echo "==== 3. CREATE DEPLOYMENT DIRECTORY ===="
             DEPLOY_DIR="$HOME/sribees-backend"
             sudo mkdir -p "$DEPLOY_DIR"
-            sudo chown -R "$USER:$USER" "$DEPLOY_DIR"
+            sudo chown -R "$(id -un):$(id -gn)" "$DEPLOY_DIR"
             cd "$DEPLOY_DIR"
 
             echo "==== 4. WRITE .env FILE ===="
@@ -256,7 +240,7 @@ jobs:
             # deploy is safe.
             rm -rf ./migrations
             sudo docker compose cp fastapi_backend:/app/migrations ./migrations
-            sudo chown -R "$USER":"$USER" ./migrations 2>/dev/null || true
+            sudo chown -R "$(id -un)":"$(id -gn)" ./migrations 2>/dev/null || true
 
             if ls ./migrations/*.sql >/dev/null 2>&1; then
               for f in $(ls -1 ./migrations/*.sql | sort); do
