@@ -108,7 +108,11 @@ jobs:
             sudo apt-get install -y curl git gnupg lsb-release certbot python3-certbot-nginx nginx
 
             echo "==== 2. INSTALL DOCKER (if missing) ===="
-            if which docker >/dev/null 2>&1; then
+            # `command -v` not `which`: Ubuntu 25.10 (questing) dropped the
+            # which binary from debianutils, so `which docker` exits 127 and
+            # set -e kills the deploy before either branch can run. command -v
+            # is a POSIX shell builtin and is always present.
+            if command -v docker >/dev/null 2>&1; then
               echo "Docker already installed."
             else
               echo "Installing Docker..."
