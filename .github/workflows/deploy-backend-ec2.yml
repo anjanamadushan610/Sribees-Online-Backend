@@ -108,11 +108,26 @@ jobs:
             sudo apt-get install -y curl git gnupg lsb-release certbot python3-certbot-nginx nginx
 
             echo "==== 2. INSTALL DOCKER (if missing) ===="
-            # `command -v` not `which`: Ubuntu 25.10 (questing) dropped the
-            # which binary from debianutils, so `which docker` exits 127 and
-            # set -e kills the deploy before either branch can run. command -v
+
+            # TEMPORARY DIAGNOSTICS. The deploy has been dying here with exit 1
+            # and no output at all — neither branch of the if below printed,
+            # which rules out the check itself and points at the shell. Trace
+            # exactly what happens, and make the probe unable to abort the run.
+            echo "DEBUG shell=$0 bash=${BASH_VERSION:-NONE} user=$(id -un 2>&1) home=${HOME:-UNSET}"
+            echo "DEBUG set-options=$-"
+            set +e
+            command -v docker >/dev/null 2>&1
+            DOCKER_RC=$?
+            command -v sudo >/dev/null 2>&1
+            SUDO_RC=$?
+            set -e
+            echo "DEBUG docker_rc=$DOCKER_RC sudo_rc=$SUDO_RC"
+            set -x
+
+            # `command -v` not `which`: newer Ubuntu releases dropped the which
+            # binary from debianutils, so `which docker` can exit 127. command -v
             # is a POSIX shell builtin and is always present.
-            if command -v docker >/dev/null 2>&1; then
+            if [ "$DOCKER_RC" -eq 0 ]; then
               echo "Docker already installed."
             else
               echo "Installing Docker..."
@@ -126,7 +141,9 @@ jobs:
               sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
               sudo systemctl start docker
               sudo systemctl enable docker
-              sudo usermod -aG docker "$USER"
+              # id -un rather than "$USER": set -u aborts on an unset USER, and
+              # a non-login SSH shell does not always export it.
+              sudo usermod -aG docker "$(id -un)"
               echo "Docker installed!"
             fi
 
@@ -135,6 +152,7 @@ jobs:
             else
               sudo apt-get install -y docker-compose-plugin
             fi
+            set +x
 
             echo "==== 3. CREATE DEPLOYMENT DIRECTORY ===="
             DEPLOY_DIR="$HOME/sribees-backend"
