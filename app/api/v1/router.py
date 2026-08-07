@@ -225,7 +225,7 @@ router.include_router(
 )
 
 # Admin Banner management (/admin/banners). Branch-scoped via inject_branch_filter;
-# restricted to super_admin/branch_manager/marketing_manager.
+# restricted to super_admin/marketing_manager.
 router.include_router(
     admin_banners.router,
     prefix="/admin/banners",

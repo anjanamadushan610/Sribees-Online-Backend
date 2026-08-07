@@ -85,6 +85,11 @@ def _format_marketing_product(inv, product) -> dict:
         "discountPercentage": inv.discount_percentage,
         "globalDiscountPercentage": product.discount_percentage,
         "effectiveDiscount": effective["effective_discount"],
+        # Cashback: this branch's override, the product-wide default, and what
+        # a customer here actually earns once the fallback is applied.
+        "cashbackPercentage": inv.cashback_percentage,
+        "globalCashbackPercentage": product.cashback_percentage,
+        "effectiveCashback": effective["effective_cashback"],
         "isOnSale": inv.is_on_sale,
         "isActive": inv.is_active,
         "stockQuantity": inv.stock_quantity or 0,

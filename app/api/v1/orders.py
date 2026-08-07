@@ -7,9 +7,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
+from app.config.redis import get_redis
 from app.config.settings import settings
 from app.core.dependencies import get_current_admin, get_current_user
 from app.schemas.order import (
@@ -20,6 +22,7 @@ from app.schemas.order import (
     UpdateOrderStatusRequest,
     UpdatePaymentStatusRequest,
 )
+from app.services import branch_service
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.invoice_service import InvoiceService
@@ -269,6 +272,7 @@ async def create_order(
 async def quote_order(
     data: QuoteOrderRequest,
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
     current_user = Depends(get_current_user)
 ):
     """
@@ -283,8 +287,25 @@ async def quote_order(
         wallet_balance = await WalletService.get_balance(db, current_user.user_id)
         pricing_config = await AppSettingsService.get_pricing_config(db)
 
+        # Cashback is branch-specific, so the preview must be priced against the
+        # customer's own branch — otherwise the quote and the charged order
+        # would disagree the moment a branch overrides a product's rate.
+        branch_id = None
+        context = await branch_service.get_branch_context(
+            redis, str(current_user.user_id)
+        )
+        if context is not None:
+            try:
+                branch_id = UUID(context["branch_id"])
+            except (KeyError, ValueError, TypeError):
+                branch_id = None
+
+        items = await OrderService._attach_cashback_rates(
+            db, cart.get("items", []), branch_id
+        )
+
         breakdown = PricingService.quote(
-            items=cart.get("items", []),
+            items=items,
             coupon=cart.get("coupon"),
             use_wallet=data.use_wallet,
             wallet_balance=wallet_balance,
@@ -294,11 +315,19 @@ async def quote_order(
 
         item_count = sum(i.get("quantity", 0) for i in cart.get("items", []))
 
+        # Blended rate for display: with per-product cashback there is no single
+        # platform rate to quote, so report what this cart actually earns.
+        effective_rate = (
+            float(breakdown.cashback_earned / breakdown.subtotal)
+            if breakdown.subtotal > 0
+            else settings.cashback_rate
+        )
+
         return OrderQuoteResponse(
             data={
                 **breakdown.as_dict(),
                 "currency": settings.wallet_currency,
-                "cashback_rate": settings.cashback_rate,
+                "cashback_rate": effective_rate,
                 "wallet_balance": float(wallet_balance),
                 "wallet_applied": breakdown.wallet_deduction > 0,
                 "item_count": item_count,

@@ -41,11 +41,11 @@ from app.models.banner import Banner
 from app.schemas.banner import BannerCreate, BannerUpdate
 from app.services.storage import StorageError, get_storage
 
-# Banner curation is a marketing/branch-management job.
+# Banner curation is a Marketing Manager job. Branch Managers run the branch's
+# operations (stock, orders, transfers); promotions are deliberately a separate
+# desk, so they are not on this router.
 router = APIRouter(
-    dependencies=[
-        Depends(require_roles("super_admin", "branch_manager", "marketing_manager"))
-    ],
+    dependencies=[Depends(require_roles("super_admin", "marketing_manager"))],
     tags=["Admin Banners"],
 )
 

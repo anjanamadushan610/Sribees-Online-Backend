@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.redis import get_redis
+from app.config.settings import settings
 from app.core.dependencies import get_current_admin, get_current_user_optional
 from app.core.media import media_url
 from app.schemas.product import (
@@ -71,6 +72,14 @@ def format_product(
         "compare_at_price": float(product.compare_at_price) if product.compare_at_price else None,
         "discount_percentage": eff.get("effective_discount", product.discount_percentage),
         "discount_price": eff.get("effective_discount_price", float(product.discount_price) if product.discount_price else None),
+        # Branch-resolved cashback for this product, so the storefront badge
+        # shows what the customer actually earns here rather than a fixed rate.
+        "cashback_percentage": eff.get(
+            "effective_cashback",
+            product.cashback_percentage
+            if product.cashback_percentage is not None
+            else float(settings.cashback_rate) * 100,
+        ),
         "is_on_sale": eff.get("is_on_sale", product.is_on_sale),
         "stock_quantity": eff.get("stock_quantity", product.stock_quantity),
         "is_active": eff.get("is_active", product.is_active),

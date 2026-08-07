@@ -36,6 +36,50 @@ class OrderService:
     """Service class for order operations."""
 
     @staticmethod
+    async def _attach_cashback_rates(
+        db: AsyncSession,
+        items: List[dict],
+        branch_id: Optional[UUID],
+    ) -> List[dict]:
+        """
+        Return *items* with each line's branch-resolved cashback rate attached.
+
+        Rates are read from the database, never from the Redis cart: a cart can
+        sit for days, and the customer must earn the rate that is live at
+        checkout, not the one that happened to apply when they added the item.
+
+        Returns copies — the caller's cart dicts are left untouched so nothing
+        stale gets written back to Redis.
+        """
+        if not items:
+            return []
+
+        from app.services.product_service import ProductService
+
+        product_ids = []
+        for item in items:
+            raw = item.get("product_id")
+            if not raw:
+                continue
+            try:
+                product_ids.append(UUID(str(raw)))
+            except (ValueError, TypeError):
+                # A malformed id cannot be priced from the catalog; the pricing
+                # service falls back to the platform rate for it.
+                continue
+
+        rates = await ProductService.get_cashback_map(db, product_ids, branch_id)
+
+        priced = []
+        for item in items:
+            enriched = dict(item)
+            rate = rates.get(str(item.get("product_id")))
+            if rate is not None:
+                enriched["cashback_percentage"] = rate
+            priced.append(enriched)
+        return priced
+
+    @staticmethod
     def generate_order_number() -> str:
         """Generate unique order number."""
         timestamp = datetime.now().strftime("%Y%m%d")
@@ -100,22 +144,12 @@ class OrderService:
 
         pricing_config = await AppSettingsService.get_pricing_config(db)
 
-        breakdown = PricingService.quote(
-            items=cart["items"],
-            coupon=coupon_for_pricing,
-            use_wallet=data.use_wallet,
-            wallet_balance=wallet_balance,
-            delivery_fee=pricing_config["delivery_fee"],
-            tax_rate=pricing_config["tax_rate"],
-        )
-
-        wallet_deduction = breakdown.wallet_deduction
-        cashback_earned = breakdown.cashback_earned
-        order_number = OrderService.generate_order_number()
-
         # Attribute the order to the branch serving the delivery address's post
         # office, so branch-scoped admins can see and manage it. Best-effort:
         # an unmapped post office leaves branch_id NULL (does not block checkout).
+        #
+        # Resolved before pricing because cashback rates are branch-specific:
+        # the same product can earn a different rate in a different branch.
         branch_id = None
         try:
             from app.services import branch_service
@@ -127,6 +161,23 @@ class OrderService:
                 branch_id = mapping.branch_id
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Could not resolve branch for order: {exc}")
+
+        priced_items = await OrderService._attach_cashback_rates(
+            db, cart["items"], branch_id
+        )
+
+        breakdown = PricingService.quote(
+            items=priced_items,
+            coupon=coupon_for_pricing,
+            use_wallet=data.use_wallet,
+            wallet_balance=wallet_balance,
+            delivery_fee=pricing_config["delivery_fee"],
+            tax_rate=pricing_config["tax_rate"],
+        )
+
+        wallet_deduction = breakdown.wallet_deduction
+        cashback_earned = breakdown.cashback_earned
+        order_number = OrderService.generate_order_number()
 
         # Payment status. COD is collected on delivery, so it is always PENDING.
         # A WALLET order whose total is fully covered by the wallet balance is

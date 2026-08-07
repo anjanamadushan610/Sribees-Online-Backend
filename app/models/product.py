@@ -83,6 +83,15 @@ class Product(Base):
         index=True,
         comment="Global default Quick Sale flag",
     )
+    cashback_percentage = Column(
+        Float,
+        nullable=True,
+        default=None,
+        comment=(
+            "Global default cashback % (0-100). NULL = use the platform "
+            "cashback rate; a branch may override this per product."
+        ),
+    )
 
     view_count = Column(Integer, default=0)
     meta_title = Column(String(255), nullable=True)
@@ -170,6 +179,14 @@ class BranchInventory(Base):
         Boolean,
         default=False,
         comment="Branch override Quick Sale flag",
+    )
+    cashback_percentage = Column(
+        Float,
+        nullable=True,
+        comment=(
+            "Branch override cashback % (NULL -> products.cashback_percentage "
+            "-> platform cashback rate)"
+        ),
     )
     is_active = Column(
         Boolean,

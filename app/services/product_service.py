@@ -7,6 +7,8 @@ Implements the **Global Catalog + Branch Overrides** pattern:
   - Effective values are resolved via COALESCE:
         effective_price    = branch_price    ?? product.price
         effective_discount = branch_discount ?? product.discount_percentage
+        effective_cashback = branch_cashback ?? product.cashback_percentage
+                                             ?? platform cashback rate
   - A ``BranchInventory.is_active = False`` row hides the product for that branch.
 """
 from decimal import ROUND_HALF_UP, Decimal
@@ -18,6 +20,7 @@ from sqlalchemy import and_, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config.settings import settings
 from app.models.branch import Branch
 from app.models.product import (
     BranchInventory,
@@ -756,25 +759,39 @@ class ProductService:
         global_price = product.price or Decimal("0")
         global_discount = product.discount_percentage
         global_on_sale = product.is_on_sale
+        global_cashback = product.cashback_percentage
 
         if inv is not None:
             eff_price = Decimal(str(inv.branch_price)) if inv.branch_price is not None else global_price
             eff_discount = inv.discount_percentage if inv.discount_percentage is not None else global_discount
+            eff_cashback = (
+                inv.cashback_percentage
+                if inv.cashback_percentage is not None
+                else global_cashback
+            )
             eff_on_sale = inv.is_on_sale
             stock = inv.stock_quantity
             is_active = inv.is_active
             branch_price = inv.branch_price
             branch_discount = inv.discount_percentage
+            branch_cashback = inv.cashback_percentage
             inventory_id = inv.inventory_id
         else:
             eff_price = global_price
             eff_discount = global_discount
+            eff_cashback = global_cashback
             eff_on_sale = global_on_sale
             stock = product.stock_quantity
             is_active = product.is_active
             branch_price = None
             branch_discount = None
+            branch_cashback = None
             inventory_id = None
+
+        # Last resort: neither the branch nor the product set a rate, so the
+        # platform default applies. Stored as a fraction, surfaced as a percent.
+        if eff_cashback is None:
+            eff_cashback = float(settings.cashback_rate) * 100
 
         # Compute effective discount price
         eff_discount_price = None
@@ -793,6 +810,9 @@ class ProductService:
             "branch_discount": branch_discount,
             "effective_discount": eff_discount,
             "effective_discount_price": float(eff_discount_price) if eff_discount_price else None,
+            "global_cashback": global_cashback,
+            "branch_cashback": branch_cashback,
+            "effective_cashback": eff_cashback,
             "stock_quantity": stock,
             "is_on_sale": eff_on_sale,
             "is_active": is_active,
@@ -820,6 +840,59 @@ class ProductService:
             return None
 
         return ProductService.compute_effective_data(product, inv)
+
+    @staticmethod
+    async def get_cashback_map(
+        db: AsyncSession,
+        product_ids: List[UUID],
+        branch_id: Optional[UUID],
+    ) -> Dict[str, float]:
+        """
+        Effective cashback percentage per product for one branch.
+
+        Resolved in a single query so checkout does not fan out one lookup per
+        cart line. Read straight from the database at quote/checkout time — the
+        rate a customer earns must never come from the Redis cart, which is
+        stale the moment a manager changes it (same reasoning as the coupon
+        re-validation in OrderService).
+
+        Products with no row for the branch, and any id not found at all, fall
+        through to the product default and then the platform rate, so the caller
+        always gets a usable number for every id it asked about.
+        """
+        platform_default = float(settings.cashback_rate) * 100
+        if not product_ids:
+            return {}
+
+        query = select(
+            Product.product_id,
+            Product.cashback_percentage,
+            BranchInventory.cashback_percentage,
+        ).outerjoin(
+            BranchInventory,
+            and_(
+                BranchInventory.product_id == Product.product_id,
+                BranchInventory.branch_id == branch_id,
+            ),
+        ).where(Product.product_id.in_(product_ids))
+
+        rows = (await db.execute(query)).all()
+
+        resolved: Dict[str, float] = {}
+        for product_id, global_cashback, branch_cashback in rows:
+            rate = branch_cashback
+            if rate is None:
+                rate = global_cashback
+            if rate is None:
+                rate = platform_default
+            resolved[str(product_id)] = float(rate)
+
+        # An id we could not resolve still needs a rate, or the line would
+        # silently earn nothing.
+        for pid in product_ids:
+            resolved.setdefault(str(pid), platform_default)
+
+        return resolved
 
     # ================================================================
     # Quick Sale feed  (branch-aware)

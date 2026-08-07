@@ -10,6 +10,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
+from app.config.settings import settings
 from app.core.dependencies import get_current_user
 from app.schemas.cart import WishlistItemAdd
 from app.services.wishlist_service import WishlistService
@@ -40,6 +41,14 @@ def format_wishlist_item(item) -> dict:
             "name": item.product.name,
             "slug": item.product.slug,
             "price": float(item.product.price) if item.product.price else 0,
+            # The product-wide rate, matching the global price this endpoint
+            # already returns. A branch override is not applied here because
+            # the wishlist is not branch-scoped.
+            "cashback_percentage": (
+                item.product.cashback_percentage
+                if item.product.cashback_percentage is not None
+                else float(settings.cashback_rate) * 100
+            ),
             "images": [
                 {"image_url": img.image_url, "is_primary": img.is_primary}
                 for img in (item.product.images or [])[:1]  # Just primary image

@@ -75,6 +75,30 @@ class PricingService:
         return _money(discount)
 
     @staticmethod
+    def _cashback(items: List[dict]) -> Decimal:
+        """
+        Sum the cashback each line earns at its own effective rate.
+
+        ``cashback_percentage`` is the branch-resolved rate the caller attached
+        (branch override -> product default -> platform rate). A line without
+        one falls back to the platform rate, so an older caller that has not
+        been updated keeps the previous behaviour rather than earning zero.
+        """
+        if not items:
+            return Decimal("0.00")
+
+        default_percent = Decimal(str(settings.cashback_rate)) * Decimal("100")
+        total = Decimal("0")
+
+        for item in items:
+            rate = item.get("cashback_percentage")
+            percent = default_percent if rate is None else Decimal(str(rate))
+            line = Decimal(str(item["price"])) * Decimal(str(item["quantity"]))
+            total += line * percent / Decimal("100")
+
+        return _money(total)
+
+    @staticmethod
     def quote(
         items: List[dict],
         coupon: Optional[Dict[str, Any]] = None,
@@ -87,7 +111,9 @@ class PricingService:
         Build the authoritative price breakdown.
 
         Args:
-            items: Cart items (each with ``price`` and ``quantity``).
+            items: Cart items (each with ``price`` and ``quantity``, and
+                optionally ``cashback_percentage`` — the branch-resolved rate
+                for that product).
             coupon: Applied coupon dict (``discount_type``/``discount_value``).
             use_wallet: Whether to apply the wallet balance to the total.
             wallet_balance: Available wallet balance (ignored if not use_wallet).
@@ -116,8 +142,10 @@ class PricingService:
         # Gross payable before any wallet balance is applied.
         gross = _money(taxable + tax + delivery_fee)
 
-        # Cashback is always earned on the subtotal, independent of the wallet.
-        cashback_earned = _money(subtotal * Decimal(str(settings.cashback_rate)))
+        # Cashback is earned per line at that product's own rate, then summed —
+        # a 25% item and a 5% item in the same cart must not be averaged into
+        # one blended rate. Independent of the wallet, as before.
+        cashback_earned = PricingService._cashback(items)
 
         wallet_deduction = Decimal("0")
         if use_wallet and wallet_balance and wallet_balance > 0:

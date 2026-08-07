@@ -82,6 +82,15 @@ class ProductCreate(BaseModel):
     weight_unit: str = "kg"
     is_active: bool = True
     is_featured: bool = False
+    cashback_percentage: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description=(
+            "Global cashback % for this product across all branches. "
+            "Null uses the platform rate; a branch can override it."
+        ),
+    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
 
@@ -107,6 +116,15 @@ class ProductUpdate(BaseModel):
     weight_unit: Optional[str] = None
     is_active: Optional[bool] = None
     is_featured: Optional[bool] = None
+    cashback_percentage: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description=(
+            "Global cashback % for this product across all branches. "
+            "Null uses the platform rate; a branch can override it."
+        ),
+    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
 
@@ -313,6 +331,15 @@ class BranchInventoryUpdateRequest(BaseModel):
         ge=0,
         le=100,
         description="Override discount %. Set null to use global discount.",
+    )
+    cashback_percentage: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description=(
+            "Override cashback % for this branch. Set null to fall back to the "
+            "product's global cashback, and then to the platform rate."
+        ),
     )
     is_on_sale: Optional[bool] = Field(
         None,
