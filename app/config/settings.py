@@ -38,10 +38,14 @@ class Settings(BaseSettings):
     # Wallet & Cashback
     # =========================================================================
     cashback_rate: float = Field(
-        default=0.10,
+        default=0.01,
         ge=0.0,
         le=1.0,
-        description="Flat cashback rate earned on the order subtotal (0.10 = 10%)",
+        description=(
+            "Platform default cashback rate (0.01 = 1%). Last resort only: a "
+            "product's cashback_percentage overrides this, and a branch's "
+            "override beats both."
+        ),
     )
     wallet_currency: str = Field(default="LKR", description="Wallet currency code")
 
