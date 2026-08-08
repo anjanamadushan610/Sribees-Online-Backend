@@ -38,6 +38,14 @@ class Product(Base):
     slug = Column(String(255), unique=True, nullable=False)
     description = Column(Text, nullable=True)
     short_description = Column(String(500), nullable=True)
+    search_keywords = Column(
+        Text,
+        nullable=True,
+        comment=(
+            "Alternate names for search only (Sinhala/Tamil/Singlish/common "
+            "misspellings). Never shown to customers as product content."
+        ),
+    )
     sku = Column(String(100), unique=True, nullable=True)
     price = Column(Numeric(10, 2), nullable=False, comment="Global base price")
     compare_at_price = Column(Numeric(10, 2), nullable=True)

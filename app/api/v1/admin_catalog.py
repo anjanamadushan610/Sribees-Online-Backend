@@ -36,8 +36,15 @@ from app.config.settings import settings
 from app.core.dependencies import require_roles
 from app.core.media import media_path, media_url
 from app.schemas.category import CategoryCreate, CategoryUpdate
-from app.schemas.product import ProductCreate, ProductImageCreate, ProductUpdate
+from app.schemas.product import (
+    ProductCreate,
+    ProductImageCreate,
+    ProductUpdate,
+    SuggestKeywordsRequest,
+)
 from app.services.category_service import CategoryService
+from app.services.embedding_service import GeminiAPIError
+from app.services.keyword_suggestion_service import suggest_search_keywords
 from app.services.product_service import ProductService
 from app.services.storage import StorageError, get_storage
 
@@ -446,6 +453,36 @@ async def get_product(
             detail="Product not found",
         )
     return {"success": True, "data": format_product(product, include_variants=True)}
+
+
+@router.post("/products/suggest-keywords", response_model=dict)
+async def suggest_product_keywords(data: SuggestKeywordsRequest):
+    """
+    AI-assisted search keyword suggestions (Sinhala/Tamil/Singlish/Tamilish).
+
+    Takes draft form fields directly rather than a product id, so it works
+    while creating a new product too, not just editing a saved one. One-off
+    admin action — never called from the customer search path (see
+    ``ProductService.get_all_for_branch``), so this never adds AI latency or
+    cost to a live search request. The admin reviews/edits the suggestion
+    before it's saved.
+    """
+    try:
+        suggestion = await suggest_search_keywords(
+            name=data.name,
+            description=data.description or data.short_description,
+            category=data.category,
+        )
+    except GeminiAPIError as exc:
+        detail = (
+            "AI keyword suggestions aren't configured yet — add GEMINI_API_KEY "
+            "to the backend .env."
+            if "GEMINI_API_KEY not configured" in str(exc)
+            else "Could not get AI keyword suggestions right now. Please try again."
+        )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+
+    return {"success": True, "data": {"suggested_keywords": suggestion}}
 
 
 @router.post("/products", response_model=dict, status_code=status.HTTP_201_CREATED)

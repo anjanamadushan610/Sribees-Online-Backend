@@ -67,6 +67,10 @@ class ProductCreate(BaseModel):
     slug: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     short_description: Optional[str] = Field(None, max_length=500)
+    search_keywords: Optional[str] = Field(
+        None,
+        description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
+    )
     sku: Optional[str] = Field(None, max_length=100)
     price: Decimal = Field(..., ge=0)
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
@@ -101,6 +105,10 @@ class ProductUpdate(BaseModel):
     slug: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     short_description: Optional[str] = Field(None, max_length=500)
+    search_keywords: Optional[str] = Field(
+        None,
+        description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
+    )
     sku: Optional[str] = Field(None, max_length=100)
     price: Optional[Decimal] = Field(None, ge=0)
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
@@ -127,6 +135,14 @@ class ProductUpdate(BaseModel):
     )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
+
+
+class SuggestKeywordsRequest(BaseModel):
+    """Draft product fields sent to the AI keyword-suggestion endpoint."""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    short_description: Optional[str] = None
+    category: Optional[str] = None
 
 
 class ProductImageCreate(BaseModel):

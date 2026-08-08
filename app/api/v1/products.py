@@ -66,6 +66,7 @@ def format_product(
         "slug": product.slug,
         "description": product.description,
         "short_description": product.short_description,
+        "search_keywords": product.search_keywords,
         "sku": product.sku,
         "price": eff.get("effective_price", float(product.price) if product.price else 0),
         "global_price": float(product.price) if product.price else 0,

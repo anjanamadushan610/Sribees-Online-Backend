@@ -296,6 +296,14 @@ class Settings(BaseSettings):
         default="text-embedding-004",
         description="Gemini embedding model name"
     )
+    gemini_generation_model: str = Field(
+        default="gemini-flash-latest",
+        description=(
+            "Gemini text-generation model name (admin keyword suggestions). "
+            "Uses Google's rolling 'latest flash' alias rather than a pinned "
+            "version, since pinned free-tier model names get retired."
+        )
+    )
     gemini_embedding_dimension: int = Field(
         default=768,
         description="Embedding vector dimension"

@@ -11,12 +11,13 @@ Implements the **Global Catalog + Branch Overrides** pattern:
                                              ?? platform cashback rate
   - A ``BranchInventory.is_active = False`` row hides the product for that branch.
 """
+import unicodedata
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import and_, func, literal, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -282,6 +283,7 @@ class ProductService:
             slug=data.slug,
             description=data.description,
             short_description=data.short_description,
+            search_keywords=data.search_keywords,
             sku=data.sku,
             price=data.price,
             compare_at_price=data.compare_at_price,
@@ -577,11 +579,28 @@ class ProductService:
             base = base.where(Product.subcategory_id == subcategory_id)
         if is_featured is not None:
             base = base.where(Product.is_featured == is_featured)
+
+        search_term: Optional[str] = None
         if search:
-            pattern = f"%{search}%"
+            # NFC-normalize: Sinhala/Tamil input can arrive as different
+            # Unicode byte sequences for the same visible word depending on
+            # keyboard/IME, which would otherwise silently fail to match.
+            search_term = unicodedata.normalize("NFC", search).strip()
+
+        if search_term:
+            pattern = f"%{search_term}%"
+            name_similarity = func.similarity(func.lower(Product.name), search_term.lower())
+            keyword_similarity = func.similarity(
+                func.lower(func.coalesce(Product.search_keywords, "")), search_term.lower()
+            )
             base = base.where(or_(
                 Product.name.ilike(pattern),
                 Product.description.ilike(pattern),
+                Product.search_keywords.ilike(pattern),
+                # Trigram similarity — catches typos and near-misses that no
+                # substring match ever would (e.g. "bananna", "thakali").
+                name_similarity > 0.25,
+                keyword_similarity > 0.25,
             ))
         if min_price is not None:
             base = base.where(eff_price >= min_price)
@@ -592,9 +611,31 @@ class ProductService:
         count_q = select(func.count()).select_from(base.subquery())
         total = (await db.execute(count_q)).scalar() or 0
 
-        # Sort
-        sort_col = getattr(Product, sort_by, Product.created_at)
-        base = base.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
+        if search_term:
+            # Relevance ranking: exact name match first, then prefix, then
+            # best fuzzy/keyword match, newest as the final tiebreaker.
+            # sort_by/sort_order are ignored here — a search result ordered
+            # by "newest" instead of "best match" defeats the point of a
+            # search bar, and /products/search never sends an override.
+            lower_name = func.lower(Product.name)
+            lower_term = search_term.lower()
+            best_similarity = func.greatest(
+                func.similarity(func.lower(Product.name), lower_term),
+                func.similarity(func.lower(func.coalesce(Product.search_keywords, "")), lower_term),
+            )
+            base = base.order_by(
+                case(
+                    (lower_name == lower_term, 0),
+                    (lower_name.startswith(lower_term), 1),
+                    else_=2,
+                ),
+                best_similarity.desc(),
+                Product.created_at.desc(),
+            )
+        else:
+            sort_col = getattr(Product, sort_by, Product.created_at)
+            base = base.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
+
         base = base.limit(limit).offset(offset)
 
         rows = (await db.execute(base)).unique().all()
