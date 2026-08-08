@@ -5,6 +5,7 @@ Partner Portal API — the professional referral team.
   GET  /partner/me           — profile, code, commission totals by level
   GET  /partner/customers    — customers this partner signed up
   GET  /partner/recruits     — sub-partners, and the level-2 they generate
+  POST /partner/recruits     — recruit a new sub-partner
   GET  /partner/commissions  — the ledger
 
 **Realm separation is the point of this module.** Every route depends on
@@ -26,8 +27,8 @@ from app.config.database import get_db
 from app.config.settings import settings
 from app.core.dependencies import get_current_partner
 from app.core.security import create_access_token
-from app.schemas.partner import PartnerLoginRequest
-from app.services.partner_service import PartnerService
+from app.schemas.partner import PartnerCreateRequest, PartnerLoginRequest
+from app.services.partner_service import PartnerEmailTakenError, PartnerService
 
 router = APIRouter(tags=["Partner Portal"])
 
@@ -155,6 +156,57 @@ async def get_my_recruits(
     return {
         "success": True,
         "data": {"recruits": recruits, "total": len(recruits)},
+    }
+
+
+# ============================================================================
+# POST /recruits
+# ============================================================================
+
+@router.post("/recruits", response_model=dict, status_code=status.HTTP_201_CREATED)
+async def recruit_partner(
+    body: PartnerCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    partner=Depends(get_current_partner),
+):
+    """
+    Recruit a new sub-partner.
+
+    ``parent_partner_id`` is set to the caller here and nowhere else outside
+    admin account creation (which always leaves it null) — this is the
+    portal-side replacement for editing the DB directly to build out a
+    recruitment tree. The new partner signs in with the email/password given
+    here; there is no email service in this codebase to send an invite link,
+    so credentials are handed over out of band, the same way the seed data's
+    demo partner passwords are.
+    """
+    try:
+        recruit = await PartnerService.create(
+            db,
+            email=body.email,
+            password=body.password,
+            full_name=body.full_name,
+            phone=body.phone,
+            parent_partner_id=partner.partner_id,
+        )
+    except PartnerEmailTakenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "error": {"message": str(exc), "code": "EMAIL_TAKEN"},
+            },
+        )
+
+    logger.info(f"Partner {partner.email} recruited {recruit.email}")
+    return {
+        "success": True,
+        "data": {
+            "partnerId": str(recruit.partner_id),
+            "email": recruit.email,
+            "fullName": recruit.full_name,
+        },
+        "message": "Partner recruited successfully.",
     }
 
 

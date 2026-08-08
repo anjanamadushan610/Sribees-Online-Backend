@@ -16,6 +16,7 @@ from app.api.v1 import (
     admin_inventory,
     admin_locations,
     admin_orders,
+    admin_partners,
     admin_settings,
     admin_users,
     app_public,
@@ -182,6 +183,16 @@ router.include_router(
     admin_users.router,
     prefix="/admin/users",
     tags=["Admin Users"],
+)
+
+# Admin Partner management (/admin/partners) — Super Admin only. CRUD for the
+# professional referral team plus commission-ledger visibility and
+# out-of-band settlement tracking. Replaces the raw DB inserts the seed data
+# used to require.
+router.include_router(
+    admin_partners.router,
+    prefix="/admin/partners",
+    tags=["Admin Partners"],
 )
 
 # Admin Order management (/admin/orders). Branch-scoped via inject_branch_filter;
