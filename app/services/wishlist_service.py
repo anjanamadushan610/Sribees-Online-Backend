@@ -9,6 +9,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.product import Product
 from app.models.wishlist import WishlistItem
 
 
@@ -24,7 +25,12 @@ class WishlistService:
         result = await db.execute(
             select(WishlistItem)
             .options(
-                selectinload(WishlistItem.product),
+                # format_wishlist_item reads product.images, which is
+                # lazy by default — without this nested eager-load it
+                # triggers an async lazy-load outside of a request context
+                # and 500s (SQLAlchemy's "greenlet_spawn has not been
+                # called").
+                selectinload(WishlistItem.product).selectinload(Product.images),
                 selectinload(WishlistItem.variant)
             )
             .where(WishlistItem.user_id == user_id)

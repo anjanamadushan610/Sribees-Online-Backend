@@ -7,12 +7,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
+from app.config.redis import get_redis
 from app.config.settings import settings
 from app.core.dependencies import get_current_user
 from app.schemas.cart import WishlistItemAdd
+from app.services import branch_service
+from app.services.product_service import ProductService
 from app.services.wishlist_service import WishlistService
 
 # Prefix "/wishlist" is applied by app/api/v1/router.py — do not repeat it here.
@@ -23,7 +27,7 @@ router = APIRouter(tags=["Wishlist"])
 # Helper Functions
 # ============================================================================
 
-def format_wishlist_item(item) -> dict:
+def format_wishlist_item(item, cashback_map: Optional[dict] = None) -> dict:
     """Format wishlist item for response."""
     data = {
         "wishlist_item_id": str(item.wishlist_item_id),
@@ -41,13 +45,17 @@ def format_wishlist_item(item) -> dict:
             "name": item.product.name,
             "slug": item.product.slug,
             "price": float(item.product.price) if item.product.price else 0,
-            # The product-wide rate, matching the global price this endpoint
-            # already returns. A branch override is not applied here because
-            # the wishlist is not branch-scoped.
+            # Branch-resolved rate when the caller's branch is known (see
+            # get_wishlist), falling back to the product/platform default
+            # otherwise — same resolution order as the product listing.
             "cashback_percentage": (
-                item.product.cashback_percentage
-                if item.product.cashback_percentage is not None
-                else float(settings.cashback_rate) * 100
+                cashback_map.get(str(item.product.product_id))
+                if cashback_map is not None
+                else (
+                    item.product.cashback_percentage
+                    if item.product.cashback_percentage is not None
+                    else float(settings.cashback_rate) * 100
+                )
             ),
             "images": [
                 {"image_url": img.image_url, "is_primary": img.is_primary}
@@ -86,6 +94,7 @@ def format_wishlist_item(item) -> dict:
 @router.get("", response_model=dict)
 async def get_wishlist(
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
     current_user = Depends(get_current_user)
 ):
     """
@@ -94,10 +103,25 @@ async def get_wishlist(
     try:
         items = await WishlistService.get_by_user_id(db, current_user.user_id)
 
+        # Branch-resolved cashback, same source as the product listing and
+        # checkout quote. Falls through to product/platform default when the
+        # customer has no branch selected yet (branch_id=None is a valid
+        # input to get_cashback_map).
+        branch_id = None
+        context = await branch_service.get_branch_context(redis, str(current_user.user_id))
+        if context is not None:
+            try:
+                branch_id = UUID(context["branch_id"])
+            except (KeyError, ValueError, TypeError):
+                branch_id = None
+
+        product_ids = [item.product.product_id for item in items if item.product]
+        cashback_map = await ProductService.get_cashback_map(db, product_ids, branch_id)
+
         return {
             "success": True,
             "data": {
-                "items": [format_wishlist_item(item) for item in items],
+                "items": [format_wishlist_item(item, cashback_map) for item in items],
                 "count": len(items)
             }
         }
