@@ -85,6 +85,16 @@ class User(Base):
             "or the commission ledger stops being auditable."
         ),
     )
+    referred_by_partner_id: Optional[UUID] = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("partners.partner_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment=(
+            "Professional partner who signed this customer up. WRITE ONCE, and "
+            "mutually exclusive with referred_by_user_id."
+        ),
+    )
     referred_at: Optional[datetime] = Column(
         DateTime(timezone=True),
         nullable=True,

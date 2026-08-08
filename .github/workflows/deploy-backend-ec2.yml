@@ -261,6 +261,33 @@ jobs:
               echo "No .sql migration files found in the image — skipping migrations."
             fi
 
+            echo "==== 7c. POST-DEPLOY SMOKE TEST ===="
+            # Migrations succeeding only proves the SQL ran. This proves the
+            # deployed service actually works: the seeded admin can log in, the
+            # analytics endpoints answer, and the figures they return are
+            # non-zero and agree with each other. An empty database answers
+            # every one of those requests with a cheerful 200 and a screen of
+            # zeros — this is the check that tells the two apart.
+            #
+            # Runs inside the app container, against localhost, using only the
+            # standard library, so it needs nothing installed on the host.
+            SMOKE_EMAIL=$(grep -m1 '^SMOKE_ADMIN_EMAIL=' .env 2>/dev/null | cut -d '=' -f2- | cut -d '#' -f1 | tr -d '[:space:]' || true)
+            SMOKE_EMAIL="${SMOKE_EMAIL:-superadmin@sribeesonline.lk}"
+            SMOKE_PASSWORD=$(grep -m1 '^SMOKE_ADMIN_PASSWORD=' .env 2>/dev/null | cut -d '=' -f2- | cut -d '#' -f1 | tr -d '[:space:]' || true)
+            SMOKE_PASSWORD="${SMOKE_PASSWORD:-Admin@123}"
+
+            if sudo docker compose exec -T fastapi_backend \
+                 python scripts/smoke_test.py \
+                   --base-url http://127.0.0.1:8000 \
+                   --email "$SMOKE_EMAIL" \
+                   --password "$SMOKE_PASSWORD"; then
+              echo "Smoke test passed."
+            else
+              echo "ERROR: post-deploy smoke test FAILED — the service is up but not working."
+              sudo docker compose logs --tail 80 fastapi_backend || true
+              exit 1
+            fi
+
             echo "==== 8. NGINX REVERSE PROXY & SSL ===="
             NGINX_CONF="/etc/nginx/sites-available/sribees"
 

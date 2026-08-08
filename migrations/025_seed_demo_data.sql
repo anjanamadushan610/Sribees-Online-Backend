@@ -254,10 +254,31 @@ WITH ranked AS (
     SELECT c.*, row_number() OVER (PARTITION BY c.branch_id ORDER BY c.user_id) - 1 AS rn,
            count(*)        OVER (PARTITION BY c.branch_id)                          AS n
     FROM _demo_customer c
+),
+cohort AS (
+    -- The last two customers of each branch do not start ordering until 20 days
+    -- ago. Without a joining date every customer is active in every window, so
+    -- "new customers" reads 0 and the customer delta reads 0.0% forever — two
+    -- KPIs that look broken precisely because the data is too uniform.
+    SELECT r.*,
+           CASE WHEN r.rn >= r.n - 2 THEN CURRENT_DATE - 20 ELSE CURRENT_DATE - 200 END
+               AS joined_on
+    FROM ranked r
+),
+eligible AS (
+    SELECT o.order_id,
+           c.user_id,
+           c.address_id,
+           row_number() OVER (PARTITION BY o.order_id ORDER BY c.user_id) - 1 AS erank,
+           count(*)     OVER (PARTITION BY o.order_id)                        AS ecount
+    FROM _demo_order o
+    JOIN cohort c
+      ON c.branch_id = o.branch_id
+     AND c.joined_on <= o.order_date
 )
-SELECT o.*, r.user_id, r.address_id
+SELECT o.*, e.user_id, e.address_id
 FROM _demo_order o
-JOIN ranked r ON r.branch_id = o.branch_id AND r.rn = (o.cust_roll % r.n);
+JOIN eligible e ON e.order_id = o.order_id AND e.erank = (o.cust_roll % e.ecount);
 
 -- Line items: 1–4 distinct products per order, priced at the branch's price
 -- when it overrides the global one (that is what the customer actually paid).

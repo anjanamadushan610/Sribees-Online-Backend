@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import settings
 from app.models.order import Order
+from app.models.partner import Partner
 from app.models.referral import ReferralCommission, ReferralCommissionStatus
 from app.models.user import User
 from app.models.wallet import WalletTransactionType
@@ -131,11 +132,33 @@ class ReferralService:
         if not cleaned:
             raise ReferralError("INVALID_CODE", "Enter an invite code.")
 
-        if user.referred_by_user_id is not None:
+        if user.referred_by_user_id is not None or user.referred_by_partner_id is not None:
             raise ReferralError(
                 "ALREADY_REFERRED",
                 "This account already used an invite code.",
             )
+
+        # Partners first: a professional agent's code and a customer's invite
+        # code look identical to whoever types them, so one field accepts both
+        # and the server decides which ledger the commission belongs to.
+        partner_row = await db.execute(
+            select(Partner).where(
+                Partner.referral_code == cleaned,
+                Partner.is_active.is_(True),
+            )
+        )
+        partner = partner_row.scalar_one_or_none()
+
+        if partner is not None:
+            user.referred_by_partner_id = partner.partner_id
+            user.referred_at = datetime.now(timezone.utc)
+            if commit:
+                await db.commit()
+                await db.refresh(user)
+            logger.info(
+                f"Referral bound: user={user.user_id} partner={partner.partner_id}"
+            )
+            return user
 
         result = await db.execute(
             select(User).where(User.referral_code == cleaned)
@@ -170,78 +193,150 @@ class ReferralService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def accrue_for_order(
+    def _commission_amount(basis: Decimal, rate: float) -> Decimal:
+        return _money(basis * Decimal(str(rate)) / Decimal("100"))
+
+    @staticmethod
+    async def _add_commission(
         db: AsyncSession,
-        order: Order,
         *,
-        commit: bool = False,
+        order: Order,
+        source_user_id: UUID,
+        level: int,
+        rate: float,
+        basis: Decimal,
+        beneficiary_user_id: Optional[UUID] = None,
+        beneficiary_partner_id: Optional[UUID] = None,
     ) -> Optional[ReferralCommission]:
         """
-        Record the pending commission an order owes its buyer's referrer.
+        Write one commission row, or nothing if it already exists.
 
-        No-ops when the buyer has no referrer, when the basis is zero, or when
-        a row already exists for this (order, beneficiary, level) — the unique
-        constraint is the authority, and hitting it is treated as "already
-        done", not as an error.
-
-        Only level 1 is accrued here. The professional referral team's second
-        tier will add a level-2 row against the same order; the schema already
-        allows it.
+        Uses a SAVEPOINT rather than a bare flush: this runs inside the
+        caller's order-creation transaction, and letting a duplicate-key error
+        roll that back would discard the order itself over a commission we did
+        not need to write.
         """
-        buyer = await db.get(User, order.user_id)
-        if buyer is None or buyer.referred_by_user_id is None:
-            return None
-
-        if buyer.referred_by_user_id == buyer.user_id:
-            # Should be impossible (DB check constraint), but paying it would
-            # be worse than logging it.
-            logger.warning(f"Self-referral on order {order.order_number}; skipped")
-            return None
-
-        basis = Decimal(str(order.subtotal or 0))
-        if basis <= 0:
-            return None
-
-        rate = float(settings.referral_commission_percent)
-        amount = _money(basis * Decimal(str(rate)) / Decimal("100"))
+        amount = ReferralService._commission_amount(basis, rate)
         if amount <= 0:
             return None
 
         commission = ReferralCommission(
             order_id=order.order_id,
             order_number=order.order_number,
-            beneficiary_user_id=buyer.referred_by_user_id,
-            source_user_id=buyer.user_id,
-            level=1,
+            beneficiary_user_id=beneficiary_user_id,
+            beneficiary_partner_id=beneficiary_partner_id,
+            source_user_id=source_user_id,
+            level=level,
             rate_percentage=rate,
             order_subtotal=basis,
             amount=amount,
             status=ReferralCommissionStatus.PENDING,
         )
 
-        # SAVEPOINT, not a plain flush: this runs inside the caller's order-
-        # creation transaction. Letting a duplicate-key error roll that back
-        # would discard the order itself over a commission we did not need to
-        # write. Only the insert is undone.
         try:
             async with db.begin_nested():
                 db.add(commission)
                 await db.flush()
         except IntegrityError:
-            # Already accrued for this order — a retried transition, not a bug.
+            # Already accrued for this (order, beneficiary, level) — a retried
+            # transition, not a bug.
             logger.info(
-                f"Referral commission already exists for order {order.order_number}"
+                f"Referral commission L{level} already exists for order "
+                f"{order.order_number}"
             )
             return None
 
-        if commit:
-            await db.commit()
-
         logger.info(
-            f"Referral commission accrued: {amount} to {buyer.referred_by_user_id} "
-            f"from order {order.order_number}"
+            f"Referral commission L{level} accrued: {amount} on order "
+            f"{order.order_number}"
         )
         return commission
+
+    @staticmethod
+    async def accrue_for_order(
+        db: AsyncSession,
+        order: Order,
+        *,
+        commit: bool = False,
+    ) -> list[ReferralCommission]:
+        """
+        Record what an order owes, to whoever referred the buyer.
+
+        Two shapes:
+
+        * **Referred by another customer** — one level-1 row to that customer.
+        * **Referred by a professional partner** — level 1 to that partner and,
+          if the partner was itself recruited, level 2 to their upline. Only
+          two levels: the depth is fixed here rather than walked, because an
+          unbounded chain is a pyramid, not a referral programme.
+
+        No-ops when the buyer has no referrer or the basis is zero. Safe to run
+        twice; the partial unique indexes are the authority.
+        """
+        buyer = await db.get(User, order.user_id)
+        if buyer is None:
+            return []
+
+        basis = Decimal(str(order.subtotal or 0))
+        if basis <= 0:
+            return []
+
+        rate = float(settings.referral_commission_percent)
+        created: list[ReferralCommission] = []
+
+        # --- Referred by a professional partner ---------------------------
+        if buyer.referred_by_partner_id is not None:
+            row = await ReferralService._add_commission(
+                db,
+                order=order,
+                source_user_id=buyer.user_id,
+                level=1,
+                rate=rate,
+                basis=basis,
+                beneficiary_partner_id=buyer.referred_by_partner_id,
+            )
+            if row is not None:
+                created.append(row)
+
+            partner = await db.get(Partner, buyer.referred_by_partner_id)
+            upline_id = partner.parent_partner_id if partner else None
+            if upline_id is not None and upline_id != buyer.referred_by_partner_id:
+                row2 = await ReferralService._add_commission(
+                    db,
+                    order=order,
+                    source_user_id=buyer.user_id,
+                    level=2,
+                    rate=float(settings.referral_level2_percent),
+                    basis=basis,
+                    beneficiary_partner_id=upline_id,
+                )
+                if row2 is not None:
+                    created.append(row2)
+
+        # --- Referred by another customer ---------------------------------
+        elif buyer.referred_by_user_id is not None:
+            if buyer.referred_by_user_id == buyer.user_id:
+                # Should be impossible (DB check constraint), but paying it
+                # would be worse than logging it.
+                logger.warning(
+                    f"Self-referral on order {order.order_number}; skipped"
+                )
+            else:
+                row = await ReferralService._add_commission(
+                    db,
+                    order=order,
+                    source_user_id=buyer.user_id,
+                    level=1,
+                    rate=rate,
+                    basis=basis,
+                    beneficiary_user_id=buyer.referred_by_user_id,
+                )
+                if row is not None:
+                    created.append(row)
+
+        if created and commit:
+            await db.commit()
+        return created
 
     # ------------------------------------------------------------------
     # Vesting and reversal

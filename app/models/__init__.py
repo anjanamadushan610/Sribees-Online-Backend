@@ -11,6 +11,7 @@ from app.models.category import Category
 from app.models.coupon import Coupon, CouponDiscountType
 from app.models.notification import Notification, NotificationType, PushToken
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
+from app.models.partner import Partner
 from app.models.referral import ReferralCommission, ReferralCommissionStatus
 from app.models.product import (
     BranchInventory,
@@ -41,6 +42,7 @@ __all__ = [
     # Banner
     "Banner",
     # Referrals
+    "Partner",
     "ReferralCommission",
     "ReferralCommissionStatus",
     # Category

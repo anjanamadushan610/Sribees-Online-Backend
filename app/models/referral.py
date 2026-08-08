@@ -33,7 +33,6 @@ from sqlalchemy import (
     Numeric,
     SmallInteger,
     String,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -80,12 +79,22 @@ class ReferralCommission(Base):
     # and so a deleted order still reads sensibly in the ledger.
     order_number = Column(String(50), nullable=True)
 
+    # Exactly one of these is set — a commission is owed either to a customer
+    # who invited a friend, or to a professional partner. Enforced by
+    # chk_commission_single_beneficiary in the database.
     beneficiary_user_id = Column(
         UUID(as_uuid=True),
         ForeignKey("users.user_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
-        comment="Who earns this commission (the referrer)",
+        comment="Customer who earns this commission (the referrer)",
+    )
+    beneficiary_partner_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("partners.partner_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment="Professional partner who earns this commission",
     )
     source_user_id = Column(
         UUID(as_uuid=True),
@@ -142,16 +151,14 @@ class ReferralCommission(Base):
     )
 
     beneficiary = relationship("User", foreign_keys=[beneficiary_user_id])
+    beneficiary_partner = relationship("Partner", foreign_keys=[beneficiary_partner_id])
     source_user = relationship("User", foreign_keys=[source_user_id])
 
     __table_args__ = (
-        # Idempotency: one commission per order, per beneficiary, per level.
-        UniqueConstraint(
-            "order_id",
-            "beneficiary_user_id",
-            "level",
-            name="uq_referral_commission_order_beneficiary_level",
-        ),
+        # Idempotency lives in two PARTIAL unique indexes created by migration
+        # 027 — one per beneficiary type. A plain composite UNIQUE cannot do
+        # the job here because NULLs never collide, so rows owed to a partner
+        # (user id NULL) would not be deduplicated at all.
         # The two read patterns: "my earnings summary" and "what did this
         # friend earn me".
         Index("idx_referral_comm_beneficiary_status", "beneficiary_user_id", "status"),

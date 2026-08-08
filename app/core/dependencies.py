@@ -59,6 +59,12 @@ async def get_current_user(
     if payload is None:
         raise InvalidTokenError()
 
+    # Realm separation: an admin or partner token must never authenticate as a
+    # customer. The user lookup below would fail anyway, but relying on "that
+    # id happens not to exist in this table" is not a security boundary.
+    if payload.get("is_admin") or payload.get("is_partner"):
+        raise InvalidTokenError(message="Wrong token type for this endpoint")
+
     user_id = payload.get("sub")
     if not user_id:
         raise InvalidTokenError()
@@ -135,7 +141,12 @@ async def get_current_admin(
     if not admin_id:
         raise InvalidTokenError()
 
-    # Check if it's an admin token
+    # Check if it's an admin token. A partner token carries is_partner and no
+    # is_admin, so it is refused here — the professional referral team has no
+    # route into the admin surface even if a role check elsewhere is wrong.
+    if payload.get("is_partner"):
+        raise AuthenticationError(message="Admin access required")
+
     is_admin = payload.get("is_admin", False)
     if not is_admin:
         raise AuthenticationError(message="Admin access required")
@@ -155,6 +166,49 @@ async def get_current_admin(
         raise AuthenticationError(message="Admin account is deactivated")
 
     return admin
+
+
+async def get_current_partner(
+    credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(security)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """
+    Authenticate a professional referral partner.
+
+    Partners are a separate identity store from admins and customers, and this
+    is the only dependency that accepts their tokens. It requires the
+    ``is_partner`` claim positively — a token without it is refused even if it
+    is otherwise valid, so an admin or customer token cannot reach /partner/*
+    any more than a partner token can reach /admin/*.
+    """
+    if credentials is None:
+        raise AuthenticationError(message="Partner authentication required")
+
+    payload = verify_token(credentials.credentials, token_type="access")
+    if payload is None:
+        raise InvalidTokenError()
+
+    if not payload.get("is_partner"):
+        raise AuthenticationError(message="Partner access required")
+
+    partner_id = payload.get("sub")
+    if not partner_id:
+        raise InvalidTokenError()
+
+    from app.models.partner import Partner
+
+    result = await db.execute(
+        select(Partner).where(Partner.partner_id == UUID(partner_id))
+    )
+    partner = result.scalar_one_or_none()
+
+    if partner is None:
+        raise InvalidTokenError(message="Partner not found")
+
+    if not partner.is_active:
+        raise AuthenticationError(message="Partner account is deactivated")
+
+    return partner
 
 
 async def require_super_admin(
@@ -360,6 +414,9 @@ CurrentUserOptional = Annotated[Optional[dict], Depends(get_current_user_optiona
 
 # Current admin dependency
 CurrentAdmin = Annotated[dict, Depends(get_current_admin)]
+
+# Current partner dependency (professional referral team)
+CurrentPartner = Annotated[dict, Depends(get_current_partner)]
 
 # Pagination dependency
 Pagination = Annotated[PaginationParams, Depends(get_pagination)]

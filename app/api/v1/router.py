@@ -28,6 +28,7 @@ from app.api.v1 import (
     marketing,
     notifications,
     orders,
+    partner,
     payments,
     products,
     referrals,
@@ -247,6 +248,16 @@ router.include_router(
     referrals.router,
     prefix="/referrals",
     tags=["Referrals"],
+)
+
+# Partner portal (/partner) — the professional referral team.
+# A SEPARATE auth realm: every route requires the `is_partner` token claim,
+# which /admin/* refuses and which admin/customer tokens do not carry. Served
+# by its own frontend so the two never share an origin or a session.
+router.include_router(
+    partner.router,
+    prefix="/partner",
+    tags=["Partner Portal"],
 )
 
 router.include_router(
