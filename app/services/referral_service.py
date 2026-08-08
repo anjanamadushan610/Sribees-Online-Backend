@@ -16,8 +16,8 @@ retried, webhooks get replayed, and users double-tap buttons; none of that may
 produce a second payout.
 """
 import secrets
-from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID
 

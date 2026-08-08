@@ -12,7 +12,6 @@ from app.models.coupon import Coupon, CouponDiscountType
 from app.models.notification import Notification, NotificationType, PushToken
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
-from app.models.referral import ReferralCommission, ReferralCommissionStatus
 from app.models.product import (
     BranchInventory,
     Product,
@@ -22,6 +21,7 @@ from app.models.product import (
     VariantOption,
     VariantType,
 )
+from app.models.referral import ReferralCommission, ReferralCommissionStatus
 from app.models.user import (
     Address,
     EmailVerification,

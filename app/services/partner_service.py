@@ -16,7 +16,7 @@ Rates come from settings and are snapshotted onto each commission row by
 """
 import secrets
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
