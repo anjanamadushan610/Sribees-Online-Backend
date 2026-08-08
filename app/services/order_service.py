@@ -261,6 +261,13 @@ class OrderService:
                 order_number=order_number,
             )
 
+        # Record what this order owes the buyer's referrer, if they have one.
+        # Staged in this transaction as `pending`; it only becomes claimable
+        # when the order is delivered.
+        from app.services.referral_service import ReferralService
+
+        await ReferralService.accrue_for_order(db, order)
+
         await db.commit()
         await db.refresh(order)
 
@@ -540,6 +547,17 @@ class OrderService:
                 f"{order.order_number} (user {order.user_id})"
             )
 
+        # 4. Void the referrer's commission on this order. If it was already
+        #    paid out, it comes back out of their wallet — otherwise ordering,
+        #    claiming and cancelling in a loop would be free money.
+        from app.services.referral_service import ReferralService
+
+        await ReferralService.reverse_for_order(
+            db,
+            order.order_id,
+            reason=f"Order {order.order_number} cancelled",
+        )
+
     @staticmethod
     async def update_status(
         db: AsyncSession,
@@ -551,6 +569,8 @@ class OrderService:
         # once (a no-op re-cancel must not double-release).
         was_cancelled = order.status == OrderStatus.CANCELLED.value
 
+        was_delivered = order.status == OrderStatus.DELIVERED.value
+
         order.status = status.value
 
         # Set timestamps based on status
@@ -559,6 +579,12 @@ class OrderService:
             order.shipped_at = now
         elif status == OrderStatusEnum.DELIVERED:
             order.delivered_at = now
+            if not was_delivered:
+                # Referral commission only becomes real once the goods arrive —
+                # accruing on placement would let someone order, claim, cancel.
+                from app.services.referral_service import ReferralService
+
+                await ReferralService.mark_claimable_for_order(db, order.order_id)
         elif status == OrderStatusEnum.CANCELLED:
             order.cancelled_at = now
             if not was_cancelled:

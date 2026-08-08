@@ -30,6 +30,7 @@ from app.api.v1 import (
     orders,
     payments,
     products,
+    referrals,
     reviews,
     search,
     session,
@@ -237,6 +238,15 @@ router.include_router(
     banners.router,
     prefix="/banners",
     tags=["Banners"],
+)
+
+# Referrals (/referrals) — invite codes, commission ledger, wallet payout.
+# Every route is scoped to the authenticated user; no beneficiary id is ever
+# accepted from the client.
+router.include_router(
+    referrals.router,
+    prefix="/referrals",
+    tags=["Referrals"],
 )
 
 router.include_router(

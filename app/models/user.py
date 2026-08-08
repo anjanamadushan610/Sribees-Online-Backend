@@ -67,6 +67,29 @@ class User(Base):
         nullable=False,
     )
 
+    # Referrals
+    referral_code: Optional[str] = Column(
+        String(12),
+        unique=True,
+        nullable=True,
+        index=True,
+        comment="This user's own invite code. Generated on first request.",
+    )
+    referred_by_user_id: Optional[UUID] = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment=(
+            "Who invited this user. WRITE ONCE — never update after it is set, "
+            "or the commission ledger stops being auditable."
+        ),
+    )
+    referred_at: Optional[datetime] = Column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     # Two-factor authentication
     two_factor_enabled: bool = Column(
         Boolean,

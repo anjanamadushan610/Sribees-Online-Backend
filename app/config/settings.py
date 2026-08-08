@@ -50,6 +50,28 @@ class Settings(BaseSettings):
     wallet_currency: str = Field(default="LKR", description="Wallet currency code")
 
     # =========================================================================
+    # Referrals
+    # =========================================================================
+    referral_commission_percent: float = Field(
+        default=2.0,
+        ge=0.0,
+        le=100.0,
+        description=(
+            "Percentage of a referred user's order subtotal paid to their "
+            "referrer (2.0 = 2%). Snapshotted onto each commission row, so "
+            "changing this never rewrites what people already earned."
+        ),
+    )
+    referral_code_length: int = Field(
+        default=8,
+        ge=6,
+        le=12,
+        description="Length of generated invite codes. Shorter is easier to "
+                    "share but easier to enumerate; 8 over a 31-char alphabet "
+                    "is ~10^12 combinations.",
+    )
+
+    # =========================================================================
     # Order Pricing
     # =========================================================================
     flat_delivery_fee: float = Field(

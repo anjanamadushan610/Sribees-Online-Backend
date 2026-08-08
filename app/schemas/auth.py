@@ -29,6 +29,14 @@ class RegisterRequest(BaseModel):
         max_length=100,
         description="User's full name",
     )
+    referral_code: Optional[str] = Field(
+        None,
+        max_length=12,
+        description=(
+            "Invite code of the user who referred this signup. Optional, and "
+            "a bad code never blocks registration — it is simply not applied."
+        ),
+    )
 
     @field_validator("password")
     @classmethod

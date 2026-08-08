@@ -83,6 +83,28 @@ class AuthService:
         db.add(user)
         await db.flush()  # Get user_id
 
+        # Apply the invite code, if one was supplied. Registration is the right
+        # moment for this — the binding is write-once, so doing it here means it
+        # can never be re-pointed later.
+        #
+        # A bad code must not fail the signup: the user has already given us
+        # their details, and losing the account over a mistyped code is a worse
+        # outcome than losing the attribution.
+        if data.referral_code:
+            from app.services.referral_service import (
+                ReferralError,
+                ReferralService,
+            )
+
+            try:
+                await ReferralService.bind_referrer(
+                    db, user, data.referral_code, commit=False
+                )
+            except ReferralError as exc:
+                logger.info(
+                    f"Referral code not applied for {user.email}: {exc.code}"
+                )
+
         # Create email verification token
         verification_token = secrets.token_urlsafe(32)
         expires_at = datetime.utcnow() + timedelta(hours=24)
