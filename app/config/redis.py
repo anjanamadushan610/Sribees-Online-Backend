@@ -217,6 +217,16 @@ class RedisKeys:
         """Short-lived phone-verification OTP key."""
         return f"otp:phone:{user_id}"
 
+    # AI shopping chat history key
+    @staticmethod
+    def chat_history(session_id: str) -> str:
+        """
+        AI chat conversation history. ``session_id`` is str(user_id) for a
+        logged-in shopper or "guest:{device_id}" for a guest — same session
+        identity convention branch context uses.
+        """
+        return f"chat:history:{session_id}"
+
 
 # ============================================================================
 # Redis TTL Constants (in seconds)
@@ -249,6 +259,9 @@ class RedisTTL:
 
     # Branch context TTL (30 days — same as remember-me session)
     BRANCH_CONTEXT = 30 * 24 * 60 * 60
+
+    # AI chat history TTL (7 days — enough for continuity, not indefinite)
+    CHAT_HISTORY = 7 * 24 * 60 * 60
 
     # App configuration cache TTL
     SPLASH_CONFIG = 60 * 60  # 1 hour

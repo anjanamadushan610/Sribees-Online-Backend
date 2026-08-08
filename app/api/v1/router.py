@@ -25,6 +25,7 @@ from app.api.v1 import (
     branch,
     cart,
     categories,
+    chat,
     locations,
     marketing,
     notifications,
@@ -86,6 +87,15 @@ router.include_router(
     wishlist.router,
     prefix="/wishlist",
     tags=["Wishlist"],
+)
+
+# AI Shopping Chat (/chat) — Gemini-backed assistant over the real,
+# branch-visible catalog. Works for guests too, same X-Device-Id convention
+# as /products/search.
+router.include_router(
+    chat.router,
+    prefix="/chat",
+    tags=["AI Chat"],
 )
 
 router.include_router(
