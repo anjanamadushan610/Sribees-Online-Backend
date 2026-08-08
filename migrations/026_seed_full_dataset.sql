@@ -330,10 +330,7 @@ WHERE t.wallet_id = w.wallet_id
   AND w.balance IS DISTINCT FROM COALESCE(t.total, 0);
 
 -- -----------------------------------------------------------------------------
--- 7. Referral codes
---
--- Just the codes here. Who referred whom is decided in 028, once the partner
--- schema exists — see the note below.
+-- 7. Referrals — who invited whom, and what it earned them
 -- -----------------------------------------------------------------------------
 UPDATE users u
 SET referral_code = 'SB' || upper(substr(md5('ref:' || u.user_id::text), 1, 6)),
@@ -341,11 +338,76 @@ SET referral_code = 'SB' || upper(substr(md5('ref:' || u.user_id::text), 1, 6)),
 WHERE u.email LIKE 'demo.customer%@sribees.test'
   AND u.referral_code IS NULL;
 
--- The customer-to-customer chain and the commissions it earns live in
--- 028_seed_partners.sql, not here. 027 adds a check constraint saying a
--- customer is referred by another customer OR by a partner, never both — so
--- whichever file assigns a referrer has to be able to see both columns, and
--- `referred_by_partner_id` does not exist yet at this point in the sequence.
+-- Chain the demo customers: #2 was invited by #1, #3 by #2, and so on, so the
+-- referral screen shows a real tree rather than one isolated pair.
+--
+-- The guard is `referred_at IS NULL`, not `referred_by_user_id IS NULL`.
+-- 027_partners.sql adds a second way to be referred — by a partner — under a
+-- check constraint saying it is one or the other, never both, and 028 moves
+-- some of these customers onto a partner by clearing referred_by_user_id. A
+-- guard that only looked at referred_by_user_id would see those rows as
+-- unreferred on the NEXT deploy and re-chain them, violating the constraint and
+-- failing the migration. referred_at stays set through that move, and it is
+-- also the honest question: has this customer been referred by anyone at all?
+-- Naming the partner column directly is not an option here — it does not exist
+-- yet at this point in the sequence.
+WITH ordered AS (
+    SELECT user_id, row_number() OVER (ORDER BY email) AS n
+    FROM users
+    WHERE email LIKE 'demo.customer%@sribees.test'
+)
+UPDATE users u
+SET referred_by_user_id = parent.user_id,
+    referred_at         = NOW() - INTERVAL '140 days',
+    updated_at          = NOW()
+FROM ordered child
+JOIN ordered parent ON parent.n = child.n - 1
+WHERE u.user_id = child.user_id
+  AND u.referred_at IS NULL;
+
+-- Level-1 commission for the inviting customer on each of their invitee's
+-- orders. Status tracks the order: only a delivered order's commission is
+-- claimable, and a cancelled or refunded one is reversed — the whole point of
+-- the status column is that money is not owed on an order that came back.
+INSERT INTO referral_commissions (
+    commission_id, order_id, order_number, beneficiary_user_id, source_user_id,
+    level, rate_percentage, order_subtotal, amount, status, created_at, updated_at
+)
+SELECT
+    md5('sribees:demo-commission:' || o.order_id::text || ':1')::uuid,
+    o.order_id,
+    o.order_number,
+    buyer.referred_by_user_id,
+    o.user_id,
+    1,
+    3.0,
+    o.subtotal,
+    ROUND(o.subtotal * 0.03, 2),
+    CASE
+        WHEN o.status IN ('cancelled', 'refunded') THEN 'reversed'
+        WHEN o.status = 'delivered'                THEN 'claimable'
+        ELSE 'pending'
+    END,
+    o.created_at,
+    o.created_at
+FROM orders o
+JOIN users buyer ON buyer.user_id = o.user_id
+WHERE buyer.referred_by_user_id IS NOT NULL
+  AND o.created_at >= NOW() - INTERVAL '60 days'
+  -- NOT EXISTS rather than ON CONFLICT, deliberately. 027_partners.sql replaces
+  -- the plain unique constraint on (order_id, beneficiary_user_id, level) with
+  -- two PARTIAL unique indexes, one per beneficiary kind. A partial index
+  -- cannot arbitrate an ON CONFLICT unless the statement repeats its exact
+  -- WHERE predicate — so an ON CONFLICT written against the old constraint
+  -- starts failing the moment 027 lands, and it fails on the SECOND deploy
+  -- rather than the first, when nobody is looking for it. This guard does not
+  -- care what shape the index is.
+  AND NOT EXISTS (
+      SELECT 1 FROM referral_commissions rc
+      WHERE rc.order_id = o.order_id
+        AND rc.beneficiary_user_id = buyer.referred_by_user_id
+        AND rc.level = 1
+  );
 
 -- -----------------------------------------------------------------------------
 -- 8. Reviews — only from customers who actually received the product
