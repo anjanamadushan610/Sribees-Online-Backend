@@ -196,6 +196,15 @@ WITH cal AS (
     FROM generate_series(0, 119) AS offs
 ),
 branch AS (
+    -- Matched by `code`, not the branch_id 010_seed_branches.sql assigns:
+    -- production already had CMB/KDY/GLE created through the admin UI (with
+    -- app-generated UUIDs) before that migration existed, and its ON CONFLICT
+    -- intentionally never rewrites branch_id on an existing row (FKs from
+    -- branch_inventory/orders/banners would cascade). Filtering on the
+    -- b0000000-... placeholders here only ever matched NGB and KUR, the two
+    -- branches that genuinely were created fresh by that migration — Colombo,
+    -- Kandy and Galle silently got zero orders for it, despite carrying the
+    -- heaviest base_volume below.
     SELECT branch_id, code,
            CASE code
                WHEN 'CMB' THEN 9   -- flagship
@@ -206,13 +215,7 @@ branch AS (
                ELSE 2
            END AS base_volume
     FROM branches
-    WHERE branch_id IN (
-        'b0000000-0000-4000-a000-000000000001',
-        'b0000000-0000-4000-a000-000000000002',
-        'b0000000-0000-4000-a000-000000000003',
-        'b0000000-0000-4000-a000-000000000004',
-        'b0000000-0000-4000-a000-000000000005'
-    )
+    WHERE code IN ('CMB', 'KDY', 'GLE', 'NGB', 'KUR')
 ),
 volume AS (
     SELECT
