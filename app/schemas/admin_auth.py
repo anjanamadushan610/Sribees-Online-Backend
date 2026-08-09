@@ -49,6 +49,17 @@ class UpdateAdminRequest(BaseModel):
     is_active: Optional[bool] = None
 
 
+class UpdateProfileRequest(BaseModel):
+    """Self-service profile update request (name only — email is the login identity)."""
+    full_name: str = Field(..., min_length=2, max_length=100)
+
+
+class ChangePasswordRequest(BaseModel):
+    """Self-service password change request — requires the current password."""
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+
 # Response Schemas
 class AdminResponse(BaseModel):
     """Admin user response."""

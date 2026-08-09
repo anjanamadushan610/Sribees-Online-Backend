@@ -115,7 +115,7 @@ services:
   # ===========================================================================
   fastapi_backend:
     build:
-      context: ./fastapi_backend
+      context: .
       dockerfile: Dockerfile
       target: development
     container_name: sribees_backend
@@ -167,7 +167,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./fastapi_backend:/app
+      - .:/app
       - backend_logs:/app/logs
     depends_on:
       postgres_db:
@@ -190,7 +190,7 @@ services:
   # ===========================================================================
   admin:
     build:
-      context: ./admin
+      context: ../admin
       dockerfile: Dockerfile
     container_name: sribees_admin
     restart: unless-stopped
@@ -200,8 +200,8 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./admin/src:/app/src
-      - ./admin/public:/app/public
+      - ../admin/src:/app/src
+      - ../admin/public:/app/public
     depends_on:
       - fastapi_backend
     networks:

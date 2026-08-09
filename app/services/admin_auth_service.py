@@ -205,6 +205,64 @@ class AdminAuthService:
         )
 
     @staticmethod
+    async def update_profile(admin_id: UUID, full_name: str, db: AsyncSession) -> AdminProfileResponse:
+        """
+        Self-service profile update. Only the display name is editable here —
+        email is the login identity and role/branch are Super-Admin-managed
+        (see admin_users.py).
+        """
+        result = await db.execute(select(Admin).where(Admin.admin_id == admin_id))
+        admin = result.scalar_one_or_none()
+        if not admin:
+            raise ValueError("Admin not found")
+
+        admin.full_name = full_name.strip()
+        await db.commit()
+        await db.refresh(admin)
+
+        logger.info(f"Admin profile updated: {admin.email}")
+
+        return AdminProfileResponse(
+            success=True,
+            admin=AdminResponse(
+                admin_id=admin.admin_id,
+                email=admin.email,
+                full_name=admin.full_name,
+                role=admin.role,
+                branch_id=admin.branch_id,
+                is_active=admin.is_active,
+                last_login=admin.last_login,
+                created_at=admin.created_at,
+            ),
+        )
+
+    @staticmethod
+    async def change_password(
+        admin_id: UUID, current_password: str, new_password: str, db: AsyncSession
+    ) -> dict:
+        """
+        Self-service password change. Requires the current password (unlike
+        the Super-Admin override in admin_users.py, which does not). Also
+        clears every other session for this admin, forcing re-login
+        everywhere else the account was signed in.
+        """
+        result = await db.execute(select(Admin).where(Admin.admin_id == admin_id))
+        admin = result.scalar_one_or_none()
+        if not admin:
+            raise ValueError("Admin not found")
+
+        if not verify_password(current_password, admin.password_hash):
+            raise ValueError("Current password is incorrect")
+
+        admin.password_hash = hash_password(new_password)
+        await db.execute(delete(AdminSession).where(AdminSession.admin_id == admin_id))
+        await db.commit()
+
+        logger.info(f"Admin password changed: {admin.email}")
+
+        return {"success": True, "message": "Password changed successfully"}
+
+    @staticmethod
     async def create_admin(
         data: CreateAdminRequest,
         created_by: UUID,

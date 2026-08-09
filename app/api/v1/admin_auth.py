@@ -13,7 +13,9 @@ from app.schemas.admin_auth import (
     AdminProfileResponse,
     AdminRefreshRequest,
     AdminResponse,
+    ChangePasswordRequest,
     CreateAdminRequest,
+    UpdateProfileRequest,
 )
 from app.schemas.auth import MessageResponse
 from app.services.admin_auth_service import AdminAuthService
@@ -88,6 +90,56 @@ async def get_admin_profile(
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+
+@router.put(
+    "/profile",
+    response_model=AdminProfileResponse,
+    summary="Update own profile",
+    description="Update the current admin's display name.",
+)
+async def update_admin_profile(
+    data: UpdateProfileRequest,
+    current_admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminProfileResponse:
+    """
+    Update the current admin's own profile (display name only).
+    """
+    try:
+        return await AdminAuthService.update_profile(current_admin.admin_id, data.full_name, db)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+
+@router.post(
+    "/change-password",
+    response_model=MessageResponse,
+    summary="Change own password",
+    description="Change the current admin's password (requires the current password).",
+)
+async def change_admin_password(
+    data: ChangePasswordRequest,
+    current_admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Change the current admin's own password. Signs the account out of every
+    other session on success.
+    """
+    try:
+        result = await AdminAuthService.change_password(
+            current_admin.admin_id, data.current_password, data.new_password, db
+        )
+        return MessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
 

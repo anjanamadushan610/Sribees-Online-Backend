@@ -135,7 +135,7 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 echo -e "${YELLOW}[4/6] Running SQL migrations ...${NC}"
 
-MIGRATION_DIR="fastapi_backend/migrations"
+MIGRATION_DIR="migrations"
 if [ -d "$MIGRATION_DIR" ]; then
     SQL_COUNT=0
     for sql_file in $(ls "$MIGRATION_DIR"/*.sql 2>/dev/null | sort); do
