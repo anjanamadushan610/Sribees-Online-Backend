@@ -1,14 +1,19 @@
 """
 Payment API Endpoints
 """
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
 from loguru import logger
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.orders import format_order
 from app.config.database import get_db
+from app.config.settings import settings
 from app.core.dependencies import get_current_admin, get_current_user
 from app.schemas.order import PaymentStatusEnum
 from app.schemas.payment import (
@@ -20,6 +25,7 @@ from app.schemas.payment import (
     SavedCardResponse,
     SavedCardsListResponse,
 )
+from app.services.marx_ipg_service import MarxIPGError, MarxIPGService
 from app.services.order_service import OrderService
 from app.services.payment_service import PaymentService
 
@@ -29,9 +35,9 @@ router = APIRouter(tags=["Payments"])
 # ============================================================================
 # Payment Methods (Module 13.1) — mounted separately at "/payment-methods".
 #
-# MVP: external card/gateway is on hold, so we expose a static list of the two
-# supported methods (Cash on Delivery + internal Wallet). Kept as a constant so
-# it can later be swapped for a DB-backed PaymentMethod table without changing
+# Cash on Delivery + internal Wallet, plus the three Marx IPG hosted-gateway
+# methods (LKR only — see MARX_PAYMENT_METHOD_MAP). Kept as a constant so it
+# can later be swapped for a DB-backed PaymentMethod table without changing
 # the endpoint contract.
 # ============================================================================
 methods_router = APIRouter(tags=["Payment Methods"])
@@ -51,6 +57,37 @@ _SUPPORTED_PAYMENT_METHODS = [
         "type": "WALLET",
         "is_active": True,
     },
+    {
+        "id": "marx_other",
+        "code": "MARX_OTHER",
+        "name": "Visa / Mastercard / UnionPay",
+        "type": "GATEWAY",
+        # Gated by settings.marx_gateway_methods_enabled, NOT hardcoded --
+        # see list_payment_methods(). The backend can create/confirm Marx
+        # orders as soon as it's deployed, but the *mobile app* is what
+        # redirects the shopper to pay (handles payment_redirect_url). A
+        # backend deploy ships instantly; a Flutter app release does not --
+        # exposing these tiles before the updated app has rolled out would
+        # let a customer on the OLD app "place" a gateway order that's
+        # actually still unpaid, with no redirect ever happening. Flip the
+        # setting on once the app update carrying MarxPaymentWebViewScreen is
+        # live.
+        "is_active": True,
+    },
+    {
+        "id": "marx_amex",
+        "code": "MARX_AMEX",
+        "name": "Amex / Diners / Discover",
+        "type": "GATEWAY",
+        "is_active": True,
+    },
+    {
+        "id": "marx_bank",
+        "code": "MARX_BANK",
+        "name": "Bank Transfer",
+        "type": "GATEWAY",
+        "is_active": True,
+    },
 ]
 
 
@@ -59,12 +96,114 @@ async def list_payment_methods(
     current_user=Depends(get_current_user),
 ):
     """
-    Return the active payment methods available at checkout.
-
-    For the MVP this is Cash on Delivery and the internal SRIBEES Wallet.
+    Return the active payment methods available at checkout: Cash on
+    Delivery, the internal SRIBEES Wallet, and (once
+    ``settings.marx_gateway_methods_enabled`` is turned on) the Marx IPG
+    gateway methods.
     """
-    active = [m for m in _SUPPORTED_PAYMENT_METHODS if m["is_active"]]
+    active = [
+        m
+        for m in _SUPPORTED_PAYMENT_METHODS
+        if m["is_active"] and (m["type"] != "GATEWAY" or settings.marx_gateway_methods_enabled)
+    ]
     return {"success": True, "data": {"methods": active}}
+
+
+# ============================================================================
+# Marx IPG Gateway
+# ============================================================================
+
+class MarxConfirmRequest(BaseModel):
+    order_id: str
+    tr_id: str
+    merchant_rid: str
+
+
+@router.post("/marx/confirm", response_model=dict)
+async def confirm_marx_payment(
+    data: MarxConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """
+    Confirm a Marx IPG hosted-page payment after the shopper's browser is
+    redirected back with trId/merchantRID (doc sections 5.2-5.4). Called by
+    the mobile app's WebView interception of the return URL, not by Marx
+    itself (Marx redirects the shopper's browser; it does not call our API).
+    """
+    try:
+        order_uuid = UUID(data.order_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid order ID")
+
+    order = await OrderService.get_by_id(db, order_uuid, current_user.user_id)
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    # 5.3: validate BEFORE calling 5.4 -- never trust redirect query
+    # parameters blindly, they pass through the shopper's browser.
+    if order.gateway_tr_id != data.tr_id or order.order_number != data.merchant_rid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Payment reference mismatch"
+        )
+
+    # Idempotent: a second confirm call on an already-PAID order (e.g. the
+    # WebView retrying) must not re-call Marx.
+    if order.payment_status == PaymentStatusEnum.PAID.value:
+        return {"success": True, "data": format_order(order), "message": "Already confirmed"}
+
+    try:
+        result = await MarxIPGService.initiate_payment(tr_id=data.tr_id, merchant_rid=data.merchant_rid)
+    except MarxIPGError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not confirm payment with the gateway: {exc}",
+        )
+
+    order.gateway_status = result["summary_result"]
+    order.gateway_response_code = result.get("gateway_code")
+    order.gateway_raw_response = result["raw"]
+    order.gateway_confirmed_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(order)
+
+    if result["summary_result"] == "SUCCESS" and result.get("order_status") == "CAPTURED":
+        order = await OrderService.update_payment_status(
+            db, order, PaymentStatusEnum.PAID, payment_id=data.tr_id
+        )
+        order = await OrderService.get_by_id(db, order_uuid, current_user.user_id)
+        return {"success": True, "data": format_order(order), "message": "Payment successful"}
+
+    if result["summary_result"] == "FAILURE":
+        order.payment_status = PaymentStatusEnum.FAILED.value
+        await db.commit()
+        await db.refresh(order)
+        return {"success": False, "data": format_order(order), "message": "Payment was declined"}
+
+    # PENDING / UNKNOWN -- leave payment_status as-is; the reconciliation job
+    # (OrderService.reconcile_pending_gateway_payments) resolves it later.
+    return {
+        "success": False,
+        "data": format_order(order),
+        "message": "Payment is still being confirmed",
+    }
+
+
+@router.get("/marx/return", response_class=HTMLResponse, include_in_schema=False)
+async def marx_return_landing():
+    """
+    Unauthenticated static landing page. ``settings.marx_ipg_return_url``
+    points here — a fallback for the rare case where the mobile WebView
+    doesn't intercept the redirect (e.g. the shopper opened the pay link in an
+    external browser). In the normal flow this page never actually renders;
+    ``MarxPaymentWebViewScreen`` intercepts navigation to this URL client-side.
+    """
+    return (
+        "<html><body style='font-family:sans-serif;text-align:center;padding-top:4rem'>"
+        "<h2>Payment complete</h2>"
+        "<p>Return to the SRIBEESonline app to see your order status.</p>"
+        "</body></html>"
+    )
 
 
 # ============================================================================

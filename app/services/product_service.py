@@ -935,6 +935,61 @@ class ProductService:
 
         return resolved
 
+    @staticmethod
+    async def get_weight_map(
+        db: AsyncSession,
+        product_ids: List[UUID],
+    ) -> Dict[str, Decimal]:
+        """
+        Kg-normalized weight per product, for the courier's weight-based rate
+        quote (see docs/COURIER_API.md section 7).
+
+        Resolved fresh from the database at quote/checkout time, never from the
+        Redis cart, for the same reason ``get_cashback_map`` is — a cart can sit
+        for days and must not ship with a stale weight.
+
+        A missing/NULL ``weight`` resolves to 0 -- the courier contract itself
+        owns "don't treat 0 as free" (its own minimum-billable-weight rule), not
+        us. ``weight_unit`` is unvalidated free text in this schema; an
+        unrecognized unit is treated as already-kilograms rather than raising,
+        since a bad unit must never block checkout.
+        """
+        if not product_ids:
+            return {}
+
+        unit_to_kg = {
+            "kg": Decimal("1"),
+            "g": Decimal("0.001"),
+            "lb": Decimal("0.453592"),
+            "l": Decimal("1"),
+            "ml": Decimal("0.001"),
+        }
+
+        query = select(Product.product_id, Product.weight, Product.weight_unit).where(
+            Product.product_id.in_(product_ids)
+        )
+        rows = (await db.execute(query)).all()
+
+        resolved: Dict[str, Decimal] = {}
+        for product_id, weight, weight_unit in rows:
+            if weight is None:
+                resolved[str(product_id)] = Decimal("0")
+                continue
+            unit_key = (weight_unit or "kg").strip().lower()
+            factor = unit_to_kg.get(unit_key)
+            if factor is None:
+                logger.warning(
+                    f"Product {product_id}: unrecognized weight_unit "
+                    f"'{weight_unit}', treating as already-kg"
+                )
+                factor = Decimal("1")
+            resolved[str(product_id)] = Decimal(str(weight)) * factor
+
+        for pid in product_ids:
+            resolved.setdefault(str(pid), Decimal("0"))
+
+        return resolved
+
     # ================================================================
     # Quick Sale feed  (branch-aware)
     # ================================================================

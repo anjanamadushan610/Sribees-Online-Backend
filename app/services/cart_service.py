@@ -29,16 +29,19 @@ class CartService:
         return RedisKeys.cart(user_id)
 
     @staticmethod
-    def _calculate_totals(items: list, coupon: Optional[Dict] = None) -> Dict[str, float]:
+    async def _calculate_totals(items: list, coupon: Optional[Dict] = None) -> Dict[str, float]:
         """
         Calculate cart totals.
 
         Delegates to the shared ``PricingService`` (the single source of truth)
         so the totals returned by GET /cart match the checkout quote and the
         final order exactly. Wallet deduction is a checkout-only concept and is
-        never applied here.
+        never applied here. No delivery address is known yet at the cart stage,
+        so this always prices delivery at the flat fallback fee (no
+        origin/destination to quote the courier with) — the courier-quoted fee
+        appears once checkout resolves a delivery address (POST /orders/quote).
         """
-        breakdown = PricingService.quote(items=items, coupon=coupon, use_wallet=False)
+        breakdown = await PricingService.quote(items=items, coupon=coupon, use_wallet=False)
         return {
             "subtotal": float(breakdown.subtotal),
             "discount": float(breakdown.discount),
@@ -73,7 +76,7 @@ class CartService:
 
         cart = json.loads(cart_data)
         # Recalculate totals
-        cart["totals"] = CartService._calculate_totals(
+        cart["totals"] = await CartService._calculate_totals(
             cart.get("items", []),
             cart.get("coupon")
         )
@@ -125,7 +128,7 @@ class CartService:
             })
 
         # Recalculate totals
-        cart["totals"] = CartService._calculate_totals(
+        cart["totals"] = await CartService._calculate_totals(
             cart["items"],
             cart.get("coupon")
         )
@@ -162,7 +165,7 @@ class CartService:
             cart["items"][item_index]["quantity"] = quantity
 
         # Recalculate totals
-        cart["totals"] = CartService._calculate_totals(
+        cart["totals"] = await CartService._calculate_totals(
             cart["items"],
             cart.get("coupon")
         )
@@ -186,7 +189,7 @@ class CartService:
         ]
 
         # Recalculate totals
-        cart["totals"] = CartService._calculate_totals(
+        cart["totals"] = await CartService._calculate_totals(
             cart["items"],
             cart.get("coupon")
         )
@@ -226,7 +229,7 @@ class CartService:
         }
 
         # Recalculate totals
-        cart["totals"] = CartService._calculate_totals(
+        cart["totals"] = await CartService._calculate_totals(
             cart["items"],
             cart["coupon"]
         )
@@ -241,7 +244,7 @@ class CartService:
         cart["coupon"] = None
 
         # Recalculate totals
-        cart["totals"] = CartService._calculate_totals(cart["items"], None)
+        cart["totals"] = await CartService._calculate_totals(cart["items"], None)
 
         await CartService._save_cart(user_id, cart)
         return cart
@@ -286,7 +289,7 @@ class CartService:
                 })
 
         # Recalculate totals
-        cart["totals"] = CartService._calculate_totals(
+        cart["totals"] = await CartService._calculate_totals(
             cart["items"],
             cart.get("coupon")
         )
@@ -324,7 +327,7 @@ class CartService:
                     server_cart["items"].append(local_item)
 
         # Recalculate totals
-        server_cart["totals"] = CartService._calculate_totals(
+        server_cart["totals"] = await CartService._calculate_totals(
             server_cart["items"],
             server_cart.get("coupon")
         )

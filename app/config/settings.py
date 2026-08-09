@@ -203,6 +203,46 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = Field(default="", description="Stripe webhook secret")
 
     # =========================================================================
+    # Marx IPG Payment Gateway
+    # =========================================================================
+    marx_ipg_base_url: str = Field(
+        default="https://payment.api.dev.marxpos.com",
+        description="Marx IPG API base URL. Sandbox default; prod is https://payment.v4.api.marx.lk",
+    )
+    marx_ipg_api_key: str = Field(default="", description="Marx merchant-api-key (server-side secret)")
+    marx_ipg_return_url: str = Field(
+        default="",
+        description="Backend URL Marx redirects the shopper back to after 3DS, e.g. https://api.sribees.lk/api/v1/payments/marx/return",
+    )
+    marx_ipg_valid_time_limit_hours: int = Field(
+        default=2, description="validTimeLimit (hours) sent at order creation (doc section 5.1)"
+    )
+    marx_ipg_timeout_seconds: float = Field(default=15.0, description="HTTP timeout for Marx API calls")
+    marx_gateway_methods_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether MARX_OTHER/MARX_AMEX/MARX_BANK appear in GET /payment-methods. "
+            "The backend can create/confirm Marx orders as soon as it's deployed, "
+            "but only the UPDATED mobile app knows how to act on payment_redirect_url. "
+            "Keep this off until that app release has rolled out -- a backend deploy "
+            "ships instantly, a Flutter app release does not."
+        ),
+    )
+
+    # =========================================================================
+    # Courier Integration (see fastapi_backend/docs/COURIER_API.md)
+    # =========================================================================
+    courier_base_url: str = Field(default="", description="Courier API base URL. Point at mock_courier in dev.")
+    courier_api_key: str = Field(default="", description="X-Api-Key WE send when calling the courier's /v1/* endpoints")
+    courier_inbound_api_key: str = Field(
+        default="",
+        description="X-Api-Key the COURIER must send when calling INTO us (webhooks, delivery-code confirm). Must differ from courier_api_key.",
+    )
+    courier_request_timeout_seconds: float = Field(default=3.0, description="Per COURIER_API.md section 8")
+    delivery_verification_code_digits: int = Field(default=3, description="Delivery handover code length")
+    delivery_verification_max_attempts: int = Field(default=5, description="Wrong-code attempts before lockout")
+
+    # =========================================================================
     # Firebase Cloud Messaging (FCM) Settings
     # =========================================================================
     firebase_credentials_path: Optional[str] = Field(

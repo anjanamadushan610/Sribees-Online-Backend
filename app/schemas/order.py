@@ -14,9 +14,39 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class PaymentMethodEnum(str, Enum):
-    """Payment methods supported for the MVP (COD + internal wallet)."""
+    """Payment methods supported at checkout."""
     COD = "COD"
     WALLET = "WALLET"
+    MARX_OTHER = "MARX_OTHER"   # Visa / MasterCard / UnionPay via Marx IPG, LKR
+    MARX_AMEX = "MARX_AMEX"     # Amex / Diners / Discover via Marx IPG, LKR
+    MARX_BANK = "MARX_BANK"     # PAY_BY_BANK_ACCOUNT via Marx IPG
+
+
+# Payment methods that route through the Marx IPG hosted gateway rather than
+# being settled immediately (COD) or from an internal ledger (WALLET).
+GATEWAY_PAYMENT_METHODS = {
+    PaymentMethodEnum.MARX_OTHER.value,
+    PaymentMethodEnum.MARX_AMEX.value,
+    PaymentMethodEnum.MARX_BANK.value,
+}
+
+# Our enum -> Marx's own `paymentMethod` request value (API doc section 5.1).
+# LKR-only variants by design -- OTHER_USD/AMEX_USD are intentionally absent.
+MARX_PAYMENT_METHOD_MAP = {
+    PaymentMethodEnum.MARX_OTHER.value: "OTHER",
+    PaymentMethodEnum.MARX_AMEX.value: "AMEX",
+    PaymentMethodEnum.MARX_BANK.value: "PAY_BY_BANK_ACCOUNT",
+}
+
+
+def to_courier_payment_method(payment_method: Optional[str]) -> str:
+    """
+    Map our payment_method to the courier contract's own vocabulary
+    (docs/COURIER_API.md section 4: ``"cod"`` or ``"prepaid"`` — COD usually
+    carries a collection fee that must be priced into the quote).
+    """
+    normalized = (payment_method or "").strip().upper()
+    return "cod" if normalized == PaymentMethodEnum.COD.value else "prepaid"
 
 class OrderStatusEnum(str, Enum):
     PENDING = "pending"
@@ -102,7 +132,7 @@ class CreateOrderRequest(BaseModel):
     delivery_address_id: str
     delivery_slot_date: Optional[datetime] = None
     delivery_slot_time: Optional[str] = None
-    # MVP payment methods: COD (Cash on Delivery) or WALLET. Card/UPI are on hold.
+    # COD, WALLET, or one of the Marx IPG gateway methods (MARX_OTHER/MARX_AMEX/MARX_BANK).
     payment_method: str = "COD"
     coupon_code: Optional[str] = None
     # When true, the available wallet balance is applied to reduce the total.
@@ -112,7 +142,7 @@ class CreateOrderRequest(BaseModel):
     @field_validator("payment_method")
     @classmethod
     def validate_payment_method(cls, v: str) -> str:
-        """Accept only COD/WALLET (case-insensitive); reject anything else."""
+        """Accept only a known PaymentMethodEnum value (case-insensitive)."""
         normalized = (v or "").strip().upper()
         allowed = {m.value for m in PaymentMethodEnum}
         if normalized not in allowed:
@@ -134,6 +164,9 @@ class QuoteOrderRequest(BaseModel):
     delivery_address_id: Optional[str] = None
     use_wallet: bool = False
     coupon_code: Optional[str] = None
+    # Selected payment method, so the courier's COD-collection fee (if any)
+    # prices correctly into the preview. Defaults to COD when omitted.
+    payment_method: Optional[str] = None
 
 
 class ReturnItemSchema(BaseModel):
@@ -199,6 +232,18 @@ class OrderResponse(BaseModel):
     payment_method: Optional[str] = None
     payment_id: Optional[str] = None
 
+    # Marx IPG gateway (response-only; payment_redirect_url is never persisted)
+    payment_redirect_url: Optional[str] = None
+    gateway_status: Optional[str] = None
+
+    # Delivery handover verification code
+    delivery_verification_code: Optional[str] = None
+    delivery_verification_status: Optional[str] = None
+
+    # Courier tracking
+    courier_tracking_status: Optional[str] = None
+    courier_waybill_number: Optional[str] = None
+
     # Delivery
     delivery_address: Optional[DeliveryAddressSchema] = None
     delivery_slot_date: Optional[datetime] = None
@@ -253,6 +298,9 @@ class OrderQuoteBreakdown(BaseModel):
     wallet_deduction: float
     cashback_earned: float
     total: float
+    # Set when the delivery fee came from a live courier quote (None on
+    # flat-fee fallback) -- echoed back so booking can reference it.
+    courier_quote_id: Optional[str] = None
     # Context so the client can render wallet UI without a second call.
     currency: str = "LKR"
     cashback_rate: float

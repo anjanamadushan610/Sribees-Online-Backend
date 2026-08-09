@@ -370,3 +370,72 @@ For reference, when this is implemented here:
   customer accepted.
 - The courier base URL and API key become settings, so sandbox and production
   differ by configuration only.
+
+---
+
+## 15. Delivery verification code (prepaid orders)
+
+For prepaid orders (anything not `payment_method: "cod"`), SRIBEESonline
+generates a short numeric code once payment is confirmed. The customer reads
+it aloud to your rider at handover; your rider (or your app) confirms it with
+us before marking the parcel delivered. This is an anti-fraud handover check,
+not a payment mechanism — do not collect money against it.
+
+### What you get
+
+Nothing extra in `/v1/rates` or `/v1/shipments` — the code is generated after
+booking and is not part of either request or response. Your rider learns it
+lives by asking the customer at the door, the same way an OTP-at-door works
+for other delivery apps.
+
+### Confirming a code
+
+```http
+POST https://api.sribees.lk/api/v1/courier/webhooks/orders/{order_number}/delivery-code/confirm
+X-Api-Key: <your inbound API key -- different from the key you use to call us>
+Content-Type: application/json
+
+{ "waybill_number": "SL123456789", "code": "482" }
+```
+
+Response — correct code:
+
+```json
+{ "success": true, "message": "Code confirmed." }
+```
+
+Response — wrong code (ask again, up to 5 attempts total):
+
+```json
+{ "success": false, "message": "Code did not match. 3 attempt(s) left." }
+```
+
+After 5 wrong attempts the order is flagged for manual support review and
+this endpoint stops accepting attempts for it (`success: false`, "too many
+attempts").
+
+### Shipment status push
+
+Push shipment status changes (the section 10 vocabulary) to:
+
+```http
+POST https://api.sribees.lk/api/v1/courier/webhooks/shipment-status
+X-Api-Key: <your inbound API key>
+Content-Type: application/json
+
+{ "shipment_id": "shp_01HX9K3P7B", "status": "out_for_delivery", "at": "2026-08-09T06:12:00Z" }
+```
+
+We map `status: "delivered"` straight onto the order — send it whenever you
+actually consider the parcel delivered, independent of whether the code has
+been confirmed (confirm the code at or before marking delivered, whichever
+order fits your flow).
+
+### Notes
+
+- The code is always exactly 3 digits (000–999). It is single-use per order —
+  once confirmed it cannot be confirmed again.
+- `payment_method: "cod"` orders never get a code and can be delivered
+  without calling either endpoint above.
+- Both endpoints use a **separate inbound API key** from the one you receive
+  for us to call — ask us for it alongside your sandbox `/v1/*` credentials.

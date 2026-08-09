@@ -78,6 +78,32 @@ class Order(Base):
     payment_id = Column(String(255), nullable=True)
     payment_method = Column(String(50), nullable=True)
 
+    # Marx IPG gateway state (see app/services/marx_ipg_service.py). trId is
+    # Marx's own transaction id; merchantRID is order_number, already unique.
+    gateway_tr_id = Column(String(50), nullable=True)
+    gateway_status = Column(String(20), nullable=True)
+    gateway_response_code = Column(String(50), nullable=True)
+    gateway_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    gateway_raw_response = Column(JSONB, nullable=True)
+    # Guards deferred cashback crediting (gateway orders) against double-credit.
+    cashback_credited_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Delivery handover verification code (non-COD orders only). See
+    # app/services/delivery_verification_service.py and docs/COURIER_API.md §15.
+    delivery_verification_code = Column(String(3), nullable=True)
+    delivery_verification_status = Column(String(20), default="not_required")
+    delivery_verification_attempts = Column(Integer, default=0)
+    delivery_verification_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Courier integration (see docs/COURIER_API.md, app/services/courier_service.py).
+    courier_quote_id = Column(String(64), nullable=True)
+    courier_quote_expires_at = Column(DateTime(timezone=True), nullable=True)
+    courier_shipment_id = Column(String(64), nullable=True)
+    courier_waybill_number = Column(String(64), nullable=True)
+    courier_tracking_status = Column(String(20), nullable=True)
+    courier_tracking_updated_at = Column(DateTime(timezone=True), nullable=True)
+    courier_booking_status = Column(String(20), default="pending")
+
     # Delivery
     delivery_address_id = Column(UUID(as_uuid=True), ForeignKey("addresses.address_id"), nullable=True)
     delivery_slot_date = Column(DateTime(timezone=True), nullable=True)

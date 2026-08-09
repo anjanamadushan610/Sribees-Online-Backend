@@ -8,10 +8,14 @@ the customer previews is guaranteed to equal the number they are charged.
 All money is computed with ``Decimal`` and quantized to 2 places.
 """
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from loguru import logger
 
 from app.config.settings import settings
+from app.services.courier_service import CourierService, CourierUnavailableError
 
 _CENTS = Decimal("0.01")
 
@@ -31,8 +35,13 @@ class PriceBreakdown:
     wallet_deduction: Decimal
     cashback_earned: Decimal
     total: Decimal
+    # Set when delivery_fee came from a live courier quote (see
+    # CourierService), so booking can reference the exact quote that produced
+    # it. None on the flat-fee fallback path.
+    courier_quote_id: Optional[str] = None
+    courier_quote_expires_at: Optional[datetime] = None
 
-    def as_dict(self) -> Dict[str, float]:
+    def as_dict(self) -> Dict[str, Any]:
         """JSON-friendly float representation for API responses."""
         return {
             "subtotal": float(self.subtotal),
@@ -42,6 +51,7 @@ class PriceBreakdown:
             "wallet_deduction": float(self.wallet_deduction),
             "cashback_earned": float(self.cashback_earned),
             "total": float(self.total),
+            "courier_quote_id": self.courier_quote_id,
         }
 
 
@@ -49,17 +59,60 @@ class PricingService:
     """Computes order totals from cart items, coupon and wallet state."""
 
     @staticmethod
-    def _delivery_fee(items: List[dict], subtotal: Decimal, flat_fee: Decimal) -> Decimal:
+    async def _delivery_fee(
+        items: List[dict],
+        subtotal: Decimal,
+        flat_fee: Decimal,
+        *,
+        origin: Optional[dict] = None,
+        destination: Optional[dict] = None,
+        payment_method: str = "cod",
+    ) -> Tuple[Decimal, Optional[str], Optional[datetime]]:
         """
-        Resolve the delivery fee.
+        Resolve the delivery fee: (fee, courier_quote_id, courier_quote_expires_at).
 
-        Currently a flat fee for any non-empty cart. Kept as its own method so
-        a future dynamic model (per-branch, weight, distance, free-over-X) can
-        drop in here without touching the rest of the pricing pipeline.
+        Calls the courier's ``POST /v1/rates`` (docs/COURIER_API.md section 4)
+        when both an ``origin`` (fulfilling branch) and a ``destination``
+        (delivery address) are resolvable. Falls back to the flat platform fee
+        — with no ``courier_quote_id`` — when: the cart is empty, there is no
+        origin/destination yet (e.g. the very first quote call before an
+        address is chosen), the courier is unreachable
+        (``CourierUnavailableError``, after its own one retry), or the
+        destination reports ``serviceable: false``. This fallback is required
+        by the contract itself (section 8): "we will not block a sale on a
+        courier outage."
         """
         if not items:
-            return Decimal("0")
-        return _money(flat_fee)
+            return Decimal("0"), None, None
+        if origin is None or destination is None:
+            return _money(flat_fee), None, None
+
+        weight_kg = sum(
+            Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"])) for i in items
+        )
+        item_count = sum(i["quantity"] for i in items)
+
+        try:
+            quote = await CourierService.get_rate(
+                origin=origin,
+                destination=destination,
+                weight_kg=weight_kg,
+                item_count=item_count,
+                order_value_lkr=subtotal,
+                payment_method=payment_method,
+            )
+        except CourierUnavailableError as exc:
+            logger.warning(f"Courier /v1/rates unavailable, falling back to flat fee: {exc}")
+            return _money(flat_fee), None, None
+
+        if not quote.serviceable:
+            # A place the courier does not deliver to is a normal answer, not
+            # an error (section 4) -- we still owe *some* fee today, so fall
+            # back to the flat fee rather than blocking checkout.
+            logger.warning(f"Courier reports destination not serviceable: {quote.reason}")
+            return _money(flat_fee), None, None
+
+        return _money(quote.amount_lkr), quote.quote_id, quote.expires_at
 
     @staticmethod
     def _discount(subtotal: Decimal, coupon: Optional[Dict[str, Any]]) -> Decimal:
@@ -99,28 +152,41 @@ class PricingService:
         return _money(total)
 
     @staticmethod
-    def quote(
+    async def quote(
         items: List[dict],
         coupon: Optional[Dict[str, Any]] = None,
         use_wallet: bool = False,
         wallet_balance: Decimal = Decimal("0"),
         delivery_fee: Optional[Decimal] = None,
         tax_rate: Optional[Decimal] = None,
+        *,
+        origin: Optional[dict] = None,
+        destination: Optional[dict] = None,
+        payment_method: str = "cod",
     ) -> PriceBreakdown:
         """
         Build the authoritative price breakdown.
 
         Args:
             items: Cart items (each with ``price`` and ``quantity``, and
-                optionally ``cashback_percentage`` — the branch-resolved rate
-                for that product).
+                optionally ``cashback_percentage``/``weight_kg`` — the
+                branch-resolved rate and DB weight for that product).
             coupon: Applied coupon dict (``discount_type``/``discount_value``).
             use_wallet: Whether to apply the wallet balance to the total.
             wallet_balance: Available wallet balance (ignored if not use_wallet).
-            delivery_fee: Flat delivery fee override (from platform settings).
-                Falls back to the static config default when None.
+            delivery_fee: Flat delivery fee override (from platform settings),
+                used as the fallback when the courier is unavailable or no
+                origin/destination is resolvable yet. Falls back to the static
+                config default when None.
             tax_rate: Tax rate as a fraction override (from platform settings).
                 Falls back to the static config default when None.
+            origin: Fulfilling branch, formatted via
+                ``branch_service.to_courier_origin`` (None skips the courier
+                call, e.g. no delivery address chosen yet).
+            destination: Delivery address, formatted per
+                docs/COURIER_API.md section 4 (None skips the courier call).
+            payment_method: ``"cod"`` or ``"prepaid"`` — priced into the
+                courier's COD-collection fee, if any.
         """
         # Dynamic platform settings win; otherwise use the static config default.
         effective_fee = (
@@ -137,7 +203,14 @@ class PricingService:
         discount = PricingService._discount(subtotal, coupon)
         taxable = subtotal - discount
         tax = _money(taxable * effective_tax_rate)
-        delivery_fee = PricingService._delivery_fee(items, subtotal, effective_fee)
+        delivery_fee, courier_quote_id, courier_quote_expires_at = await PricingService._delivery_fee(
+            items,
+            subtotal,
+            effective_fee,
+            origin=origin,
+            destination=destination,
+            payment_method=payment_method,
+        )
 
         # Gross payable before any wallet balance is applied.
         gross = _money(taxable + tax + delivery_fee)
@@ -161,4 +234,6 @@ class PricingService:
             wallet_deduction=wallet_deduction,
             cashback_earned=cashback_earned,
             total=total,
+            courier_quote_id=courier_quote_id,
+            courier_quote_expires_at=courier_quote_expires_at,
         )

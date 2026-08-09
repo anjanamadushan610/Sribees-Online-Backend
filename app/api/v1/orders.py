@@ -1,6 +1,7 @@
 """
 Order API Endpoints
 """
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
@@ -21,10 +22,12 @@ from app.schemas.order import (
     ReturnRequest,
     UpdateOrderStatusRequest,
     UpdatePaymentStatusRequest,
+    to_courier_payment_method,
 )
 from app.services import branch_service
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
+from app.services.courier_service import CourierService, CourierUnavailableError
 from app.services.invoice_service import InvoiceService
 from app.services.order_service import OrderService
 from app.services.pricing_service import PricingService
@@ -137,7 +140,7 @@ def build_status_timeline(order) -> list:
     return timeline
 
 
-def format_order(order, include_items: bool = True) -> dict:
+def format_order(order, include_items: bool = True, payment_redirect_url: Optional[str] = None) -> dict:
     """Format order for API response."""
     data = {
         "order_id": str(order.order_id),
@@ -154,6 +157,15 @@ def format_order(order, include_items: bool = True) -> dict:
         "payment_status": order.payment_status,
         "payment_method": order.payment_method,
         "payment_id": order.payment_id,
+        # Marx IPG gateway — payment_redirect_url is response-only, never persisted.
+        "payment_redirect_url": payment_redirect_url,
+        "gateway_status": order.gateway_status,
+        # Delivery handover verification code (non-COD orders only)
+        "delivery_verification_code": order.delivery_verification_code,
+        "delivery_verification_status": order.delivery_verification_status,
+        # Courier tracking
+        "courier_tracking_status": order.courier_tracking_status,
+        "courier_waybill_number": order.courier_waybill_number,
         "delivery_slot_date": order.delivery_slot_date.isoformat() if order.delivery_slot_date else None,
         "delivery_slot_time": order.delivery_slot_time,
         "coupon_code": order.coupon_code,
@@ -241,7 +253,7 @@ async def create_order(
     Create a new order from cart.
     """
     try:
-        order = await OrderService.create_from_cart(
+        order, payment_redirect_url = await OrderService.create_from_cart(
             db,
             user_id=current_user.user_id,
             data=data
@@ -250,10 +262,15 @@ async def create_order(
         # Reload with relationships
         order = await OrderService.get_by_id(db, order.order_id)
 
+        message = (
+            "Redirect the customer to payment_redirect_url to complete payment"
+            if payment_redirect_url
+            else "Order placed successfully"
+        )
         return {
             "success": True,
-            "data": format_order(order),
-            "message": "Order placed successfully"
+            "data": format_order(order, payment_redirect_url=payment_redirect_url),
+            "message": message
         }
     except ValueError as e:
         raise HTTPException(
@@ -287,30 +304,72 @@ async def quote_order(
         wallet_balance = await WalletService.get_balance(db, current_user.user_id)
         pricing_config = await AppSettingsService.get_pricing_config(db)
 
-        # Cashback is branch-specific, so the preview must be priced against the
-        # customer's own branch — otherwise the quote and the charged order
-        # would disagree the moment a branch overrides a product's rate.
+        # Resolve the fulfilling branch the SAME way create_from_cart does:
+        # from the chosen delivery address's post office. This also gives us
+        # the full address needed for the courier's rate quote. Falls back to
+        # the session shopping-branch-context only when no address is chosen
+        # yet (matches how the preview already degrades before an address
+        # exists) — previously this endpoint ignored delivery_address_id
+        # entirely and always used session context, which could disagree with
+        # create_from_cart's resolution and show a different delivery fee at
+        # checkout than what was actually charged.
+        address = None
+        branch = None
         branch_id = None
-        context = await branch_service.get_branch_context(
-            redis, str(current_user.user_id)
-        )
-        if context is not None:
+        if data.delivery_address_id:
             try:
-                branch_id = UUID(context["branch_id"])
-            except (KeyError, ValueError, TypeError):
-                branch_id = None
+                address = await branch_service.get_address_for_user(
+                    db, UUID(data.delivery_address_id), current_user.user_id
+                )
+            except ValueError:
+                address = None
+            if address is not None and address.post_office:
+                mapping = await branch_service.resolve_branch_by_post_office(
+                    db, address.post_office
+                )
+                if mapping is not None:
+                    branch_id = mapping.branch_id
+                    branch = mapping.branch
+
+        if branch_id is None:
+            context = await branch_service.get_branch_context(
+                redis, str(current_user.user_id)
+            )
+            if context is not None:
+                try:
+                    branch_id = UUID(context["branch_id"])
+                except (KeyError, ValueError, TypeError):
+                    branch_id = None
 
         items = await OrderService._attach_cashback_rates(
             db, cart.get("items", []), branch_id
         )
+        items = await OrderService._attach_weights(db, items)
 
-        breakdown = PricingService.quote(
+        origin = branch_service.to_courier_origin(branch) if branch is not None else None
+        destination = None
+        if address is not None:
+            destination = {
+                "recipient_name": address.recipient_name,
+                "phone": address.phone,
+                "address_line1": address.address_line1,
+                "address_line2": address.address_line2,
+                "post_office": address.post_office,
+                "district": address.district,
+                "province": address.province,
+                "postal_code": address.postal_code,
+            }
+
+        breakdown = await PricingService.quote(
             items=items,
             coupon=cart.get("coupon"),
             use_wallet=data.use_wallet,
             wallet_balance=wallet_balance,
             delivery_fee=pricing_config["delivery_fee"],
             tax_rate=pricing_config["tax_rate"],
+            origin=origin,
+            destination=destination,
+            payment_method=to_courier_payment_method(data.payment_method),
         )
 
         item_count = sum(i.get("quantity", 0) for i in cart.get("items", []))
@@ -417,6 +476,56 @@ async def get_order(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch order"
         )
+
+
+@router.get("/{order_id}/tracking", response_model=dict)
+async def get_order_tracking(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Live courier tracking status (docs/COURIER_API.md section 10).
+
+    Throttled to at most once per 60s per order — returns the cached
+    ``courier_tracking_status`` if it was refreshed within that window instead
+    of hammering the courier on every screen open.
+    """
+    try:
+        order_uuid = UUID(order_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid order ID")
+
+    order = await OrderService.get_by_id(db, order_uuid, current_user.user_id)
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if not order.courier_shipment_id:
+        return {
+            "success": True,
+            "data": {"courier_tracking_status": None, "courier_waybill_number": None},
+        }
+
+    stale = (
+        order.courier_tracking_updated_at is None
+        or (datetime.utcnow() - order.courier_tracking_updated_at.replace(tzinfo=None)).total_seconds() > 60
+    )
+    if stale:
+        try:
+            shipment = await CourierService.get_shipment(order.courier_shipment_id)
+            order.courier_tracking_status = shipment.get("status", order.courier_tracking_status)
+            order.courier_tracking_updated_at = datetime.utcnow()
+            await db.commit()
+        except CourierUnavailableError as e:
+            logger.warning(f"Could not refresh tracking for order {order.order_number}: {e}")
+
+    return {
+        "success": True,
+        "data": {
+            "courier_tracking_status": order.courier_tracking_status,
+            "courier_waybill_number": order.courier_waybill_number,
+        },
+    }
 
 
 @router.post("/{order_id}/cancel", response_model=dict)

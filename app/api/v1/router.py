@@ -26,6 +26,7 @@ from app.api.v1 import (
     cart,
     categories,
     chat,
+    courier_webhooks,
     locations,
     marketing,
     notifications,
@@ -120,6 +121,15 @@ router.include_router(
     payments.router,
     prefix="/payments",
     tags=["Payments"],
+)
+
+# Courier webhooks (/courier/webhooks) -- inbound-only, the courier calls us.
+# Authenticated with courier_inbound_api_key, a separate secret from the key
+# we send when calling OUT to the courier (see app/services/courier_service.py).
+router.include_router(
+    courier_webhooks.router,
+    prefix="/courier/webhooks",
+    tags=["Courier Webhooks"],
 )
 
 router.include_router(

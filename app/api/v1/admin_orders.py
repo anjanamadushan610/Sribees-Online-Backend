@@ -342,3 +342,25 @@ async def reject_order_return(
         "data": _format_order_detail(order, branch_name),
         "message": "Return rejected",
     }
+
+
+@router.post(
+    "/reconcile-payments",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
+async def reconcile_marx_payments(db: AsyncSession = Depends(get_db)):
+    """
+    Manually trigger the Marx IPG reconciliation sweep (docs/COURIER_API.md's
+    sibling recommendation in the Marx doc's own section 7): resolves gateway
+    orders stuck PENDING against Marx's GET .../summary. Cross-branch, so
+    restricted to super_admin regardless of the router's default roles. Shares
+    the exact same logic as ``scripts/reconcile_marx_payments.py`` (the
+    unattended/cron path) via ``OrderService.reconcile_pending_gateway_payments``.
+    """
+    result = await OrderService.reconcile_pending_gateway_payments(db)
+    return {
+        "success": True,
+        "data": result,
+        "message": f"Checked {result['checked']} pending gateway order(s)",
+    }

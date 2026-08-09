@@ -3,7 +3,7 @@ Order Service - Business Logic
 """
 import random
 import string
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
@@ -13,20 +13,32 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config.settings import settings
+from app.models.branch import Branch
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.product import Product
-from app.models.user import Address
+from app.models.user import Address, User
 from app.models.wallet import WalletTransactionType
 from app.schemas.notification import NotificationTypeEnum
 from app.schemas.order import (
+    GATEWAY_PAYMENT_METHODS,
+    MARX_PAYMENT_METHOD_MAP,
     CreateOrderRequest,
     OrderStatusEnum,
     PaymentMethodEnum,
     PaymentStatusEnum,
+    to_courier_payment_method,
 )
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.coupon_service import CouponService
+from app.services.courier_service import (
+    CourierQuoteExpiredError,
+    CourierService,
+    CourierUnavailableError,
+)
+from app.services.delivery_verification_service import DeliveryVerificationService
+from app.services.marx_ipg_service import MarxIPGError, MarxIPGService
 from app.services.notification_service import NotificationService
 from app.services.pricing_service import PricingService
 from app.services.wallet_service import WalletService
@@ -80,6 +92,42 @@ class OrderService:
         return priced
 
     @staticmethod
+    async def _attach_weights(db: AsyncSession, items: List[dict]) -> List[dict]:
+        """
+        Return *items* with each line's DB-resolved, kg-normalized weight
+        attached as ``weight_kg`` — for the courier's weight-based rate quote.
+
+        Same shape as ``_attach_cashback_rates``: resolved fresh from the
+        database, never from the Redis cart, and returns copies so nothing
+        stale is written back.
+        """
+        if not items:
+            return []
+
+        from app.services.product_service import ProductService
+
+        product_ids = []
+        for item in items:
+            raw = item.get("product_id")
+            if not raw:
+                continue
+            try:
+                product_ids.append(UUID(str(raw)))
+            except (ValueError, TypeError):
+                continue
+
+        weights = await ProductService.get_weight_map(db, product_ids)
+
+        weighted = []
+        for item in items:
+            enriched = dict(item)
+            weight = weights.get(str(item.get("product_id")))
+            if weight is not None:
+                enriched["weight_kg"] = weight
+            weighted.append(enriched)
+        return weighted
+
+    @staticmethod
     def generate_order_number() -> str:
         """Generate unique order number."""
         timestamp = datetime.now().strftime("%Y%m%d")
@@ -91,8 +139,15 @@ class OrderService:
         db: AsyncSession,
         user_id: UUID,
         data: CreateOrderRequest
-    ) -> Order:
-        """Create order from user's cart."""
+    ) -> Tuple[Order, Optional[str]]:
+        """
+        Create order from user's cart.
+
+        Returns ``(order, payment_redirect_url)`` — the second element is only
+        set for a Marx IPG gateway order the shopper must be redirected to pay
+        (``None`` for COD/WALLET/wallet-fully-covered-gateway orders, which
+        complete or stay pending exactly as before).
+        """
         # Get cart
         cart = await CartService.get_cart(str(user_id))
 
@@ -145,12 +200,14 @@ class OrderService:
         pricing_config = await AppSettingsService.get_pricing_config(db)
 
         # Attribute the order to the branch serving the delivery address's post
-        # office, so branch-scoped admins can see and manage it. Best-effort:
-        # an unmapped post office leaves branch_id NULL (does not block checkout).
+        # office, so branch-scoped admins can see and manage it, and so there
+        # is an origin to quote the courier with. Best-effort: an unmapped
+        # post office leaves branch_id NULL (does not block checkout).
         #
-        # Resolved before pricing because cashback rates are branch-specific:
-        # the same product can earn a different rate in a different branch.
+        # Resolved before pricing because cashback rates (and the courier
+        # quote) are branch-specific.
         branch_id = None
+        branch = None
         try:
             from app.services import branch_service
 
@@ -159,30 +216,81 @@ class OrderService:
             )
             if mapping is not None:
                 branch_id = mapping.branch_id
+                branch = mapping.branch
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Could not resolve branch for order: {exc}")
 
         priced_items = await OrderService._attach_cashback_rates(
             db, cart["items"], branch_id
         )
+        priced_items = await OrderService._attach_weights(db, priced_items)
 
-        breakdown = PricingService.quote(
+        origin = branch_service.to_courier_origin(branch) if branch is not None else None
+        destination = {
+            "recipient_name": address.recipient_name,
+            "phone": address.phone,
+            "address_line1": address.address_line1,
+            "address_line2": address.address_line2,
+            "post_office": address.post_office,
+            "district": address.district,
+            "province": address.province,
+            "postal_code": address.postal_code,
+        }
+
+        breakdown = await PricingService.quote(
             items=priced_items,
             coupon=coupon_for_pricing,
             use_wallet=data.use_wallet,
             wallet_balance=wallet_balance,
             delivery_fee=pricing_config["delivery_fee"],
             tax_rate=pricing_config["tax_rate"],
+            origin=origin,
+            destination=destination,
+            payment_method=to_courier_payment_method(data.payment_method),
         )
 
         wallet_deduction = breakdown.wallet_deduction
         cashback_earned = breakdown.cashback_earned
         order_number = OrderService.generate_order_number()
 
-        # Payment status. COD is collected on delivery, so it is always PENDING.
-        # A WALLET order whose total is fully covered by the wallet balance is
-        # already PAID; anything with a balance still to collect stays PENDING.
-        if data.payment_method == PaymentMethodEnum.WALLET.value and breakdown.total <= 0:
+        # Marx IPG gateway orders: create the order on Marx's side BEFORE
+        # touching our own database -- if it fails, nothing here needs
+        # undoing. If the wallet balance alone already covers the total there
+        # is nothing to charge the gateway for; fall through and treat it
+        # exactly like a fully-covered WALLET order.
+        is_gateway = data.payment_method in GATEWAY_PAYMENT_METHODS
+        payment_redirect_url = None
+        gateway_tr_id = None
+
+        if is_gateway and breakdown.total > 0:
+            user = await db.get(User, user_id)
+            marx_method = MARX_PAYMENT_METHOD_MAP[data.payment_method]
+            try:
+                gw = await MarxIPGService.create_order(
+                    merchant_rid=order_number,
+                    amount=breakdown.total,
+                    return_url=settings.marx_ipg_return_url,
+                    customer_mail=user.email if user else "",
+                    customer_mobile=user.phone if user else None,
+                    order_summary=f"SRIBEESonline order {order_number}",
+                    customer_reference=(user.full_name if user else None) or order_number,
+                    marx_payment_method=marx_method,
+                )
+            except MarxIPGError as exc:
+                raise ValueError(f"Could not start payment: {exc}") from exc
+            payment_redirect_url = gw.get("pay_url")
+            gateway_tr_id = str(gw["tr_id"]) if gw.get("tr_id") is not None else None
+        elif is_gateway:
+            is_gateway = False
+
+        # Payment status. COD is collected on delivery, so it is always
+        # PENDING regardless of total. A WALLET order (or a gateway-method
+        # order the wallet alone fully covers) whose total is fully covered is
+        # already PAID; a real gateway order stays PENDING until Marx confirms
+        # it (see _on_payment_confirmed / the /payments/marx/confirm endpoint).
+        if breakdown.total <= 0 and data.payment_method in (
+            PaymentMethodEnum.WALLET.value, *GATEWAY_PAYMENT_METHODS
+        ):
             payment_status_value = PaymentStatus.PAID.value
         else:
             payment_status_value = PaymentStatus.PENDING.value
@@ -206,7 +314,10 @@ class OrderService:
             coupon_code=coupon_row.code if coupon_row else data.coupon_code,
             notes=data.notes,
             status=OrderStatus.PENDING.value,
-            payment_status=payment_status_value
+            payment_status=payment_status_value,
+            gateway_tr_id=gateway_tr_id,
+            courier_quote_id=breakdown.courier_quote_id,
+            courier_quote_expires_at=breakdown.courier_quote_expires_at,
         )
 
         db.add(order)
@@ -250,7 +361,12 @@ class OrderService:
                 order_id=order.order_id,
                 order_number=order_number,
             )
-        if cashback_earned > 0:
+        # Cashback is credited to the wallet immediately for COD/WALLET (paid
+        # synchronously or collected on delivery), but DEFERRED for gateway
+        # methods until Marx actually confirms the payment succeeded --
+        # crediting it here for a card payment that later fails or is
+        # abandoned would be wrong. See OrderService._on_payment_confirmed.
+        if cashback_earned > 0 and not is_gateway:
             await WalletService.apply_transaction(
                 db,
                 user_id=user_id,
@@ -260,6 +376,7 @@ class OrderService:
                 order_id=order.order_id,
                 order_number=order_number,
             )
+            order.cashback_credited_at = datetime.utcnow()
 
         # Record what this order owes the buyer's referrer, if they have one.
         # Staged in this transaction as `pending`; it only becomes claimable
@@ -271,8 +388,11 @@ class OrderService:
         await db.commit()
         await db.refresh(order)
 
-        # Clear cart after successful order
-        await CartService.clear_cart(str(user_id))
+        # Clear cart after successful order -- except a real (pending) gateway
+        # order, where the shopper hasn't paid yet and may abandon the hosted
+        # page. That case clears the cart in _on_payment_confirmed instead.
+        if not is_gateway:
+            await CartService.clear_cart(str(user_id))
 
         logger.info(
             f"Order created: {order.order_number} for user {user_id} "
@@ -305,7 +425,245 @@ class OrderService:
                 f"notification failed: {e}"
             )
 
-        return order
+        # Payment already confirmed (WALLET / wallet-fully-covered-gateway
+        # orders): run the same "just got paid" side effects a Marx confirm or
+        # the reconciliation job would trigger later (deferred cashback,
+        # delivery code, courier booking). COD books its courier shipment
+        # immediately since there's nothing to wait for; a real pending
+        # gateway order does neither yet -- both happen once Marx confirms.
+        if payment_status_value == PaymentStatus.PAID.value:
+            await OrderService._on_payment_confirmed(db, order)
+        elif data.payment_method == PaymentMethodEnum.COD.value:
+            await OrderService._book_courier_shipment(db, order)
+
+        return order, payment_redirect_url
+
+    @staticmethod
+    async def _on_payment_confirmed(db: AsyncSession, order: Order) -> None:
+        """
+        Run once an order's payment_status has just become PAID — either
+        synchronously in create_from_cart (WALLET / wallet-fully-covered
+        gateway order) or from update_payment_status's PENDING -> CONFIRMED
+        transition (a Marx confirm, the reconciliation job, or an admin
+        override). Every side effect here is independently idempotent, so
+        calling this twice for the same order (e.g. a confirm racing the
+        reconciliation sweep) is safe.
+        """
+        # 1. Deferred cashback credit (gateway methods only -- COD/WALLET are
+        #    already credited inline at creation, guarded there the same way).
+        if (
+            order.payment_method in GATEWAY_PAYMENT_METHODS
+            and order.cashback_earned
+            and order.cashback_earned > 0
+            and order.cashback_credited_at is None
+        ):
+            await WalletService.apply_transaction(
+                db,
+                user_id=order.user_id,
+                tx_type=WalletTransactionType.EARNED,
+                amount=order.cashback_earned,
+                title="Order cashback",
+                order_id=order.order_id,
+                order_number=order.order_number,
+            )
+            order.cashback_credited_at = datetime.utcnow()
+
+        # 2. Delivery handover verification code (non-COD only; idempotent).
+        await DeliveryVerificationService.generate_for_order(db, order)
+
+        # 3. Cart clearing deferred from create_from_cart for gateway orders.
+        if order.payment_method in GATEWAY_PAYMENT_METHODS:
+            await CartService.clear_cart(str(order.user_id))
+
+        await db.commit()
+        await db.refresh(order)
+
+        # 4. Courier booking -- separate commit inside, best-effort (a courier
+        #    outage must never undo a paid order).
+        await OrderService._book_courier_shipment(db, order)
+
+    @staticmethod
+    async def _book_courier_shipment(db: AsyncSession, order: Order) -> None:
+        """
+        Book the courier shipment for a confirmed order (docs/COURIER_API.md
+        section 5). Idempotent no-op if already booked. Best-effort: a courier
+        outage must never roll back a paid/placed order, so failures are
+        logged and recorded on the order rather than raised.
+        """
+        if order.courier_shipment_id:
+            return
+        if not order.branch_id or not order.delivery_address_id:
+            logger.warning(
+                f"Order {order.order_number}: no branch/address resolved, "
+                f"skipping courier booking"
+            )
+            return
+
+        from app.services import branch_service
+
+        branch = await db.get(Branch, order.branch_id)
+        address = await db.get(Address, order.delivery_address_id)
+        if branch is None or address is None:
+            logger.warning(
+                f"Order {order.order_number}: branch/address row missing, "
+                f"skipping courier booking"
+            )
+            return
+
+        origin = branch_service.to_courier_origin(branch)
+        destination = {
+            "recipient_name": address.recipient_name,
+            "phone": address.phone,
+            "address_line1": address.address_line1,
+            "address_line2": address.address_line2,
+            "post_office": address.post_office,
+            "district": address.district,
+            "province": address.province,
+            "postal_code": address.postal_code,
+        }
+        # Query order items directly rather than via order.items -- that
+        # relationship is not always eagerly loaded on the Order instance this
+        # is called with (e.g. straight out of create_from_cart), and a lazy
+        # load would fail under the async session.
+        item_rows = (
+            await db.execute(
+                select(OrderItem.product_id, OrderItem.quantity).where(
+                    OrderItem.order_id == order.order_id
+                )
+            )
+        ).all()
+        priced_items = await OrderService._attach_weights(
+            db,
+            [{"product_id": str(product_id), "quantity": quantity} for product_id, quantity in item_rows],
+        )
+        weight_kg = sum(
+            Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"]))
+            for i in priced_items
+        )
+        item_count = sum(i["quantity"] for i in priced_items)
+        is_cod = order.payment_method == PaymentMethodEnum.COD.value
+        courier_payment_method = to_courier_payment_method(order.payment_method)
+
+        try:
+            result = await CourierService.book_shipment(
+                order_number=order.order_number,
+                quote_id=order.courier_quote_id,
+                origin=origin,
+                destination=destination,
+                weight_kg=weight_kg,
+                item_count=item_count,
+                payment_method=courier_payment_method,
+                cod_amount_lkr=order.total_amount if is_cod else Decimal("0"),
+            )
+        except CourierQuoteExpiredError:
+            # The customer already paid/agreed the OLD shipping_amount; we
+            # cannot re-bill them for a higher courier quote now. Re-quote and
+            # book at the new price, absorbing any positive delta -- this is a
+            # deliberate default that needs product/finance sign-off, not
+            # silently assumed (see the plan's Open Risks).
+            logger.warning(
+                f"Courier quote expired for order {order.order_number}, re-quoting at booking time"
+            )
+            try:
+                fresh = await CourierService.get_rate(
+                    origin=origin,
+                    destination=destination,
+                    weight_kg=weight_kg,
+                    item_count=item_count,
+                    order_value_lkr=order.subtotal,
+                    payment_method=courier_payment_method,
+                )
+                result = await CourierService.book_shipment(
+                    order_number=order.order_number,
+                    quote_id=fresh.quote_id,
+                    origin=origin,
+                    destination=destination,
+                    weight_kg=weight_kg,
+                    item_count=item_count,
+                    payment_method=courier_payment_method,
+                    cod_amount_lkr=order.total_amount if is_cod else Decimal("0"),
+                )
+            except (CourierQuoteExpiredError, CourierUnavailableError) as exc:
+                order.courier_booking_status = "failed"
+                await db.commit()
+                logger.error(f"Courier re-booking failed for order {order.order_number}: {exc}")
+                return
+        except CourierUnavailableError as exc:
+            order.courier_booking_status = "failed"
+            await db.commit()
+            logger.error(f"Courier booking failed for order {order.order_number}: {exc}")
+            return
+
+        order.courier_shipment_id = result.get("shipment_id")
+        order.courier_waybill_number = result.get("waybill_number")
+        order.courier_tracking_status = result.get("status", "booked")
+        order.courier_booking_status = "booked"
+        await db.commit()
+        logger.info(
+            f"Courier shipment booked for order {order.order_number}: "
+            f"{order.courier_shipment_id} ({order.courier_waybill_number})"
+        )
+
+    @staticmethod
+    async def get_by_courier_shipment_id(db: AsyncSession, shipment_id: str) -> Optional[Order]:
+        """Look up an order by the courier's shipment id (for inbound webhooks)."""
+        result = await db.execute(
+            select(Order).where(Order.courier_shipment_id == shipment_id)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def reconcile_pending_gateway_payments(db: AsyncSession) -> dict:
+        """
+        Sweep gateway orders stuck in PENDING and resolve them against Marx's
+        own record of what happened (doc section 7's own recommendation).
+
+        Only considers orders older than a 10-minute grace period so this
+        never races a shopper still on the hosted pay page. Shared by
+        ``scripts/reconcile_marx_payments.py`` and the admin-triggered
+        endpoint, so both drive the exact same logic.
+        """
+        cutoff = datetime.utcnow() - timedelta(minutes=10)
+        result = await db.execute(
+            select(Order).where(
+                Order.payment_method.in_(GATEWAY_PAYMENT_METHODS),
+                Order.payment_status == PaymentStatus.PENDING.value,
+                Order.gateway_tr_id.isnot(None),
+                Order.created_at < cutoff,
+            )
+        )
+        orders = result.scalars().all()
+
+        resolved = {"checked": len(orders), "paid": 0, "failed": 0, "still_pending": 0}
+        for order in orders:
+            try:
+                summary = await MarxIPGService.get_order_summary(tr_id=order.gateway_tr_id)
+            except MarxIPGError as exc:
+                logger.warning(f"Reconciliation: could not fetch summary for {order.order_number}: {exc}")
+                resolved["still_pending"] += 1
+                continue
+
+            order.gateway_status = summary["summary_result"]
+            order.gateway_response_code = summary.get("gateway_code")
+            order.gateway_raw_response = summary["raw"]
+            order.gateway_confirmed_at = datetime.utcnow()
+
+            if summary["summary_result"] == "SUCCESS" and summary.get("order_status") in ("SUCCESS", "CAPTURED"):
+                await db.commit()
+                await OrderService.update_payment_status(
+                    db, order, PaymentStatusEnum.PAID, payment_id=order.gateway_tr_id
+                )
+                resolved["paid"] += 1
+            elif summary["summary_result"] == "FAILURE":
+                order.payment_status = PaymentStatus.FAILED.value
+                await db.commit()
+                resolved["failed"] += 1
+            else:
+                await db.commit()
+                resolved["still_pending"] += 1
+
+        logger.info(f"Marx reconciliation sweep: {resolved}")
+        return resolved
 
     @staticmethod
     async def reorder(
@@ -594,9 +952,23 @@ class OrderService:
         await db.commit()
         await db.refresh(order)
 
+        if status == OrderStatusEnum.CANCELLED and not was_cancelled and order.courier_shipment_id:
+            await OrderService._cancel_courier_shipment(order)
+
         logger.info(f"Order {order.order_number} status updated to {status.value}")
 
         return order
+
+    @staticmethod
+    async def _cancel_courier_shipment(order: Order) -> None:
+        """Best-effort courier-side cancellation; never blocks an order cancellation."""
+        try:
+            await CourierService.cancel_shipment(order.courier_shipment_id)
+            logger.info(f"Courier shipment cancelled for order {order.order_number}")
+        except CourierUnavailableError as exc:
+            logger.warning(
+                f"Could not cancel courier shipment for order {order.order_number}: {exc}"
+            )
 
     @staticmethod
     async def update_payment_status(
@@ -611,12 +983,20 @@ class OrderService:
         if payment_id:
             order.payment_id = payment_id
 
-        # If payment successful, confirm order
-        if payment_status == PaymentStatusEnum.PAID and order.status == OrderStatus.PENDING.value:
+        # If payment successful, confirm order and run the "just got paid"
+        # side effects (deferred cashback, delivery code, courier booking).
+        just_confirmed = (
+            payment_status == PaymentStatusEnum.PAID and order.status == OrderStatus.PENDING.value
+        )
+        if just_confirmed:
             order.status = OrderStatus.CONFIRMED.value
 
         await db.commit()
         await db.refresh(order)
+
+        if just_confirmed:
+            await OrderService._on_payment_confirmed(db, order)
+            await db.refresh(order)
 
         logger.info(f"Order {order.order_number} payment status updated to {payment_status.value}")
 
@@ -653,6 +1033,9 @@ class OrderService:
 
         await db.commit()
         await db.refresh(order)
+
+        if order.courier_shipment_id:
+            await OrderService._cancel_courier_shipment(order)
 
         logger.info(f"Order {order.order_number} cancelled")
 
