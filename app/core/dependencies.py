@@ -272,28 +272,39 @@ RequireInventory = Depends(require_roles("super_admin", "branch_manager", "inven
 # Branch Isolation
 # ============================================================================
 
+# Roles that see every branch's data rather than being pinned to one.
+# Super Admin manages the whole network; Customer Support is a helpdesk role
+# that has to be able to look up any customer's order regardless of which
+# branch fulfilled it — a support agent isn't "assigned to" one store the way
+# a Branch Manager, Marketing Manager or Inventory Manager is.
+UNSCOPED_ROLES = {"super_admin", "customer_support"}
+
+
 class BranchScope:
     """
     Resolved branch-visibility scope for an authenticated admin.
 
-    - Super Admins are *unscoped* (``is_super_admin=True``, ``branch_id`` may be
-      None) and can see every branch's data.
-    - All other admins are pinned to their assigned ``branch_id``; queries must
-      filter on it so a Branch Manager only ever sees their own branch.
+    - ``is_super_admin`` reflects the literal role — use it only for
+      super-admin-specific powers (e.g. "may force a branch_id on write").
+    - ``is_unscoped`` is the broader "sees every branch" characteristic
+      (Super Admin *and* Customer Support); use this for read/visibility
+      decisions. Everyone else is pinned to their assigned ``branch_id``.
     """
 
-    def __init__(self, is_super_admin: bool, branch_id: Optional[UUID]):
+    def __init__(self, is_super_admin: bool, is_unscoped: bool, branch_id: Optional[UUID]):
         self.is_super_admin = is_super_admin
+        self.is_unscoped = is_unscoped
         self.branch_id = branch_id
 
     def resolve(self, requested_branch_id: Optional[UUID] = None) -> Optional[UUID]:
         """
         Return the branch_id a query should filter on (None = all branches).
 
-        Super Admins may optionally narrow to ``requested_branch_id``; scoped
-        admins always resolve to their own branch regardless of the request.
+        Unscoped admins may optionally narrow to ``requested_branch_id``;
+        scoped admins always resolve to their own branch regardless of the
+        request.
         """
-        if self.is_super_admin:
+        if self.is_unscoped:
             return requested_branch_id
         return self.branch_id
 
@@ -305,18 +316,19 @@ async def inject_branch_filter(
     Branch-isolation dependency.
 
     Yields a :class:`BranchScope` describing what the current admin may see.
-    Non-super admins without an assigned branch are rejected — they have no
-    valid scope to operate within.
+    Scoped admins (everyone outside ``UNSCOPED_ROLES``) without an assigned
+    branch are rejected — they have no valid scope to operate within.
     """
     role = admin.role.value if hasattr(admin.role, "value") else admin.role
     is_super = role == "super_admin"
+    is_unscoped = role in UNSCOPED_ROLES
 
-    if not is_super and admin.branch_id is None:
+    if not is_unscoped and admin.branch_id is None:
         raise InsufficientPermissionsError(
             message="Your admin account is not assigned to a branch.",
         )
 
-    return BranchScope(is_super_admin=is_super, branch_id=admin.branch_id)
+    return BranchScope(is_super_admin=is_super, is_unscoped=is_unscoped, branch_id=admin.branch_id)
 
 
 # ============================================================================

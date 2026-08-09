@@ -4,8 +4,11 @@ Admin Order Management API (Module 7.3)
 Branch-scoped order operations. Restricted to super_admin, branch_manager and
 customer_support (enforced at the router level). Branch isolation is applied
 via ``inject_branch_filter`` — a Branch Manager only sees/edits orders whose
-``branch_id`` matches their assigned branch; a Super Admin sees all branches
-(optionally narrowed by ``?branch_id=``).
+``branch_id`` matches their assigned branch; Super Admin and Customer Support
+are unscoped and see every branch (optionally narrowed by ``?branch_id=``) —
+a support agent has to be able to look up any customer's order regardless of
+which branch fulfilled it, not just the branch they happen to be listed
+under.
 
 Prefix "/admin/orders" is applied by app/api/v1/router.py.
 """
@@ -134,12 +137,12 @@ async def list_orders(
     order_status: Optional[OrderStatusEnum] = Query(None, description="Filter by order status"),
     search: Optional[str] = Query(None, description="Match order number, customer name or email"),
     branch_id: Optional[UUID] = Query(
-        None, description="Super Admin only: narrow to a branch (ignored for scoped admins)"
+        None, description="Super Admin / Customer Support only: narrow to a branch (ignored for scoped admins)"
     ),
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
 ):
-    """Paginated, branch-scoped order list."""
+    """Paginated order list — branch-scoped for Branch Manager, network-wide for Super Admin and Customer Support."""
     effective_branch = scope.resolve(branch_id)
     offset = (page - 1) * limit
 
@@ -213,7 +216,7 @@ async def _load_scoped_order(db: AsyncSession, order_id: UUID, scope: BranchScop
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
     # A scoped admin can only touch orders in their own branch.
-    if not scope.is_super_admin and order.branch_id != scope.branch_id:
+    if not scope.is_unscoped and order.branch_id != scope.branch_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This order belongs to another branch.",
