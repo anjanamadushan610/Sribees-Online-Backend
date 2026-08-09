@@ -21,7 +21,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import BranchScope, get_current_admin, inject_branch_filter, require_roles
+from app.core.dependencies import (
+    BranchScope,
+    get_current_admin,
+    inject_branch_filter,
+    require_roles,
+)
 from app.models.branch import Branch
 from app.models.stock_transfer import TransferStatus
 from app.schemas.stock_transfer import StockTransferCreate, StockTransferReject
