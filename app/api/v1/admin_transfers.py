@@ -183,6 +183,9 @@ async def create_transfer(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="from_branch_id and to_branch_id must be different branches.",
         )
+    # The branching above always resolves both sides by this point; asserted
+    # for the type checker and as a guard against a future edit missing a case.
+    assert from_branch_id is not None and to_branch_id is not None
 
     try:
         transfer = await StockTransferService.create(
@@ -197,7 +200,7 @@ async def create_transfer(
     except StockTransferError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    found = await StockTransferService.get(db, transfer.transfer_id)
+    found = await _load_or_404(db, transfer.transfer_id)
     return {"success": True, "data": _format(found), "message": "Transfer request created"}
 
 
@@ -225,7 +228,7 @@ async def approve_transfer(
     except StockTransferError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    found = await StockTransferService.get(db, transfer_id)
+    found = await _load_or_404(db, transfer_id)
     return {"success": True, "data": _format(found), "message": "Transfer approved"}
 
 
@@ -247,7 +250,7 @@ async def reject_transfer(
     except StockTransferError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    found = await StockTransferService.get(db, transfer_id)
+    found = await _load_or_404(db, transfer_id)
     return {"success": True, "data": _format(found), "message": "Transfer rejected"}
 
 
@@ -268,7 +271,7 @@ async def ship_transfer(
     except StockTransferError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    found = await StockTransferService.get(db, transfer_id)
+    found = await _load_or_404(db, transfer_id)
     return {"success": True, "data": _format(found), "message": "Transfer marked in transit"}
 
 
@@ -289,5 +292,5 @@ async def complete_transfer(
     except StockTransferError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    found = await StockTransferService.get(db, transfer_id)
+    found = await _load_or_404(db, transfer_id)
     return {"success": True, "data": _format(found), "message": "Transfer completed"}
