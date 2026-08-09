@@ -22,6 +22,7 @@ from app.models.product import (
     VariantType,
 )
 from app.models.referral import ReferralCommission, ReferralCommissionStatus
+from app.models.stock_transfer import StockTransfer, TransferStatus
 from app.models.user import (
     Address,
     EmailVerification,
@@ -83,4 +84,7 @@ __all__ = [
     "PostOfficeDirectory",
     # App settings
     "AppSetting",
+    # Stock transfers
+    "StockTransfer",
+    "TransferStatus",
 ]

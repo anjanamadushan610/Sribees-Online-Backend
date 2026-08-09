@@ -18,6 +18,7 @@ from app.api.v1 import (
     admin_orders,
     admin_partners,
     admin_settings,
+    admin_transfers,
     admin_users,
     app_public,
     auth,
@@ -189,6 +190,16 @@ router.include_router(
     admin_inventory.router,
     prefix="/admin/inventory",
     tags=["Admin Inventory"],
+)
+
+# Admin Stock Transfers (/admin/transfers). A scoped admin sees/acts on
+# transfers where their branch is either party; restricted to
+# super_admin/branch_manager/inventory_manager (approve/reject/ship/complete
+# further restricted to super_admin/inventory_manager inside the router).
+router.include_router(
+    admin_transfers.router,
+    prefix="/admin/transfers",
+    tags=["Admin Stock Transfers"],
 )
 
 # Admin Branch management (/admin/branches) — Super Admin only.
