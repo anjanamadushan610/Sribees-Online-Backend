@@ -32,23 +32,30 @@ class User(Base):
     )
 
     # Account info
-    email: str = Column(
+    # Nullable: phone-registered accounts (Module — phone-first sign-up) have
+    # neither an email nor a password until the user later adds them.
+    email: Optional[str] = Column(
         String(255),
         unique=True,
-        nullable=False,
+        nullable=True,
         index=True,
     )
-    password_hash: str = Column(
+    password_hash: Optional[str] = Column(
         String(255),
-        nullable=False,
+        nullable=True,
     )
     full_name: str = Column(
         String(100),
         nullable=False,
     )
+    # Unique: for phone-registered accounts this is the account's identity
+    # key. Stays nullable — Postgres allows multiple NULLs in a unique
+    # column, so email-only accounts without a phone are unaffected.
     phone: Optional[str] = Column(
         String(20),
+        unique=True,
         nullable=True,
+        index=True,
     )
     profile_picture_url: Optional[str] = Column(
         Text,

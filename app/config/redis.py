@@ -214,8 +214,13 @@ class RedisKeys:
     # Phone OTP verification key
     @staticmethod
     def phone_otp(user_id: str) -> str:
-        """Short-lived phone-verification OTP key."""
+        """Short-lived phone-verification OTP key (already-authenticated user)."""
         return f"otp:phone:{user_id}"
+
+    @staticmethod
+    def phone_registration_otp(phone: str) -> str:
+        """Short-lived OTP key for phone-first registration (no account yet)."""
+        return f"otp:register:{phone}"
 
     # AI shopping chat history key
     @staticmethod

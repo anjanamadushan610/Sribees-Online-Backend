@@ -262,6 +262,32 @@ class VerifyOTPRequest(BaseModel):
         return v
 
 
+class RequestPhoneOTPRequest(BaseModel):
+    """Request to send a registration OTP to a phone number (no account yet)."""
+
+    phone: str = Field(..., min_length=8, max_length=20, description="Phone number, e.g. +94771234567")
+
+    class Config:
+        json_schema_extra = {
+            "example": {"phone": "+94771234567"},
+        }
+
+
+class VerifyPhoneOTPRequest(BaseModel):
+    """Request to verify a registration OTP and log in/register by phone."""
+
+    phone: str = Field(..., min_length=8, max_length=20)
+    code: str = Field(..., min_length=6, max_length=6)
+
+    @field_validator("code")
+    @classmethod
+    def digits_only(cls, v: str) -> str:
+        v = v.strip()
+        if not v.isdigit():
+            raise ValueError("OTP code must be 6 digits")
+        return v
+
+
 class VerifyOTPResponse(BaseModel):
     """Response after verifying a phone OTP."""
     success: bool = True
@@ -276,7 +302,7 @@ class UserResponse(BaseModel):
     """User data response schema."""
 
     user_id: UUID = Field(..., alias="userId")
-    email: EmailStr
+    email: Optional[EmailStr] = None
     full_name: str = Field(..., alias="fullName")
     phone: Optional[str] = None
     profile_picture_url: Optional[str] = Field(None, alias="profilePictureUrl")

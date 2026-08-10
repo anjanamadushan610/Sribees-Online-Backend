@@ -9,7 +9,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.config.redis import RedisTTL, get_redis
+from app.config.redis import RedisKeys, RedisTTL, get_redis
 from app.core.dependencies import CurrentUser
 from app.models.user import User
 from app.schemas.auth import (
@@ -24,6 +24,7 @@ from app.schemas.auth import (
     RegisterRequest,
     RegisterResponse,
     RequestOTPResponse,
+    RequestPhoneOTPRequest,
     ResendVerificationRequest,
     ResetPasswordRequest,
     SessionsListResponse,
@@ -31,6 +32,7 @@ from app.schemas.auth import (
     VerifyEmailRequest,
     VerifyOTPRequest,
     VerifyOTPResponse,
+    VerifyPhoneOTPRequest,
 )
 from app.services.auth_service import AuthService
 from app.services.otp_service import OTPService
@@ -139,7 +141,7 @@ async def request_otp(
     """Generate + 'send' a phone-verification OTP for the current user."""
     await OTPService.request_otp(
         redis,
-        user_id=str(current_user.user_id),
+        key=RedisKeys.phone_otp(str(current_user.user_id)),
         phone=current_user.phone or "",
     )
     return RequestOTPResponse(
@@ -166,7 +168,9 @@ async def verify_otp(
     """Verify the OTP and set is_phone_verified=True on success."""
     from fastapi import HTTPException
 
-    ok = await OTPService.verify_otp(redis, str(current_user.user_id), data.code)
+    ok = await OTPService.verify_otp(
+        redis, RedisKeys.phone_otp(str(current_user.user_id)), data.code
+    )
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -181,6 +185,62 @@ async def verify_otp(
     await db.commit()
 
     return VerifyOTPResponse(is_phone_verified=True, message="Phone number verified")
+
+
+@router.post(
+    "/phone/request-otp",
+    response_model=RequestOTPResponse,
+    summary="Request a phone registration OTP",
+    description=(
+        "Generates a 6-digit code for the given phone number and dispatches "
+        "it (mock SMS → server log). No account or login required — this is "
+        "the first step of phone-first sign-up."
+    ),
+)
+async def request_otp_by_phone(
+    data: RequestPhoneOTPRequest,
+    redis: Redis = Depends(get_redis),
+) -> RequestOTPResponse:
+    """Generate + 'send' an OTP for a phone number that has no account yet."""
+    await OTPService.request_otp(
+        redis,
+        key=RedisKeys.phone_registration_otp(data.phone),
+        phone=data.phone,
+    )
+    return RequestOTPResponse(
+        message="Verification code sent",
+        expires_in_seconds=RedisTTL.PHONE_OTP,
+    )
+
+
+@router.post(
+    "/phone/verify-otp",
+    response_model=AuthResponse,
+    summary="Verify a phone registration OTP and log in / register",
+    description=(
+        "Validates the 6-digit code against Redis. On success, finds or "
+        "creates the account for this phone number (phone is the unique "
+        "key — name is filled in later via profile) and returns a session."
+    ),
+)
+async def verify_otp_by_phone(
+    data: VerifyPhoneOTPRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> AuthResponse:
+    """Verify the OTP, then find-or-create the account by phone and log in."""
+    from fastapi import HTTPException
+
+    ok = await OTPService.verify_otp(
+        redis, RedisKeys.phone_registration_otp(data.phone), data.code
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code.",
+        )
+
+    return await AuthService.login_or_register_by_phone(data.phone, db)
 
 
 @router.post(

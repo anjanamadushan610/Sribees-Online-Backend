@@ -132,6 +132,7 @@ class AuthService:
                 phone=user.phone,
                 profile_picture_url=user.profile_picture_url,
                 is_verified=user.is_verified,
+                is_phone_verified=user.is_phone_verified,
                 two_factor_enabled=user.two_factor_enabled,
                 created_at=user.created_at,
                 updated_at=user.updated_at,
@@ -220,6 +221,89 @@ class AuthService:
                 phone=user.phone,
                 profile_picture_url=user.profile_picture_url,
                 is_verified=user.is_verified,
+                is_phone_verified=user.is_phone_verified,
+                two_factor_enabled=user.two_factor_enabled,
+                created_at=user.created_at,
+                updated_at=user.updated_at,
+                last_login=user.last_login,
+            ),
+            tokens=TokensResponse(
+                access_token=tokens["access_token"],
+                refresh_token=tokens["refresh_token"],
+            ),
+        )
+
+    # ========================================================================
+    # Phone-first registration / login
+    # ========================================================================
+
+    @staticmethod
+    async def login_or_register_by_phone(phone: str, db: AsyncSession) -> AuthResponse:
+        """
+        Find-or-create a user by phone number and log them in.
+
+        A verified OTP is the only gate here — the phone number is the
+        account's identity key, so the first successful verification silently
+        creates the account (name is empty until the user sets it via
+        profile) and every verification after that is just a login.
+
+        Args:
+            phone: Phone number, already OTP-verified by the caller
+            db: Database session
+
+        Returns:
+            AuthResponse with the (possibly new) user and fresh tokens
+        """
+        result = await db.execute(select(User).where(User.phone == phone))
+        user = result.scalar_one_or_none()
+
+        if not user:
+            user = User(
+                user_id=uuid4(),
+                phone=phone,
+                full_name="",
+                is_verified=True,
+                is_phone_verified=True,
+            )
+            db.add(user)
+            await db.flush()
+            logger.info(f"New user registered by phone: {phone}")
+
+        session_id = uuid4()
+        expires_at = datetime.utcnow() + timedelta(days=7)
+
+        session = Session(
+            session_id=session_id,
+            user_id=user.user_id,
+            refresh_token_hash="placeholder",  # Will be updated after token generation
+            expires_at=expires_at,
+        )
+        db.add(session)
+
+        user.last_login = datetime.utcnow()
+
+        await db.commit()
+        await db.refresh(user)
+
+        tokens = create_token_pair(
+            user_id=user.user_id,
+            email=user.email or "",
+            session_id=session_id,
+        )
+
+        logger.info(f"User logged in by phone: {phone}")
+
+        return AuthResponse(
+            success=True,
+            message="Login successful",
+            user=UserResponse(
+                user_id=user.user_id,
+                email=user.email,
+                full_name=user.full_name,
+                phone=user.phone,
+                profile_picture_url=user.profile_picture_url,
+                is_verified=user.is_verified,
+                is_phone_verified=user.is_phone_verified,
                 two_factor_enabled=user.two_factor_enabled,
                 created_at=user.created_at,
                 updated_at=user.updated_at,
@@ -656,6 +740,7 @@ class AuthService:
                 phone=user.phone,
                 profile_picture_url=user.profile_picture_url,
                 is_verified=user.is_verified,
+                is_phone_verified=user.is_phone_verified,
                 two_factor_enabled=user.two_factor_enabled,
                 created_at=user.created_at,
                 updated_at=user.updated_at,
@@ -709,6 +794,7 @@ class AuthService:
                 phone=user.phone,
                 profile_picture_url=user.profile_picture_url,
                 is_verified=user.is_verified,
+                is_phone_verified=user.is_phone_verified,
                 two_factor_enabled=user.two_factor_enabled,
                 created_at=user.created_at,
                 updated_at=user.updated_at,

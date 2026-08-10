@@ -10,7 +10,7 @@ import secrets
 from loguru import logger
 from redis.asyncio import Redis
 
-from app.config.redis import RedisKeys, RedisTTL
+from app.config.redis import RedisTTL
 
 _OTP_DIGITS = 6
 
@@ -24,17 +24,18 @@ class OTPService:
         return f"{secrets.randbelow(10 ** _OTP_DIGITS):0{_OTP_DIGITS}d}"
 
     @staticmethod
-    async def request_otp(redis: Redis, user_id: str, phone: str) -> None:
+    async def request_otp(redis: Redis, key: str, phone: str) -> None:
         """
-        Generate an OTP for the user, store it in Redis (3-min expiry) and
-        'send' it. Overwrites any existing code for this user.
+        Generate an OTP, store it in Redis under ``key`` (3-min expiry) and
+        'send' it. Overwrites any existing code under that key.
+
+        ``key`` is caller-supplied so the same flow serves both an
+        already-authenticated user re-verifying their phone
+        (``RedisKeys.phone_otp(user_id)``) and phone-first registration,
+        where there is no account yet (``RedisKeys.phone_registration_otp(phone)``).
         """
         code = OTPService._generate_code()
-        await redis.set(
-            RedisKeys.phone_otp(user_id),
-            code,
-            ex=RedisTTL.PHONE_OTP,
-        )
+        await redis.set(key, code, ex=RedisTTL.PHONE_OTP)
         OTPService._dispatch(phone, code)
 
     @staticmethod
@@ -47,13 +48,12 @@ class OTPService:
         )
 
     @staticmethod
-    async def verify_otp(redis: Redis, user_id: str, code: str) -> bool:
+    async def verify_otp(redis: Redis, key: str, code: str) -> bool:
         """
-        Validate ``code`` against the stored OTP. On success the code is
-        consumed (deleted) so it can't be reused. Returns False if missing,
-        expired or mismatched.
+        Validate ``code`` against the OTP stored under ``key``. On success the
+        code is consumed (deleted) so it can't be reused. Returns False if
+        missing, expired or mismatched.
         """
-        key = RedisKeys.phone_otp(user_id)
         stored = await redis.get(key)
         if stored is None:
             return False
