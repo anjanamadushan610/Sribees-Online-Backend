@@ -102,3 +102,29 @@ async def get_splash_config(
         }
 
     return payload
+
+
+# ============================================================================
+# GET /support-info
+# ============================================================================
+
+@router.get(
+    "/support-info",
+    response_model=dict,
+    summary="Get customer support contact info",
+    description=(
+        "Public endpoint for the app's Help & Support screen. Returns the "
+        "support phone number and email configured in app_settings."
+    ),
+)
+async def get_support_info(db: AsyncSession = Depends(get_db)):
+    phone_setting = await AppSettingsService.get_by_key(db, "support_phone")
+    email_setting = await AppSettingsService.get_by_key(db, "support_email")
+
+    return {
+        "success": True,
+        "data": {
+            "supportPhone": phone_setting.value if phone_setting else None,
+            "supportEmail": email_setting.value if email_setting else None,
+        },
+    }
