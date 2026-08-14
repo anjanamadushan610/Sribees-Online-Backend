@@ -11,6 +11,7 @@ from loguru import logger
 from redis.asyncio import Redis
 
 from app.config.redis import RedisTTL
+from app.config.settings import settings
 
 _OTP_DIGITS = 6
 
@@ -53,14 +54,22 @@ class OTPService:
         Validate ``code`` against the OTP stored under ``key``. On success the
         code is consumed (deleted) so it can't be reused. Returns False if
         missing, expired or mismatched.
+
+        TEMPORARY: if settings.otp_test_bypass_code is set and matches, this
+        short-circuits to True without touching Redis at all -- see the
+        setting's docstring for removal instructions.
         """
+        submitted = code.strip()
+        if settings.otp_test_bypass_code and submitted == settings.otp_test_bypass_code:
+            return True
+
         stored = await redis.get(key)
         if stored is None:
             return False
 
         # Redis may return bytes or str depending on decode_responses.
         stored_str = stored.decode() if isinstance(stored, (bytes, bytearray)) else str(stored)
-        if not secrets.compare_digest(stored_str, code.strip()):
+        if not secrets.compare_digest(stored_str, submitted):
             return False
 
         await redis.delete(key)

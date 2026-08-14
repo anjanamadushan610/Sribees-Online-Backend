@@ -177,6 +177,22 @@ class Settings(BaseSettings):
     jwt_refresh_expiry: str = Field(default="7d", description="Refresh token expiry string")
 
     # =========================================================================
+    # OTP Test Bypass (TEMPORARY)
+    # =========================================================================
+    otp_test_bypass_code: Optional[str] = Field(
+        default=None,
+        description=(
+            "TEMPORARY: while there is no real OTP delivery channel (SMS/"
+            "WhatsApp) wired up, set this to let QA/testers verify with one "
+            "fixed code instead of reading the code from server logs. Unset "
+            "(None) by default -- only set OTP_TEST_BYPASS_CODE where it's "
+            "needed. Delete this setting and its use in OTPService.verify_otp "
+            "once real OTP delivery ships; until then, disabling it anywhere "
+            "is just removing the env var, no code change needed."
+        ),
+    )
+
+    # =========================================================================
     # Email Settings
     # =========================================================================
     mail_from: str = Field(default="noreply@sribeesonline.lk", description="From email address")
