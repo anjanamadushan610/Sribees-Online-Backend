@@ -11,9 +11,14 @@ from loguru import logger
 from redis.asyncio import Redis
 
 from app.config.redis import RedisTTL
-from app.config.settings import settings
 
 _OTP_DIGITS = 6
+
+# TEMPORARY TEST BYPASS -- delete this line and its use in verify_otp() below
+# once real OTP delivery (WhatsApp/SMS) is wired up. Until then, this one
+# fixed code always verifies successfully so testing isn't blocked on reading
+# codes from server logs.
+_TEST_BYPASS_CODE = "123456"
 
 
 class OTPService:
@@ -55,12 +60,11 @@ class OTPService:
         code is consumed (deleted) so it can't be reused. Returns False if
         missing, expired or mismatched.
 
-        TEMPORARY: if settings.otp_test_bypass_code is set and matches, this
-        short-circuits to True without touching Redis at all -- see the
-        setting's docstring for removal instructions.
+        TEMPORARY: ``_TEST_BYPASS_CODE`` always verifies, without touching
+        Redis -- see its definition above for removal instructions.
         """
         submitted = code.strip()
-        if settings.otp_test_bypass_code and submitted == settings.otp_test_bypass_code:
+        if submitted == _TEST_BYPASS_CODE:
             return True
 
         stored = await redis.get(key)
