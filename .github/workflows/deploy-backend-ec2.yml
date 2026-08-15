@@ -93,12 +93,20 @@ jobs:
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCKER_IMAGE: ghcr.io/${{ github.repository }}
+          # Layered on top of ENV_CONTENT (see step 4b below) instead of living
+          # inside that single consolidated blob -- lets the Marx production
+          # key be rotated/set on its own, without anyone needing to view or
+          # reconstruct the full ENV_CONTENT text (GitHub secrets are
+          # write-only once saved). Either may be left unset; step 4b no-ops
+          # for whichever one is empty.
+          MARX_IPG_API_KEY: ${{ secrets.MARX_IPG_API_KEY }}
+          MARX_IPG_BASE_URL: ${{ secrets.MARX_IPG_BASE_URL }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE
+          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL
           # MUST stay false. script_stop makes the action test every command's
           # exit status itself and return on the first non-zero one. That check
           # sits outside bash, so it ignores `set +e` AND the rule that a
@@ -153,6 +161,24 @@ jobs:
 
             echo "==== 4. WRITE .env FILE ===="
             printf '%s' "$ENV_CONTENT" > .env
+            chmod 600 .env
+
+            echo "==== 4b. LAYER STANDALONE SECRETS ONTO .env ===="
+            # MARX_IPG_API_KEY / MARX_IPG_BASE_URL are set as their own GitHub
+            # secrets rather than living inside the single ENV_CONTENT blob --
+            # replaces the line if ENV_CONTENT already defines it, appends
+            # otherwise. Each is independently optional: an unset secret
+            # leaves whatever (if anything) ENV_CONTENT already had untouched.
+            if [ -n "${MARX_IPG_API_KEY:-}" ]; then
+              grep -v '^MARX_IPG_API_KEY=' .env > .env.tmp || true
+              mv .env.tmp .env
+              echo "MARX_IPG_API_KEY=${MARX_IPG_API_KEY}" >> .env
+            fi
+            if [ -n "${MARX_IPG_BASE_URL:-}" ]; then
+              grep -v '^MARX_IPG_BASE_URL=' .env > .env.tmp || true
+              mv .env.tmp .env
+              echo "MARX_IPG_BASE_URL=${MARX_IPG_BASE_URL}" >> .env
+            fi
             chmod 600 .env
 
             # Extract domain and email safely (defaults if not found)
