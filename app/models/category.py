@@ -16,9 +16,15 @@ class Category(Base):
     __tablename__ = "categories"
 
     category_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # `name`/`description` hold the ENGLISH copy and double as the fallback
+    # whenever the requested locale has no translation (see app.utils.i18n).
     name = Column(String(100), nullable=False)
+    name_si = Column(String(100), nullable=True)
+    name_ta = Column(String(100), nullable=True)
     slug = Column(String(100), unique=True, nullable=False)
     description = Column(Text, nullable=True)
+    description_si = Column(Text, nullable=True)
+    description_ta = Column(Text, nullable=True)
     image_url = Column(String(500), nullable=True)
     parent_category_id = Column(UUID(as_uuid=True), ForeignKey("categories.category_id"), nullable=True)
     is_active = Column(Boolean, default=True)

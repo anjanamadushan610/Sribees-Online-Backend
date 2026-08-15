@@ -2,7 +2,7 @@
 Category API Endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from app.schemas.category import (
     CategoryUpdate,
 )
 from app.services.category_service import CategoryService
+from app.utils.i18n import localized, resolve_language
 
 # Prefix "/categories" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Categories"])
@@ -25,6 +26,7 @@ router = APIRouter(tags=["Categories"])
 
 @router.get("", response_model=dict)
 async def get_categories(
+    request: Request,
     hierarchical: bool = Query(False, description="Return categories in tree structure"),
     include_inactive: bool = Query(False, description="Include inactive categories"),
     top_level_only: bool = Query(
@@ -41,10 +43,15 @@ async def get_categories(
     - **top_level_only**: If true, drops sub-categories. The mobile home screen
       renders one image tile per top-level category, so it would otherwise fetch
       the whole tree and throw most of it away.
+
+    Names and descriptions come back in the caller's ``Accept-Language``
+    (si/ta/en), falling back to English per field where no translation exists.
     """
     try:
+        lang = resolve_language(request.headers.get("accept-language"))
+
         if hierarchical:
-            categories = await CategoryService.get_hierarchical(db)
+            categories = await CategoryService.get_hierarchical(db, lang=lang)
         else:
             categories_raw = await CategoryService.get_all(db, include_inactive)
             if top_level_only:
@@ -56,9 +63,9 @@ async def get_categories(
                 {
                     "_id": str(cat["category_id"]),
                     "category_id": str(cat["category_id"]),
-                    "name": cat["name"],
+                    "name": localized(cat, "name", lang),
                     "slug": cat["slug"],
-                    "description": cat.get("description"),
+                    "description": localized(cat, "description", lang),
                     "image_url": media_url(cat.get("image_url")),
                     "parent_category_id": str(cat["parent_category_id"]) if cat.get("parent_category_id") else None,
                     "is_active": cat["is_active"],
@@ -83,12 +90,17 @@ async def get_categories(
 
 @router.get("/{category_id}", response_model=dict)
 async def get_category(
+    request: Request,
     category_id: str,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Get a single category by ID or slug.
+
+    Name and description resolve to the caller's ``Accept-Language``, falling
+    back to English per field.
     """
+    lang = resolve_language(request.headers.get("accept-language"))
     category = await CategoryService.get_by_id_or_slug(db, category_id)
 
     if not category:
@@ -102,9 +114,9 @@ async def get_category(
         "data": {
             "_id": str(category.category_id),
             "category_id": str(category.category_id),
-            "name": category.name,
+            "name": localized(category, "name", lang),
             "slug": category.slug,
-            "description": category.description,
+            "description": localized(category, "description", lang),
             "image_url": media_url(category.image_url),
             "parent_category_id": str(category.parent_category_id) if category.parent_category_id else None,
             "is_active": category.is_active,

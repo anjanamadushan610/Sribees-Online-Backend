@@ -32,6 +32,7 @@ from app.services import branch_service
 from app.services.category_service import CategoryService
 from app.services.product_review_service import ProductReviewService
 from app.services.product_service import ProductService
+from app.utils.i18n import DEFAULT_LANGUAGE, localized, resolve_language
 
 # Prefix "/products" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Products"])
@@ -46,6 +47,8 @@ def format_product(
     include_variants: bool = False,
     branch_overrides: dict = None,
     rating: dict = None,
+    lang: str = DEFAULT_LANGUAGE,
+    include_translations: bool = False,
 ) -> dict:
     """
     Format product for API response.
@@ -56,16 +59,27 @@ def format_product(
 
     *rating* (optional) carries the aggregated review stats
     ``{"average": float, "count": int}``; when omitted both default to 0.
+
+    *lang* resolves the customer-visible copy (name, description, category
+    names) to that language, per-field, falling back to English wherever a
+    translation is missing — so the client always gets a plain ``name`` and
+    never has to know which languages a given product has been translated
+    into. Defaults to English, which is exactly the pre-i18n behaviour.
+
+    *include_translations* additionally emits the raw per-language columns
+    (``name_si``, ``name_ta``, …) so the admin console can edit every language
+    on one form. Off for customer traffic, which only ever needs the one
+    resolved value and should not carry the others over the wire.
     """
     eff = branch_overrides or {}
     rating = rating or {}
     data = {
         "_id": str(product.product_id),
         "product_id": str(product.product_id),
-        "name": product.name,
+        "name": localized(product, "name", lang),
         "slug": product.slug,
-        "description": product.description,
-        "short_description": product.short_description,
+        "description": localized(product, "description", lang),
+        "short_description": localized(product, "short_description", lang),
         "search_keywords": product.search_keywords,
         "sku": product.sku,
         "price": eff.get("effective_price", float(product.price) if product.price else 0),
@@ -92,6 +106,12 @@ def format_product(
         "updated_at": product.updated_at.isoformat() if product.updated_at else None,
     }
 
+    if include_translations:
+        for field in ("name", "description", "short_description"):
+            for code in ("si", "ta"):
+                key = f"{field}_{code}"
+                data[key] = getattr(product, key, None)
+
     # Category. The flat ids sit alongside the nested objects so clients can
     # filter/group without having to reach into the nested shape.
     data["category_id"] = str(product.category_id) if product.category_id else None
@@ -100,7 +120,7 @@ def format_product(
     if product.category:
         data["category"] = {
             "category_id": str(product.category.category_id),
-            "name": product.category.name,
+            "name": localized(product.category, "name", lang),
             "slug": product.category.slug,
             "image_url": media_url(product.category.image_url),
         }
@@ -112,7 +132,7 @@ def format_product(
     if subcategory:
         data["subcategory"] = {
             "category_id": str(subcategory.category_id),
-            "name": subcategory.name,
+            "name": localized(subcategory, "name", lang),
             "slug": subcategory.slug,
             "image_url": media_url(subcategory.image_url),
         }
@@ -152,6 +172,17 @@ def format_product(
         data["variants"] = []
 
     return data
+
+
+def _request_lang(request: Request) -> str:
+    """
+    Catalog language for this request, from the client's ``Accept-Language``.
+
+    Guests and logged-in users alike carry their language in the header (the
+    mobile client sets it from the in-app language picker), so this needs no
+    session lookup and works identically on every customer endpoint.
+    """
+    return resolve_language(request.headers.get("accept-language"))
 
 
 async def _get_branch_context_for_request(
@@ -234,6 +265,7 @@ async def get_products(
     """
     try:
         context = await _get_branch_context_for_request(redis, request, current_user)
+        lang = _request_lang(request)
         branch_id = UUID(context["branch_id"])
         offset = (page - 1) * limit
 
@@ -270,7 +302,11 @@ async def get_products(
             "success": True,
             "data": {
                 "products": [
-                    format_product(item["product"], branch_overrides=item["effective"])
+                    format_product(
+                        item["product"],
+                        branch_overrides=item["effective"],
+                        lang=lang,
+                    )
                     for item in items
                 ],
                 "pagination": {
@@ -311,6 +347,7 @@ async def get_featured_products(
     """
     try:
         context = await _get_branch_context_for_request(redis, request, current_user)
+        lang = _request_lang(request)
         branch_id = UUID(context["branch_id"])
 
         items = await ProductService.get_featured_for_branch(db, branch_id, limit)
@@ -319,7 +356,11 @@ async def get_featured_products(
             "success": True,
             "data": {
                 "products": [
-                    format_product(item["product"], branch_overrides=item["effective"])
+                    format_product(
+                        item["product"],
+                        branch_overrides=item["effective"],
+                        lang=lang,
+                    )
                     for item in items
                 ],
             },
@@ -356,6 +397,7 @@ async def get_home_feed(
     ``400 DEVICE_ID_REQUIRED`` if called as a guest without X-Device-Id.
     """
     context = await _get_branch_context_for_request(redis, request, current_user)
+    lang = _request_lang(request)
     branch_id = UUID(context["branch_id"])
     items = await ProductService.get_quick_sale_products(db, branch_id, limit)
 
@@ -363,7 +405,11 @@ async def get_home_feed(
         "success": True,
         "data": {
             "products": [
-                format_product(item["product"], branch_overrides=item["effective"])
+                format_product(
+                    item["product"],
+                    branch_overrides=item["effective"],
+                    lang=lang,
+                )
                 for item in items
             ],
             "branch": {
@@ -393,6 +439,7 @@ async def search_products(
     """
     try:
         context = await _get_branch_context_for_request(redis, request, current_user)
+        lang = _request_lang(request)
         branch_id = UUID(context["branch_id"])
         offset = (page - 1) * limit
 
@@ -408,7 +455,11 @@ async def search_products(
             "success": True,
             "data": {
                 "products": [
-                    format_product(item["product"], branch_overrides=item["effective"])
+                    format_product(
+                        item["product"],
+                        branch_overrides=item["effective"],
+                        lang=lang,
+                    )
                     for item in items
                 ],
                 "pagination": {
@@ -448,6 +499,7 @@ async def get_products_by_category(
     """
     try:
         context = await _get_branch_context_for_request(redis, request, current_user)
+        lang = _request_lang(request)
         branch_id = UUID(context["branch_id"])
         offset = (page - 1) * limit
 
@@ -471,7 +523,11 @@ async def get_products_by_category(
             "success": True,
             "data": {
                 "products": [
-                    format_product(item["product"], branch_overrides=item["effective"])
+                    format_product(
+                        item["product"],
+                        branch_overrides=item["effective"],
+                        lang=lang,
+                    )
                     for item in items
                 ],
                 "pagination": {
@@ -510,6 +566,7 @@ async def get_product(
     resolved branch — even if it exists in the Global Catalog.
     """
     context = await _get_branch_context_for_request(redis, request, current_user)
+    lang = _request_lang(request)
     branch_id = UUID(context["branch_id"])
 
     # Resolve the product_id (may be UUID or slug)
@@ -559,6 +616,7 @@ async def get_product(
             include_variants=True,
             branch_overrides=result["effective"],
             rating={"average": average, "count": count},
+            lang=lang,
         ),
     }
 

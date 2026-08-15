@@ -173,13 +173,24 @@ async def _upload_image(file: UploadFile, folder: str) -> str:
         )
 
 
+# Per-language columns the admin console edits directly. Customer endpoints
+# resolve these down to one value (see app.utils.i18n); the admin needs them
+# raw so every language is editable on the same form.
+_CATEGORY_TRANSLATION_FIELDS = (
+    "name_si",
+    "name_ta",
+    "description_si",
+    "description_ta",
+)
+
+
 def _format_category(cat) -> dict:
     """Serialize a Category ORM row (or the dict from CategoryService.get_all)."""
     # image_url is stored as a relative path; resolve it to an absolute URL here,
     # at the edge, so clients never have to know where media happens to live.
     if isinstance(cat, dict):
         parent = cat.get("parent_category_id")
-        return {
+        data = {
             "category_id": str(cat["category_id"]),
             "name": cat["name"],
             "slug": cat["slug"],
@@ -189,7 +200,10 @@ def _format_category(cat) -> dict:
             "is_active": cat["is_active"],
             "product_count": cat.get("product_count", 0),
         }
-    return {
+        data.update({f: cat.get(f) for f in _CATEGORY_TRANSLATION_FIELDS})
+        return data
+
+    data = {
         "category_id": str(cat.category_id),
         "name": cat.name,
         "slug": cat.slug,
@@ -198,6 +212,8 @@ def _format_category(cat) -> dict:
         "parent_category_id": str(cat.parent_category_id) if cat.parent_category_id else None,
         "is_active": cat.is_active,
     }
+    data.update({f: getattr(cat, f, None) for f in _CATEGORY_TRANSLATION_FIELDS})
+    return data
 
 
 # ============================================================================
@@ -452,7 +468,12 @@ async def get_product(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found",
         )
-    return {"success": True, "data": format_product(product, include_variants=True)}
+    return {
+        "success": True,
+        "data": format_product(
+            product, include_variants=True, include_translations=True
+        ),
+    }
 
 
 @router.post("/products/suggest-keywords", response_model=dict)

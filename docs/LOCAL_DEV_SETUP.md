@@ -1,486 +1,260 @@
-# 🚀 SRIBEESonline - Local Development Setup Guide
+# 🚀 SRIBEESonline — Local Development Setup Guide
+
+> Rewritten 2026-08-10 against a real from-scratch run on this machine. The previous
+> version of this doc described a `docker-compose.yml` at the workspace root and a
+> `sribees` custom-schema database init that no longer match reality — see
+> [What changed](#-what-changed-from-the-old-version-of-this-doc) at the bottom if
+> you're comparing against an old copy.
 
 ## Prerequisites
 
-### Required Software
-1. **Docker Desktop** - [Download](https://www.docker.com/products/docker-desktop/)
-2. **Android Studio** - [Download](https://developer.android.com/studio)
-3. **Flutter SDK** - [Download](https://docs.flutter.dev/get-started/install)
-4. **Git** - [Download](https://git-scm.com/)
+1. **Docker Desktop** — [Download](https://www.docker.com/products/docker-desktop/)
+2. **Python 3.11+** (only needed if you want to run the backend outside Docker, or run
+   `scripts/smoke_test.py`)
+3. **Node.js 20+** (for the admin dashboard / partner portal)
+4. **Flutter SDK** + **Android Studio** — only if you're working on the mobile app
+5. **Git**
 
-### Verify Installations
 ```powershell
-# Check Docker
 docker --version
 docker compose version
-
-# Check Flutter
-flutter --version
-flutter doctor
+node --version
+python --version
 ```
 
 ---
 
-## 🐳 Part 1: Running Backend Stack with Docker Desktop
+## 🐳 Part 1: Backend stack (Postgres, Redis, MinIO, FastAPI)
 
-### Step 1: Prepare Environment Files
+Everything for this lives inside **`fastapi_backend/`** — not the workspace root. The
+compose file, the `.env`, and the setup script are all there.
 
-1. Copy the environment template:
+### Step 1 — Environment file
+
 ```powershell
-cd c:\Users\Lenovo\Desktop\SRIBEESonline
-copy .env.docker .env
+cd fastapi_backend
+copy .env.example .env
 ```
 
-2. (Optional) Edit `.env` to customize credentials if needed.
+The example file has working local defaults for everything except third-party keys
+(Gemini, Stripe/Marx IPG, OAuth). The app runs fine with those left blank — semantic
+search falls back to keyword search, payments/OAuth routes simply aren't exercised.
+Add a `GEMINI_API_KEY` (from [Google AI Studio](https://aistudio.google.com/apikey)) if
+you want real semantic search / the AI chat assistant locally.
 
-3. **(Recommended)** Add your Gemini API key for AI-powered search:
+### Step 2 — Start Docker Desktop, then run the setup script
+
 ```powershell
-# Edit .env and add:
-# GEMINI_API_KEY=your-google-gemini-api-key
-
-# Get your API key from: https://aistudio.google.com/apikey
+docker compose up -d          # or just run scripts/setup.sh, which does this for you
 ```
 
-> **Note**: Semantic search will work without a Gemini API key by falling back to keyword search.
+The easiest path is the setup script — it starts every service, waits for health
+checks, creates the MinIO bucket, applies every migration in `migrations/` in order,
+and prints out service URLs:
 
-### Step 2: Start Docker Desktop
-
-1. Open **Docker Desktop** application
-2. Wait for Docker to fully start (whale icon in system tray should be steady)
-3. Ensure Docker is running in **Linux containers** mode
-
-### Step 3: Build and Start All Services
-
-```powershell
-# Navigate to project root
-cd c:\Users\Lenovo\Desktop\SRIBEESonline
-
-# Build and start core services (Postgres, Redis, MinIO, FastAPI)
-docker compose up -d --build postgres_db redis_cache s3-local minio_init fastapi_backend
-
-# Or start all services including admin panel
-docker compose up -d --build
-
-# View logs
-docker compose logs -f fastapi_backend
+```bash
+# Git Bash / WSL
+bash scripts/setup.sh
 ```
 
-### Step 4: Verify Services Are Running
+That script is idempotent — re-run it any time; it only tops up what's missing.
+
+### Step 3 — Verify
 
 ```powershell
-# Check running containers
 docker compose ps
-
-# Expected healthy containers:
-#   sribees_postgres  - Healthy (port 5432)
-#   sribees_redis     - Healthy (port 6379)
-#   sribees_minio     - Healthy (port 9000, 9001)
-#   sribees_backend   - Healthy (port 8000)
-
-# Check logs
-docker compose logs -f fastapi_backend
-docker compose logs -f postgres_db
-docker compose logs -f redis_cache
 ```
+
+Expect five **healthy** containers: `sribees_postgres`, `sribees_redis`,
+`sribees_minio`, `sribees_backend`, plus `sribees_minio_init` (exits after it creates
+the bucket — that's expected, not a failure). A sixth, `sribees_admin`, also exists in
+`docker-compose.yml` for a fully-containerized admin build, but the documented
+workflow (see Part 2) runs the admin dashboard natively via `npm run dev` instead —
+don't be alarmed if the `admin` container shows unhealthy; it isn't what anything here
+actually uses.
 
 ### Service URLs
 
-| Service | URL | Description |
-|---------|-----|-------------|
-| **FastAPI Backend** | http://localhost:8000 | Main API |
-| **API Documentation** | http://localhost:8000/docs | Swagger UI |
-| **Semantic Search** | http://localhost:8000/api/v1/search | AI-powered search endpoint |
-| **Admin Dashboard** | http://localhost:3000 | React Admin Panel |
-| **pgAdmin** | http://localhost:5050 | Database Admin Tool |
-| **MinIO Console** | http://localhost:9001 | S3 Storage Admin (admin / password123) |
-| **MinIO S3 API** | http://localhost:9000 | S3-compatible storage |
-| **Redis Commander** | http://localhost:8081 | Redis Admin Tool |
+| Service | URL | Notes |
+|---|---|---|
+| FastAPI backend | http://localhost:8000 | |
+| Swagger UI | http://localhost:8000/docs | |
+| ReDoc | http://localhost:8000/redoc | |
+| Health check | http://localhost:8000/health | |
+| MinIO Console | http://localhost:9001 | `admin` / `password123` |
+| MinIO S3 API | http://localhost:9000 | |
+| Postgres | `localhost:5432` | `sribees_user` / `sribees_password_123`, db `sribeesonline` |
+| Redis | `localhost:6379` | password `sribees_redis_password` |
+| pgAdmin (optional) | http://localhost:5050 | `docker compose --profile tools up -d` first |
+| Redis Commander (optional) | http://localhost:8081 | same `--profile tools` |
 
-### Step 5: Access Management Tools
+### Demo data & logins
 
-#### pgAdmin (Database)
-1. Open http://localhost:5050
-2. Login with:
-   - Email: `admin@sribees.lk`
-   - Password: `pgadmin_password_123`
-3. Add New Server:
-   - Name: `SRIBEESonline Local`
-   - Host: `postgres`
-   - Port: `5432`
-   - Database: `sribeesonline`
-   - Username: `sribees_user`
-   - Password: `sribees_password_123`
+`bash scripts/setup.sh` (or a manual migration run) seeds a full demo dataset:
+5 branches, ~40 demo customers, ~120 days of realistic order history across all five
+branches, one admin account per role plus a manager per branch, and a small partner
+(referral) tree. **Every seeded login is documented in
+[`admin/ADMIN_CREDENTIALS.md`](../../admin/ADMIN_CREDENTIALS.md)** — don't guess
+credentials, they're all written down there with which branch/scope each one has.
 
-#### Redis Commander
-1. Open http://localhost:8081
-2. Browse Redis keys and monitor cache
-
-### Common Docker Commands
+### Common commands
 
 ```powershell
-# Stop all services
-docker compose down
-
-# Stop and remove volumes (fresh start)
-docker compose down -v
-
-# Restart a specific service
-docker compose restart fastapi_backend
-
-# View real-time logs
-docker compose logs -f
-
-# Rebuild a specific service
-docker compose build fastapi_backend
-docker compose up -d fastapi_backend
-
-# Access container shell
+docker compose logs -f fastapi_backend      # follow backend logs
+docker compose restart fastapi_backend      # after changing requirements.txt, say
+docker compose down                          # stop everything, keep data
+docker compose down -v                       # stop and wipe volumes — genuinely fresh start
 docker exec -it sribees_backend bash
 docker exec -it sribees_postgres psql -U sribees_user -d sribeesonline
+```
 
-# Check container resources
-docker stats
+Backend code is bind-mounted into the container and uvicorn runs with `--reload`, so
+Python changes take effect without a rebuild. Changes to `requirements.txt` do need
+`docker compose up -d --build fastapi_backend`.
+
+### Applying a single new migration by hand
+
+`scripts/setup.sh` re-applies everything in `migrations/` on every run, so this is
+rarely needed, but if you've just added one file and don't want to re-run the whole
+script:
+
+```bash
+docker exec -i sribees_postgres psql -U sribees_user -d sribeesonline --quiet < migrations/0NN_your_file.sql
 ```
 
 ---
 
-## 📱 Part 2: Running Flutter App with Android Studio
-
-### Step 1: Open Flutter Project
-
-1. Open **Android Studio**
-2. Click **Open** or **File > Open**
-3. Navigate to: `c:\Users\Lenovo\Desktop\SRIBEESonline\mobile`
-4. Click **OK** to open the project
-
-### Step 2: Install Flutter Dependencies
+## 🖥️ Part 2: Admin dashboard
 
 ```powershell
-cd c:\Users\Lenovo\Desktop\SRIBEESonline\mobile
+cd admin
+npm install
+npm run dev
+```
 
-# Get dependencies
+Vite starts on `http://localhost:5173` (or the next free port if that's taken) and
+proxies `/api/*` to `http://localhost:8000` — no CORS configuration needed, and no
+`VITE_API_URL` env var required for local dev. Sign in with any account from
+`ADMIN_CREDENTIALS.md`.
+
+Running the E2E suite (`npm run test:e2e`) spins up its own throwaway Postgres and a
+second backend instance against a fresh seed — see `admin/.github/workflows/e2e.yml`
+for exactly how CI does it; the same steps work locally if you want to run it outside
+Docker.
+
+---
+
+## 🤝 Part 3: Partner portal
+
+Same idea, separate app:
+
+```powershell
+cd partner-portal
+npm install
+npm run dev
+```
+
+Log in with a `partner.*@sribeesonline.lk` account — see `ADMIN_CREDENTIALS.md`.
+
+---
+
+## 📱 Part 4: Mobile app
+
+### First-time setup
+
+```powershell
+cd mobile
 flutter pub get
-
-# Generate code (if using code generation)
-flutter pub run build_runner build --delete-conflicting-outputs
 ```
 
-### Step 3: Configure Android Emulator
+### Point it at your local backend
 
-1. In Android Studio, go to **Tools > Device Manager**
-2. Click **Create Device**
-3. Select a device (e.g., Pixel 6)
-4. Select a system image (recommend API 33 or 34)
-5. Click **Finish**
-6. Start the emulator by clicking the ▶️ play button
+The app auto-detects the Android emulator and rewrites `localhost` to `10.0.2.2`
+(the emulator's alias for the host machine) — see `lib/core/api/api_client.dart` /
+`lib/core/platform_defaults.dart`. For a **physical device** on the same network,
+you'll need the machine's real LAN IP instead; the app has a dynamic API URL
+configuration for this (see `feat: add dynamic API URL configuration for physical
+device support` in git history) — check `lib/core/platform_defaults.dart` for the
+current mechanism rather than assuming a fixed IP.
 
-### Step 4: Configure API URL for Emulator
+### Run
 
-The app is already configured to use `10.0.2.2:8000` for Android emulator.
-This special IP maps to your computer's localhost from inside the emulator.
-
-**Important**: Make sure Docker backend is running before starting the app!
-
-### Step 5: Run the Flutter App
-
-#### Option A: From Android Studio
-1. Select your emulator from the device dropdown
-2. Click the green **Run** button (▶️)
-3. Or press `Shift + F10`
-
-#### Option B: From Terminal
 ```powershell
-cd c:\Users\Lenovo\Desktop\SRIBEESonline\mobile
-
-# Run on connected device/emulator
-flutter run
-
-# Run with specific device
-flutter devices  # List available devices
+flutter run                     # picks a connected device/emulator
+flutter devices                 # list what's available
 flutter run -d <device_id>
-
-# Run in debug mode with hot reload
-flutter run --debug
 ```
 
-### Step 6: Hot Reload and Debug
+### ⚠️ Windows-specific gotcha: stale builds
 
-- **Hot Reload**: Press `r` in terminal or `Ctrl+\` in Android Studio
-- **Hot Restart**: Press `R` in terminal
-- **Debug**: Use Android Studio's debugger or VS Code's Flutter extension
+On this machine, `flutter build apk --debug` has been observed to **silently reuse a
+stale compiled Dart kernel** and not pick up source changes, even when file timestamps
+look correct — confirmed by grepping a "fresh" build's APK for a string that had just
+been added and finding it missing, twice in a row. Root cause looks related to a
+Kotlin incremental-compiler warning about the project and pub cache living on
+different drive roots. **Always `flutter clean` before a debug build you're about to
+actually test** — don't trust a plain incremental build here.
+
+```powershell
+flutter clean
+flutter pub get
+flutter build apk --debug
+```
 
 ---
 
 ## 🔧 Troubleshooting
 
-### Docker Issues
-
-**Problem**: Containers won't start
+**Docker containers won't start / port conflicts**
 ```powershell
-# Check Docker Desktop is running
-# Check for port conflicts
 netstat -ano | findstr :8000
 netstat -ano | findstr :5432
-
-# Reset everything
 docker compose down -v
-docker system prune -a
 docker compose up -d --build
 ```
 
-**Problem**: Backend can't connect to database
+**Backend crashes on startup on a genuinely fresh Postgres volume, FK error creating
+some table (e.g. `banners`)** — this used to happen because `docker/postgres/init.sql`
+was a leftover full prototype schema under a separate `sribees.*` namespace that also
+repointed the database's default `search_path` at it, racing the real
+`create_all()`-managed `public` schema tables. Fixed 2026-08-10; if you somehow still
+hit this, check `docker/postgres/init.sql` only contains `CREATE EXTENSION` statements
+and nothing else, then `docker compose down -v && docker compose up -d` for a clean
+volume.
+
+**Gemini quota errors during testing** (`assistant unavailable`, fast failures not
+timeouts) — the free tier caps `gemini-flash-latest` at ~20 requests/day. Resets
+roughly daily; not a bug. `gemini-flash-lite-latest` is a same-day workaround if you
+need to keep testing (set `GEMINI_GENERATION_MODEL`).
+
+**Flutter: can't connect to API from emulator**
 ```powershell
-# Ensure postgres is healthy
-docker compose ps
-docker compose logs postgres_db
-
-# Wait for postgres to be ready, then restart backend
-docker compose restart fastapi_backend
-```
-
-**Problem**: Permission denied errors
-```powershell
-# Run Docker Desktop as Administrator
-# Or add your user to docker-users group
-```
-
-### Flutter Issues
-
-**Problem**: Can't connect to API from emulator
-```dart
-// Ensure app_config.dart uses correct URL
-apiBaseUrl: 'http://10.0.2.2:8000/api/v1'  // for Android Emulator
-```
-
-**Problem**: Build errors
-```powershell
-# Clean and rebuild
-flutter clean
-flutter pub get
-flutter pub run build_runner build --delete-conflicting-outputs
-```
-
-**Problem**: Emulator not detected
-```powershell
-# Check ADB connection
 adb devices
-
-# Restart ADB
-adb kill-server
-adb start-server
-```
-
-### Network Issues
-
-**Testing API from Emulator**:
-```powershell
-# From your computer, test the API is accessible
-curl http://localhost:8000/health
-
-# From Android Studio terminal (inside emulator via adb)
-adb shell curl http://10.0.2.2:8000/health
+curl http://localhost:8000/health          # from the host — confirms the backend itself is up
+adb shell curl http://10.0.2.2:8000/health  # from inside the emulator
 ```
 
 ---
 
-## 🧪 Testing the Full Stack
+## 📝 What changed from the old version of this doc
 
-### 1. Test Backend API
-```powershell
-# Health check
-curl http://localhost:8000/health
+The previous version of this file (and `MONOREPO_README.md`) described a setup that no
+longer matches the repository:
 
-# API docs
-start http://localhost:8000/docs
-```
-
-### 2. Test Admin Dashboard
-```powershell
-start http://localhost:3000
-```
-Login with:
-- Email: `admin@sribees.lk`
-- Password: `Admin@123456`
-
-### 3. Test Flutter App
-1. Start emulator
-2. Run Flutter app
-3. Register a new account or login
-4. Browse products
-
----
-
-## 📊 Development Workflow
-
-### Daily Development
-
-1. **Start Docker Stack**:
-   ```powershell
-   cd c:\Users\Lenovo\Desktop\SRIBEESonline
-   docker compose up -d
-   ```
-
-2. **Start Flutter App**:
-   ```powershell
-   cd mobile
-   flutter run
-   ```
-
-3. **Make Changes**:
-   - Backend changes: Auto-reload enabled
-   - Flutter changes: Use hot reload (r)
-   - Admin changes: Vite auto-reload enabled
-
-4. **End of Day**:
-   ```powershell
-   docker compose down
-   ```
-
-### Viewing Logs
-```powershell
-# All services
-docker compose logs -f
-
-# Specific service
-docker compose logs -f fastapi_backend
-
-# Last 100 lines
-docker compose logs --tail=100 fastapi_backend
-```
-
----
-
-## 🔐 Default Credentials
-
-| Service | Username/Email | Password |
-|---------|----------------|----------|
-| Admin Dashboard | admin@sribees.lk | Admin@123456 |
-| pgAdmin | admin@sribees.lk | pgadmin_password_123 |
-| PostgreSQL | sribees_user | sribees_password_123 |
-| Redis | - | sribees_redis_password |
-| MinIO Console | admin | password123 |
-
-⚠️ **Security Note**: Change all passwords before deploying to production!
-
----
-
-## 📁 Project Structure
-
-```
-SRIBEESonline/
-├── docker-compose.yml      # Docker orchestration (Postgres, Redis, MinIO, FastAPI)
-├── docker-compose.prod.yml # Production overrides
-├── Jenkinsfile             # CI/CD pipeline (Build, Test, Health Check)
-├── scripts/
-│   └── setup.sh            # Automated local setup script
-├── .env.docker             # Environment template
-├── .env                    # Your local environment (gitignored)
-│
-├── fastapi_backend/        # Python FastAPI backend
-│   ├── Dockerfile
-│   ├── app/
-│   └── requirements.txt
-│
-├── admin/                  # React admin dashboard
-│   ├── Dockerfile
-│   ├── nginx.conf
-│   └── src/
-│
-├── mobile/                 # Flutter mobile app
-│   ├── lib/
-│   │   └── config/
-│   │       └── app_config.dart
-│   └── pubspec.yaml
-│
-└── docker/
-    └── postgres/
-        └── init.sql        # Database initialization
-```
-
----
-
-## 🗄️ Database Initialization
-
-The database is automatically initialized when containers start for the first time:
-
-1. **Schema creation**: `docker/postgres/init.sql` creates the `sribees` schema with all core tables
-2. **Migrations**: Run SQL migrations from `fastapi_backend/migrations/`:
-   ```powershell
-   # Run all migrations
-   Get-ChildItem "fastapi_backend\migrations\*.sql" | Sort-Object Name | ForEach-Object {
-       Write-Host "Running: $($_.Name)"
-       Get-Content $_.FullName | docker exec -i sribees_postgres psql -U sribees_user -d sribeesonline
-   }
-   ```
-3. **Seed data**: Upload splash video and seed database:
-   ```powershell
-   # The splash video is automatically seeded via the setup script
-   # Or manually set the URL:
-   docker exec sribees_postgres psql -U sribees_user -d sribeesonline -c "UPDATE app_settings SET value = 'http://localhost:9000/sribees-assets/splash/splash_video_initial.mp4' WHERE key = 'splash_video_url';"
-   ```
-
-### Verified Database Tables (16 total)
-
-The following tables exist in the `sribees` schema after successful initialization:
-
-| Table | Purpose |
-|-------|---------|
-| `users` | Customer accounts |
-| `admin_users` | Admin/staff accounts with RBAC roles |
-| `branches` | Store branch locations |
-| `products` | Global product catalog |
-| `categories` | Product categories (8 seeded) |
-| `addresses` | User delivery addresses |
-| `orders` | Customer orders |
-| `carts` | Shopping carts |
-| `wishlists` | User wishlists |
-| `product_reviews` | Product reviews & ratings |
-| `notifications` | User notifications |
-| `audit_logs` | Admin audit trail |
-| `post_office_branch_mapping` | Address → Branch routing |
-| `branch_inventory` | Branch-specific stock overrides |
-| `app_settings` | Runtime configuration (splash video URL) |
-
----
-
-## 📱 Flutter Mobile App
-
-### First-Time Setup
-
-```powershell
-cd mobile
-
-# Install dependencies
-flutter pub get
-
-# Generate Android platform (if missing)
-flutter create . --org com.sribeesonline --project-name sribees_mobile --platforms android
-
-# Run on connected emulator
-flutter run -d emulator-5554 -t lib/main_development.dart
-```
-
-### Important Notes
-
-- **Firebase**: Disabled until `google-services.json` is configured. The `FirebaseService` is a no-op stub.
-- **Fonts**: Custom Sinhala/Tamil fonts are commented out in `pubspec.yaml` (font files not yet added).
-- **First build**: Takes 15-20 minutes (Gradle downloads all dependencies). Subsequent builds are much faster.
-- **Cleartext traffic**: Enabled in `AndroidManifest.xml` for local HTTP connections to `10.0.2.2`.
-
-### App Launch Flow
-
-1. Splash screen fetches video URL from `GET /api/v1/app/splash-config`
-2. Backend returns emulator-friendly URL (`10.0.2.2:9000` instead of `localhost`)
-3. If video fails, shows static branding logo for 2 seconds
-4. Checks SharedPreferences for language → Address Selection → Home Screen
-
----
-
-## ❓ Need Help?
-
-1. Check the logs: `docker compose logs -f`
-2. Check Flutter logs: Look at Android Studio's Run tab
-3. Check API docs: http://localhost:8000/docs
-4. Verify services: `docker compose ps`
-
-Happy coding! 🎉
+- `docker-compose.yml` used to live (or was assumed to live) at the workspace root,
+  with a `.env.docker` template there too. **It's inside `fastapi_backend/`.** The
+  compose file itself had stale `context: ./fastapi_backend` / `context: ./admin`
+  paths left over from when it *was* at the root — those are fixed now, but if you're
+  reading an old cached copy of `docker-compose.yml`, that's why `docker compose up`
+  wouldn't build.
+- Old paths referenced `c:\Users\Lenovo\Desktop\SRIBEESonline` — the project has since
+  moved; don't hardcode a path, `cd` relative to wherever you cloned it.
+- The database used to be described as a hand-written `sribees` schema with "16
+  tables". The real schema is SQLAlchemy-managed (`Base.metadata.create_all()` on
+  boot, `public` schema, currently ~35+ tables — see `DATABASE_SPECIFICATION.md`), and
+  the `sribees`-schema `init.sql` was actively harmful on a fresh volume (see
+  Troubleshooting above).
+- Admin dashboard credentials/URL — the old doc said port 3000 and
+  `admin@sribees.lk` / `Admin@123456`. The actual documented workflow runs the admin
+  dashboard on Vite's dev server (port 5173) with credentials from
+  `ADMIN_CREDENTIALS.md`.

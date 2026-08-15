@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
 from app.schemas.category import CategoryCreate, CategoryUpdate
+from app.utils.i18n import DEFAULT_LANGUAGE, localized
 
 
 class CategoryService:
@@ -59,8 +60,16 @@ class CategoryService:
         return result.scalars().all()
 
     @staticmethod
-    async def get_hierarchical(db: AsyncSession) -> List[dict]:
-        """Get categories in hierarchical structure (parent-child)."""
+    async def get_hierarchical(
+        db: AsyncSession,
+        lang: str = DEFAULT_LANGUAGE,
+    ) -> List[dict]:
+        """
+        Get categories in hierarchical structure (parent-child).
+
+        *lang* selects the language for the customer-visible name/description,
+        falling back to English per field where no translation exists.
+        """
         categories = await CategoryService.get_all_simple(db)
 
         # Build hierarchy
@@ -72,9 +81,9 @@ class CategoryService:
             category_map[str(cat.category_id)] = {
                 "category_id": cat.category_id,
                 "_id": str(cat.category_id),
-                "name": cat.name,
+                "name": localized(cat, "name", lang),
                 "slug": cat.slug,
-                "description": cat.description,
+                "description": localized(cat, "description", lang),
                 "image_url": cat.image_url,
                 "parent_category_id": cat.parent_category_id,
                 "is_active": cat.is_active,
@@ -135,8 +144,12 @@ class CategoryService:
         """Create a new category."""
         category = Category(
             name=data.name,
+            name_si=data.name_si,
+            name_ta=data.name_ta,
             slug=data.slug,
             description=data.description,
+            description_si=data.description_si,
+            description_ta=data.description_ta,
             image_url=data.image_url,
             parent_category_id=data.parent_category_id,
             is_active=data.is_active

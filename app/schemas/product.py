@@ -62,11 +62,24 @@ class ProductVariantSchema(BaseModel):
 # ============================================================================
 
 class ProductCreate(BaseModel):
-    """Schema for creating a product."""
+    """
+    Schema for creating a product.
+
+    ``name``/``description``/``short_description`` are the ENGLISH copy and are
+    what every other language falls back to, so English stays required while
+    the ``_si``/``_ta`` translations are optional — a product can ship before
+    it has been translated.
+    """
     name: str = Field(..., min_length=1, max_length=255)
+    name_si: Optional[str] = Field(None, max_length=255, description="Sinhala name")
+    name_ta: Optional[str] = Field(None, max_length=255, description="Tamil name")
     slug: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
+    description_si: Optional[str] = None
+    description_ta: Optional[str] = None
     short_description: Optional[str] = Field(None, max_length=500)
+    short_description_si: Optional[str] = Field(None, max_length=500)
+    short_description_ta: Optional[str] = Field(None, max_length=500)
     search_keywords: Optional[str] = Field(
         None,
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
@@ -102,9 +115,15 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     """Schema for updating a product."""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
+    name_si: Optional[str] = Field(None, max_length=255, description="Sinhala name")
+    name_ta: Optional[str] = Field(None, max_length=255, description="Tamil name")
     slug: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
+    description_si: Optional[str] = None
+    description_ta: Optional[str] = None
     short_description: Optional[str] = Field(None, max_length=500)
+    short_description_si: Optional[str] = Field(None, max_length=500)
+    short_description_ta: Optional[str] = Field(None, max_length=500)
     search_keywords: Optional[str] = Field(
         None,
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",

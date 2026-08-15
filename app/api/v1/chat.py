@@ -25,6 +25,7 @@ from app.schemas.chat import ChatMessageRequest
 from app.services import branch_service
 from app.services.chat_service import ChatService
 from app.services.embedding_service import GeminiAPIError
+from app.utils.i18n import resolve_language
 
 router = APIRouter(tags=["AI Chat"])
 
@@ -94,6 +95,7 @@ async def send_chat_message(
             message=body.message,
             image_base64=body.image_base64,
             image_mime_type=body.image_mime_type,
+            lang=resolve_language(request.headers.get("accept-language")),
         )
     except GeminiAPIError as exc:
         logger.error(f"Chat Gemini error: {exc}")

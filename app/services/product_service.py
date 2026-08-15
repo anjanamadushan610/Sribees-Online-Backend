@@ -280,9 +280,15 @@ class ProductService:
         """Create a new product."""
         product = Product(
             name=data.name,
+            name_si=data.name_si,
+            name_ta=data.name_ta,
             slug=data.slug,
             description=data.description,
+            description_si=data.description_si,
+            description_ta=data.description_ta,
             short_description=data.short_description,
+            short_description_si=data.short_description_si,
+            short_description_ta=data.short_description_ta,
             search_keywords=data.search_keywords,
             sku=data.sku,
             price=data.price,

@@ -1,11 +1,28 @@
 # SRIBEESonline - Technical Architecture
 
-> **Document Status**: As-Built Implementation (February 2026)  
-> **Last Updated**: February 2026
+> **Document status**: partially re-verified 2026-08-10 against the live database,
+> the running backend, and the actual admin dashboard source. Sections below are
+> marked **✅ Verified 2026-08-10** where every claim was checked directly (live
+> schema query, reading the actual route/service code, or exercising the real
+> endpoint), and **⚠️ Not re-verified this pass** where the content is carried over
+> from the February 2026 version without independent confirmation — treat those as
+> "probably still true, but check the code before relying on specifics." The
+> February 2026 version had drifted substantially in places that *were* checked (the
+> RBAC role list, the database schema, the deployment story, the local dev
+> infrastructure) — see each section for what changed and why.
 
 ## 🏗️ System Architecture Overview
 
-SRIBEESonline is a modern **multi-branch e-commerce platform** with a hybrid architecture, featuring a React Web Admin Portal, Flutter Mobile App, and Python FastAPI backend. The system implements **Multi-Branch RBAC (Role-Based Access Control)** with branch isolation for inventory and operations management. Customer sessions are scoped to a specific branch via **Smart Address-to-Branch Routing** — on app launch, the user selects a saved delivery address, the backend maps the address's Post Office to a serving branch, and all subsequent content (including the "Quick Sale" Home Page feed) is filtered by that branch.
+SRIBEESonline is a **multi-branch grocery/delivery platform** — a React admin
+dashboard, a Flutter mobile app, a separate React partner/referral portal, and a
+Python FastAPI backend serving all three from one API. The system implements
+**multi-branch RBAC** with 5 admin roles (not 6 — see [RBAC](#-multi-branch-rbac-architecture-verified-2026-08-10)
+below), where branch isolation for inventory/orders/marketing is enforced in a single
+shared FastAPI dependency (`inject_branch_filter`), not per-endpoint ad hoc logic. A
+customer order's `branch_id` is resolved from the delivery address's Post Office via
+`post_office_branch_mapping` — confirmed against the live schema; whether that
+resolution is cached in a Redis "branch context" session as described further below is
+**not re-verified in this pass**.
 
 ---
 
@@ -130,85 +147,107 @@ graph TB
 
 ---
 
-## 🔐 Multi-Branch RBAC Architecture
+## 🔐 Multi-Branch RBAC Architecture (✅ Verified 2026-08-10)
 
-### Role Definitions
+### Role definitions — 5 roles, not 6
 
-The system implements six distinct admin roles with hierarchical permissions:
+The February version of this doc described `staff`, `support` and `inventory` as
+three separate roles alongside `marketing_manager`. The real, live `admin_role_enum`
+(confirmed directly against the database) has exactly five values:
 
 ```python
-from enum import Enum
-
+# fastapi_backend/app/models/admin.py — the real enum
 class AdminRole(str, Enum):
-    SUPER_ADMIN = 'super_admin'               # Full system access
-    BRANCH_MANAGER = 'branch_manager'         # Branch-specific management
-    MARKETING_MANAGER = 'marketing_manager'   # Branch-specific marketing & discounts
-    STAFF = 'staff'                           # Basic operations
-    SUPPORT = 'support'                       # Customer support (cross-branch)
-    INVENTORY = 'inventory'                   # Inventory management (cross-branch)
+    SUPER_ADMIN = "super_admin"
+    BRANCH_MANAGER = "branch_manager"
+    MARKETING_MANAGER = "marketing_manager"
+    INVENTORY_MANAGER = "inventory_manager"
+    CUSTOMER_SUPPORT = "customer_support"
 ```
 
-### Permission Matrix
-
-| Role | Branch Restricted | Products | Orders | Inventory | Analytics | Users | Settings | Discounts |
-|------|:-----------------:|:--------:|:------:|:---------:|:---------:|:-----:|:--------:|:---------:|
-| `super_admin` | ❌ | CRUD | CRUD | CRUD | ✅ Full | CRUD | ✅ Full | CRUD |
-| `branch_manager` | ✅ | R/U | R/U/D | R/U | ✅ Branch | View | Branch | R/U |
-| `marketing_manager` | ✅ | R | R | R | ✅ Branch | ❌ | ❌ | C/R/U |
-| `staff` | ✅ | R | R/U | R | ❌ | ❌ | ❌ | ❌ |
-| `support` | ❌ | R | R/U | R | ❌ | ❌ | ❌ | ❌ |
-| `inventory` | ❌ | C/R/U | ❌ | C/R/U | ✅ | ❌ | ❌ | ❌ |
-
-### Branch Isolation Middleware
+**Branch scoping — 2026-08-10 fix**: for a long time, every non-`super_admin` role was
+scoped identically (pinned to exactly one branch, rejected if `branch_id` was `NULL`).
+That's correct for Branch/Marketing/Inventory Manager (each genuinely runs one store)
+but was wrong for Customer Support — a helpdesk role that has to be able to pull up
+*any* customer's order, not just the branch they're nominally listed under. Fixed by
+splitting the concept in two:
 
 ```python
-# FastAPI dependency for branch-restricted operations
-from fastapi import Depends, Request
-from app.core.dependencies import get_current_admin, require_role
-from app.models.admin import AdminRole
+# fastapi_backend/app/core/dependencies.py — the real, current code
+UNSCOPED_ROLES = {"super_admin", "customer_support"}
 
-@router.get('/inventory')
-async def get_inventory(
-    request: Request,
-    admin = Depends(get_current_admin),
-    _role = Depends(require_role([AdminRole.SUPER_ADMIN, AdminRole.BRANCH_MANAGER, AdminRole.INVENTORY]))
+class BranchScope:
+    def __init__(self, is_super_admin: bool, is_unscoped: bool, branch_id: Optional[UUID]):
+        self.is_super_admin = is_super_admin   # the literal role — for super-admin-only powers
+        self.is_unscoped = is_unscoped          # "sees every branch" — Super Admin AND Customer Support
+        self.branch_id = branch_id
+
+    def resolve(self, requested_branch_id: Optional[UUID] = None) -> Optional[UUID]:
+        if self.is_unscoped:
+            return requested_branch_id   # None = every branch; Super Admin/Support may narrow via ?branch_id=
+        return self.branch_id            # scoped admins always resolve to their own branch
+
+async def inject_branch_filter(admin = Depends(get_current_admin)) -> BranchScope:
+    role = admin.role.value if hasattr(admin.role, "value") else admin.role
+    is_super = role == "super_admin"
+    is_unscoped = role in UNSCOPED_ROLES
+
+    if not is_unscoped and admin.branch_id is None:
+        raise InsufficientPermissionsError(message="Your admin account is not assigned to a branch.")
+
+    return BranchScope(is_super_admin=is_super, is_unscoped=is_unscoped, branch_id=admin.branch_id)
+```
+
+Every branch-scoped router depends on this the same way:
+
+```python
+router = APIRouter(dependencies=[Depends(require_roles("super_admin", "branch_manager", "inventory_manager"))])
+
+@router.get("")
+async def list_inventory(
+    branch_id: Optional[UUID] = Query(None, description="Super Admin only: narrow to a branch"),
+    scope: BranchScope = Depends(inject_branch_filter),
+    db: AsyncSession = Depends(get_db),
 ):
-    branch_context = inject_branch_filter(admin)
-    return await InventoryService.get_inventory(branch_context)
-
-# Automatic branch filter injection
-def inject_branch_filter(admin) -> dict:
-    has_full_access = has_cross_branch_access(admin.role)
-    
-    return {
-        'branch_id': admin.branch_id or '',
-        'is_filtered': not has_full_access and bool(admin.branch_id),
-        'has_full_access': has_full_access,
-    }
+    effective_branch = scope.resolve(branch_id)
+    query = select(BranchInventory)
+    if effective_branch is not None:
+        query = query.where(BranchInventory.branch_id == effective_branch)
+    ...
 ```
 
-### Database Query Branch Isolation
+`require_roles(...)` gates *which roles can reach the endpoint at all*;
+`inject_branch_filter`/`BranchScope.resolve()` gates *which rows they see once
+they're in* — two separate, composable concerns, both real and both exercised by
+every branch-aware admin endpoint (`admin_inventory.py`, `admin_orders.py`,
+`admin_banners.py`, `admin_analytics.py`, `admin_transfers.py`).
 
-```python
-# SQL queries automatically include branch filter using SQLAlchemy
-def get_branch_filter(branch_context: dict, model):
-    if not branch_context or branch_context.get('has_full_access'):
-        return True  # No filter for cross-branch roles
-    return model.branch_id == branch_context['branch_id']
+### Permission matrix (from `admin/src/types/admin.types.ts` — `ROLE_PERMISSIONS`, the actual frontend source of truth, cross-checked against router-level `require_roles(...)` on the backend)
 
-# Example usage in inventory queries
-async def get_low_stock_items(db: AsyncSession, branch_context: dict):
-    query = select(BranchInventory).where(
-        BranchInventory.stock_quantity <= BranchInventory.low_stock_threshold,
-        get_branch_filter(branch_context, BranchInventory)
-    )
-    result = await db.execute(query)
-    return result.scalars().all()
-```
+| Role | Branch scope | Products | Orders | Inventory | Analytics | Marketing (coupons/banners/quick-sale) | Users/Branches | Stock Transfers |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `super_admin` | Every branch | Full CRUD | Full | Full | Network-wide | Full, any branch | Manage | Approve/reject/ship/complete, any |
+| `branch_manager` | Own branch only | R/U | R/U | R/U | Own branch | Banners only | ❌ | Create/view only |
+| `marketing_manager` | Own branch only | R | ❌ | ❌ | ❌ (403 — analytics is Super Admin + Branch Manager only) | Full, own branch | ❌ | ❌ |
+| `inventory_manager` | Own branch only | C/R/U | ❌ | C/R/U | ❌ | ❌ | ❌ | Create/view/approve/ship/complete, own branch |
+| `customer_support` | **Every branch** (fixed 2026-08-10) | R | R/U | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+Note the two genuinely cross-branch roles are Super Admin (by role) and Customer
+Support (by the 2026-08-10 fix) — Marketing Manager and Inventory Manager are each
+strictly pinned to one branch despite superficially sounding like network-wide
+functions.
 
 ---
 
-## 🗺️ Smart Address-to-Branch Routing
+## 🗺️ Smart Address-to-Branch Routing (⚠️ Not re-verified this pass)
+
+*The Post Office → branch resolution table (`post_office_branch_mapping`) and its use
+for `orders.branch_id` is confirmed real (see `DATABASE_SPECIFICATION.md` §3). Whether
+the mobile app caches the resolution in a Redis "branch context" session the way this
+section describes, versus resolving it fresh per request/at checkout, was not
+independently traced through the mobile client code in this pass — read
+`lib/core/providers/branch_provider.dart` and the corresponding backend route before
+relying on the specifics below.*
 
 ### Overview
 
@@ -347,7 +386,12 @@ The `MARKETING_MANAGER` is a branch-restricted admin role responsible for settin
 
 ---
 
-## 🔴 Redis Integration
+## 🔴 Redis Integration (⚠️ Not re-verified this pass)
+
+*Redis itself is confirmed real and running (session/cache store, see
+`docker-compose.yml`). The specific key-naming scheme, TTL table and circuit-breaker
+class below are carried over from the February version and were not individually
+re-checked against `app/config/redis.py` / the services that use it in this pass.*
 
 ### Redis Architecture
 
@@ -422,102 +466,71 @@ class CircuitBreaker:
 
 ---
 
-## 📦 Product & Variant Architecture
+## 📦 Product & Variant Architecture (✅ Verified 2026-08-10 against the live schema)
 
-### Product Image Gallery (1 Thumbnail + 4 Gallery)
+### Product images
 
-```sql
-CREATE TABLE product_images (
-    image_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    product_id UUID REFERENCES products(product_id) ON DELETE CASCADE,
-    image_url TEXT NOT NULL,
-    alt_text VARCHAR(255),
-    is_primary BOOLEAN DEFAULT FALSE,  -- TRUE = thumbnail
-    sort_order INTEGER DEFAULT 0,       -- Order for gallery images
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+`product_images` is real: `image_id` PK, `product_id` → `products` (CASCADE),
+`image_url` NOT NULL, `alt_text`, `is_primary`, `sort_order`, `created_at`. **The
+"exactly 1 thumbnail + max 4 gallery = 5 total" validation rule claimed by the
+February version of this doc is not enforced by any database constraint** — there's no
+CHECK or trigger limiting counts; if that rule holds today, it's UI-layer-only
+(`ImageGalleryUpload.tsx`) and not something the database guarantees.
+
+### Product variants — simpler than previously documented
+
+The February version described a 4-table generic variant system with a separate
+`product_variant_options` many-to-many mapping table and per-color hex codes. **That
+mapping table does not exist.** The real, live shape is 3 tables, and
+`variant_options` points directly at a `product_variants` row rather than through a
+mapping table:
+
+```
+variant_types     (variant_type_id PK, name, display_name, created_at)
+variant_options    (option_id PK, variant_id → product_variants CASCADE,
+                     variant_type_id → variant_types, value)
+product_variants   (variant_id PK, product_id → products CASCADE, name, sku UNIQUE,
+                     price NOT NULL, compare_at_price, stock_quantity, image_url,
+                     is_active, sort_order, created_at, updated_at)
 ```
 
-**Validation Rules:**
-- Exactly 1 thumbnail image (`is_primary = true`)
-- Maximum 4 gallery images (`is_primary = false`)
-- Total maximum 5 images per product
-
-### Product Variants Schema
-
-```sql
--- Variant Types (Size, Color, Weight, Pack Size)
-CREATE TABLE variant_types (
-    variant_type_id UUID PRIMARY KEY,
-    name VARCHAR(50) NOT NULL UNIQUE,    -- 'size', 'color', 'weight', 'pack_size'
-    display_name VARCHAR(100) NOT NULL,  -- 'Select Size', 'Choose Color'
-    display_order INTEGER DEFAULT 0,
-    is_active BOOLEAN DEFAULT TRUE
-);
-
--- Variant Options (values for each type)
-CREATE TABLE variant_options (
-    variant_option_id UUID PRIMARY KEY,
-    variant_type_id UUID REFERENCES variant_types,
-    value VARCHAR(100) NOT NULL,         -- 'Small', 'Red', '500g'
-    display_value VARCHAR(100),          -- 'S', 'Red', '500 grams'
-    color_hex VARCHAR(7),                -- '#FF0000' for color variants
-    display_order INTEGER DEFAULT 0,
-    UNIQUE(variant_type_id, value)
-);
-
--- Product Variants (SKUs with price/stock)
-CREATE TABLE product_variants (
-    variant_id UUID PRIMARY KEY,
-    product_id UUID REFERENCES products ON DELETE CASCADE,
-    sku VARCHAR(100) UNIQUE,
-    name VARCHAR(255),
-    price DECIMAL(10, 2) NOT NULL,
-    compare_at_price DECIMAL(10, 2),
-    stock_quantity INTEGER DEFAULT 0,
-    weight DECIMAL(10, 3),
-    image_url TEXT,                      -- Variant-specific image
-    is_default BOOLEAN DEFAULT FALSE,
-    is_active BOOLEAN DEFAULT TRUE
-);
-
--- Variant-Option Mapping
-CREATE TABLE product_variant_options (
-    variant_id UUID REFERENCES product_variants ON DELETE CASCADE,
-    variant_type_id UUID REFERENCES variant_types,
-    variant_option_id UUID REFERENCES variant_options,
-    UNIQUE(variant_id, variant_type_id)  -- One option per type per variant
-);
-```
-
-### Seeded Variant Types
-
-| Type | Options |
-|------|---------|
-| `size` | XS, S, M, L, XL, XXL |
-| `weight` | 100g, 250g, 500g, 1kg, 2kg, 5kg |
-| `pack_size` | Single, Pack of 3, Pack of 6, Pack of 12 |
-| `color` | Red, Blue, Green, Black, White, Yellow (with hex codes) |
+No `color_hex`, `display_value`, or `is_default` columns exist on any of these three
+tables in the live schema. In practice, the branch-override pattern
+(`branch_inventory` — see `DATABASE_SPECIFICATION.md` §5) does most of what a
+generic variant system would otherwise be used for (price/discount/stock per
+context), so the variant tables see comparatively light use. No seeded variant-type
+data (size/color/weight/pack-size options) was found in the current migrations —
+if that seed existed in an earlier iteration, it is not part of the live dataset now.
 
 ---
 
 ## 💚 Wishlist/Watchlist Architecture
 
-### Database Schema
+### Database Schema (✅ Verified 2026-08-10)
+
+Real, live shape — one correction from the February version: `product_id` is a
+`uuid` foreign key to `products` (CASCADE), not a bare `varchar(255)`:
 
 ```sql
 CREATE TABLE wishlist_items (
-    wishlist_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wishlist_item_id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    product_id VARCHAR(255) NOT NULL,
-    variant_id UUID REFERENCES product_variants(variant_id),
-    price_at_watch DECIMAL(10, 2),       -- Price tracking for alerts
-    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+    variant_id UUID REFERENCES product_variants(variant_id) ON DELETE SET NULL,
+    price_at_watch NUMERIC,              -- price snapshotted when added
+    added_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(user_id, product_id, variant_id)
 );
 ```
 
-### Redis Caching (O(1) Lookups)
+**There is no removal/history tracking** — un-watching a product hard-deletes the row,
+no `removed_at` column or audit table exists. This matters concretely: the admin
+"Watchlist Analytics" page shows a removals-over-time trend and a view→cart→purchase
+conversion funnel that cannot be built from this table alone (see
+`.session-notes/QUESTIONS_FOR_USER.md` for the full writeup of what's real vs. not on
+that page).
+
+### Redis Caching (⚠️ Not re-verified this pass — O(1) Lookups)
 
 ```python
 # Key: "watchlist:{userId}"
@@ -558,354 +571,157 @@ class WishlistItemWithDetails:
 
 ---
 
-## 🖥️ React Web Admin Dashboard Architecture
+## 🖥️ React Web Admin Dashboard Architecture (✅ Verified 2026-08-10)
 
-### Project Structure
+### Project structure (the real, current layout)
 
 ```
 admin/
 ├── src/
-│   ├── api/                        # API Layer
-│   │   ├── client.ts               # HTTP client with interceptors
-│   │   ├── auth.api.ts             # Admin authentication
-│   │   ├── products.api.ts         # Products CRUD
-│   │   ├── orders.api.ts           # Order management
-│   │   ├── branches.api.ts         # Branch management
-│   │   └── inventory.api.ts        # Branch inventory
+│   ├── api/                        # one file per backend resource, typed request/response shapes
+│   │   ├── client.ts               # axios instance + auth/refresh interceptors
+│   │   ├── auth.api.ts             # login, self-service profile/password
+│   │   ├── products.api.ts, categories.api.ts, inventory.api.ts, orders.api.ts
+│   │   ├── marketing.api.ts, banners.api.ts, coupons.api.ts   # Quick Sale, banners, coupons
+│   │   ├── transfers.api.ts        # branch-to-branch stock transfers (added 2026-08-10)
+│   │   ├── analytics.api.ts, customers.api.ts, branches.api.ts, adminUsers.api.ts, partners.api.ts
+│   │   └── settings.api.ts, locations.api.ts
 │   │
 │   ├── components/
-│   │   ├── common/                 # Shared UI components
-│   │   ├── layout/
-│   │   │   ├── AdminLayout.tsx     # Main layout with sidebar
-│   │   │   ├── Sidebar.tsx         # Role-based navigation
-│   │   │   └── Header.tsx          # Top bar with user info
-│   │   ├── products/
-│   │   │   ├── ImageGalleryUpload.tsx   # 1 Thumbnail + 4 Gallery
-│   │   │   └── VariantManager.tsx       # Dynamic variant management
-│   │   ├── inventory/
-│   │   │   ├── LowStockAlert.tsx
-│   │   │   └── StockTransferForm.tsx
-│   │   └── guards/                 # Route protection
-│   │       ├── RoleGuard.tsx       # Role-based access
-│   │       └── PermissionGuard.tsx # Permission-based access
+│   │   ├── layout/AdminLayout.tsx       # sidebar + header, filters the nav by usePermissions()
+│   │   ├── guards/RoleGuard.tsx
+│   │   ├── products/ImageGalleryUpload.tsx
+│   │   └── analytics/                    # KpiCard, RevenueTrendChart, BranchPerformanceTable — shared across Dashboard + Analytics
 │   │
 │   ├── pages/
 │   │   ├── Auth/Login.tsx
 │   │   ├── Dashboard/
-│   │   │   ├── AdminDashboard.tsx      # Super Admin view
-│   │   │   ├── ManagerDashboard.tsx    # Branch Manager view
-│   │   │   └── StaffDashboard.tsx      # Staff view
+│   │   │   ├── DashboardHome.tsx        # Super Admin + Branch Manager — real analytics-backed KPIs
+│   │   │   ├── MarketingDashboard.tsx   # Marketing Manager — Quick Sale/banners/coupons (added 2026-08-10)
+│   │   │   ├── InventoryDashboard.tsx   # Inventory Manager — stock/low-stock (added 2026-08-10)
+│   │   │   ├── StaffDashboard.tsx       # Customer Support — network-wide order queue (rebuilt from mock 2026-08-10)
+│   │   │   └── index.page.tsx           # generic fallback for an invalid role; not reachable in normal use
 │   │   ├── Products/ProductList.tsx, ProductForm.tsx
-│   │   ├── Orders/OrderList.tsx, OrderDetail.tsx
-│   │   ├── Inventory/
-│   │   │   ├── BranchInventory.tsx
-│   │   │   ├── StockTransfers.tsx
-│   │   │   └── LowStockReport.tsx
-│   │   ├── Analytics/
-│   │   │   ├── WatchlistAnalytics.tsx
-│   │   │   └── BranchAnalytics.tsx
-│   │   ├── Users/AdminUserList.tsx, AdminUserForm.tsx
-│   │   └── Branches/BranchList.tsx
+│   │   ├── Categories/CategoryList.tsx
+│   │   ├── Orders/OrderList.tsx, OrderDetails.tsx
+│   │   ├── Inventory/BranchInventory.tsx, StockTransfers.tsx, LowStockReport.tsx
+│   │   ├── Marketing/QuickSale.tsx, BannerList.tsx, CouponList.tsx
+│   │   ├── Analytics/Analytics.tsx, WatchlistAnalytics.tsx (mock — see note below), BranchAnalytics.tsx (partially mock)
+│   │   ├── Customers/CustomerList.tsx
+│   │   ├── Users/AdminUserList.tsx        # Super Admin only
+│   │   ├── Branches/BranchList.tsx        # Super Admin only
+│   │   ├── Partners/PartnerList.tsx       # Super Admin only
+│   │   └── Settings/index.tsx, AppSettings.tsx, PlatformSettings.tsx, DeliveryZones.tsx
 │   │
-│   ├── store/                      # State management
-│   │   ├── authStore.ts            # User + token + permissions
-│   │   ├── uiStore.ts              # Sidebar + theme
-│   │   ├── branchStore.ts          # Active branch context
-│   │   └── notificationStore.ts    # Alerts
-│   │
-│   ├── types/                      # TypeScript types
-│   │   ├── admin.types.ts          # AdminRole, permissions
-│   │   ├── product.types.ts        # Product, Variant types
-│   │   ├── branch.types.ts         # Branch, Transfer types
-│   │   └── api.types.ts            # API response types
-│   │
-│   ├── hooks/
-│   │   └── usePermissions.ts       # RBAC permission checks
-│   │
-│   └── router.tsx                  # React Router with guards
+│   ├── store/authStore.ts          # Zustand — user, tokens, permission checks
+│   ├── types/admin.types.ts        # AdminRole, ROLE_PERMISSIONS, NAVIGATION_CONFIG — the RBAC source of truth
+│   ├── hooks/usePermissions.ts     # derives isSuperAdmin/isSupport/isMarketing/... + canX() checks from the store
+│   └── router.tsx                  # routes, RoleRoute-wrapped per allowed role list, DashboardRouter picks the per-role dashboard
 ```
 
-### Navigation by Role
+`ManagerDashboard.tsx` (a single mocked dashboard shared by Marketing Manager and
+Inventory Manager, with content that matched neither role's real permissions) and
+`AdminDashboard.tsx` referenced by the February version of this doc **do not exist**
+— replaced 2026-08-10 by the three real, role-specific dashboards listed above.
 
-| Menu Item | Super Admin | Branch Manager | Marketing Manager | Staff |
-|-----------|:-----------:|:--------------:|:-----------------:|:-----:|
-| Dashboard | ✅ Global | ✅ Branch | ✅ Branch | ✅ Tasks |
-| Products | ✅ Full CRUD | ✅ View + Stock | ✅ View + Discounts | ✅ View |
-| Orders | ✅ All Branches | ✅ Own Branch | ✅ View Branch | ✅ Process |
-| Inventory | ✅ All Branches | ✅ Own Branch | ✅ View | ✅ View |
-| Stock Transfers | ✅ All | ✅ Create/View | ❌ | ❌ |
-| Quick Sale / Discounts | ✅ Global | ✅ Branch | ✅ Manage Branch | ❌ |
-| Analytics | ✅ Global | ✅ Branch | ✅ Discount Analytics | ❌ |
-| Watchlist Analytics | ✅ Full | ✅ Branch Trends | ❌ | ❌ |
-| Admin Users | ✅ Manage | ❌ | ❌ | ❌ |
-| Branches | ✅ Manage | ❌ | ❌ | ❌ |
-| Settings | ✅ System | ✅ Branch | ❌ | ❌ |
+**Two admin pages are still real UI backed by mock/incomplete data, not yet fixed**:
+`WatchlistAnalytics.tsx` (needs page-view and wishlist-removal instrumentation that
+doesn't exist in the schema) and part of `BranchAnalytics.tsx`'s staff-performance
+table (needs an order→admin attribution column that doesn't exist). See
+`.session-notes/QUESTIONS_FOR_USER.md` for the full reasoning on both.
 
-### HTTP Client Interceptors for Branch Isolation
+### Branch isolation is server-side only — no `X-Branch-ID` header
 
-```typescript
-// Request interceptor - inject branch header
-apiClient.interceptors.request.use((config) => {
-    const { user, activeBranch } = useAuthStore.getState();
-    
-    // Add auth token
-    const token = localStorage.getItem('admin_token');
-    if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-    }
-    
-    // Inject branch filter for restricted roles
-    if (user?.role !== 'super_admin' && user?.branch_id) {
-        config.headers['X-Branch-ID'] = user.branch_id;
-    } else if (activeBranch) {
-        config.headers['X-Branch-ID'] = activeBranch;
-    }
-    
-    return config;
-});
+The February version of this doc described the admin API client attaching an
+`X-Branch-ID` request header to enforce branch scoping. **No such header exists in the
+real client or is read by any backend endpoint.** Scoping is entirely
+server-side: the JWT identifies the admin, the backend looks up their `branch_id` from
+the `admins` table, and `inject_branch_filter`/`BranchScope.resolve()` (see
+[RBAC](#-multi-branch-rbac-architecture-verified-2026-08-10) above) does the rest. A
+Super Admin or Customer Support admin narrowing to one branch does so via an ordinary
+`?branch_id=` query parameter, which scoped roles' requests simply ignore server-side
+if sent.
 
-// Response interceptor - handle 401
-apiClient.interceptors.response.use(
-    (response) => response,
-    (error) => {
-        if (error.response?.status === 401) {
-            useAuthStore.getState().logout();
-            window.location.href = '/login';
-        }
-        return Promise.reject(error);
-    }
-);
-```
+### Navigation by role (from `NAVIGATION_CONFIG` in `admin.types.ts`)
+
+| Menu item | Super Admin | Branch Manager | Marketing Manager | Inventory Manager | Customer Support |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Dashboard | ✅ network | ✅ own branch | ✅ own branch | ✅ own branch | ✅ every branch |
+| Products | Full CRUD | View/Update | View | Create/View/Update | View |
+| Categories | ✅ | ❌ | ❌ | ✅ | ❌ |
+| Orders | ✅ every branch | ✅ own branch | ❌ | ❌ | ✅ every branch |
+| Inventory / Stock Transfers | ✅ every branch | ✅ own branch | ❌ | ✅ own branch | ❌ |
+| Quick Sale / Banners / Coupons | ✅ any branch | Banners only | ✅ own branch | ❌ | ❌ |
+| Analytics | ✅ network | ✅ own branch | ❌ (403) | ❌ (403) | ❌ |
+| Customers | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Admin Users / Branches / Partners | ✅ manage | ❌ | ❌ | ❌ | ❌ |
+| Settings | ✅ Platform + App | General only | General only | General only | General only |
 
 ---
 
 ## 📱 Flutter Mobile App Architecture
 
-### Project Structure
+### Project structure (✅ folder layout verified 2026-08-10; internal code samples below ⚠️ not re-verified)
+
+The February version described a flat `lib/{api,widgets,screens,providers,utils}`
+layout. **The real layout is feature-organized, not layer-organized:**
 
 ```
-mobile/
-├── lib/
-│   ├── api/                        # API Layer
-│   │   ├── dio_client.dart         # Dio with auth interceptors
-│   │   ├── auth_api.dart           # Customer authentication
-│   │   ├── products_api.dart       # Product catalog
-│   │   ├── cart_api.dart           # Cart operations
-│   │   ├── orders_api.dart         # Order management
-│   │   └── wishlist_api.dart       # Wishlist with variant support
-│   │
-│   ├── widgets/
-│   │   ├── common/                 # Shared widgets
-│   │   ├── products/
-│   │   │   ├── product_card.dart
-│   │   │   └── variant_selector.dart
-│   │   ├── cart/cart_item.dart, cart_summary.dart
-│   │   └── wishlist/
-│   │       ├── wishlist_button.dart  # Heart icon toggle
-│   │       └── watchlist_item_card.dart
-│   │
-│   ├── screens/
-│   │   ├── auth/login_screen.dart, register_screen.dart
-│   │   ├── home/home_screen.dart
-│   │   ├── products/product_list_screen.dart, product_detail_screen.dart
-│   │   ├── cart/cart_screen.dart, checkout_screen.dart
-│   │   ├── orders/order_history_screen.dart, order_detail_screen.dart
-│   │   ├── wishlist/wishlist_screen.dart
-│   │   └── profile/profile_screen.dart
-│   │
-│   ├── providers/                  # Riverpod providers
-│   │   ├── auth_provider.dart      # User + tokens
-│   │   ├── cart_provider.dart      # Cart state
-│   │   └── wishlist_provider.dart  # Wishlist with offline support
-│   │
-│   └── utils/
-│       ├── secure_storage.dart     # flutter_secure_storage wrapper
-│       └── analytics.dart          # Event tracking
-├── android/
-├── ios/
-└── pubspec.yaml
+mobile/lib/
+├── core/
+│   ├── api/            # API clients (Dio-based)
+│   ├── design/          # design system (sribees_design.dart, colors/type scale)
+│   ├── navigation/
+│   ├── network/
+│   ├── providers/       # cross-feature Riverpod providers (auth, cart, branch, product, ...)
+│   ├── repositories/
+│   ├── services/
+│   └── storage/
+└── features/
+    ├── auth/            # models, repositories
+    ├── onboarding/       # phone login, OTP, address setup
+    ├── home/
+    ├── products/         # models, repositories, screens, widgets
+    ├── cart/, checkout/  # checkout/ has its own providers/ subfolder
+    ├── orders/
+    ├── payment/
+    ├── chat/             # AI shopping assistant — models, providers, screens, services, widgets
+    ├── notifications/
+    ├── profile/, saved/, rewards/, referrals/, setup/
 ```
 
-### Wishlist Provider (Riverpod)
+Every feature bundles its own `models`/`screens` (and `providers`/`repositories`
+where it needs them) rather than those living in shared top-level folders — there is
+no top-level `lib/screens/` or `lib/widgets/` directory. State management is Riverpod
+(`flutter_riverpod`), HTTP is Dio, local storage is a mix of `shared_preferences` and
+`hive_flutter`. The specific provider class shapes and the splash-video/branch-context
+startup sequence claimed by the February version of this doc (Redis-cached branch
+context, a `VideoSplashScreen` config class with hardcoded 4-second/5MB limits) were
+**not re-verified against the actual `.dart` source in this pass** — read
+`lib/core/providers/`, `lib/features/onboarding/`, and `lib/config/` directly rather
+than trusting the specifics carried over from February.
 
-```dart
-class WishlistState {
-  final List<WishlistItemWithDetails> items;
-  final bool isLoading;
-  
-  const WishlistState({
-    this.items = const [],
-    this.isLoading = false,
-  });
-}
-
-class WishlistNotifier extends StateNotifier<WishlistState> {
-  WishlistNotifier() : super(const WishlistState());
-  
-  Future<void> addToWishlist(WishlistItem product) async { ... }
-  Future<void> removeFromWishlist(String productId, String? variantId) async { ... }
-  bool isInWishlist(String productId, String? variantId) { ... }
-  Future<void> toggleWishlist(WishlistItem product) async { ... }
-  Future<void> loadWishlist() async { ... }
-  Future<void> getPriceDrops({double? minDrop}) async { ... }
-  Future<void> moveToCart(WishlistItemWithDetails item) async { ... }
-}
-```
-
-### Dynamic Video Splash Screen
-
-The mobile app supports a customizable video splash screen with the following architecture:
-
-```dart
-// VideoSplashScreen Configuration
-class SplashConfig {
-  static const int maxVideoDuration = 4000;  // 4 seconds max playback
-  static const int fadeOutDuration = 500;    // 500ms smooth fade transition
-  static const String apiEndpoint = '/api/v1/mobile/splash-video';
-  static const String cacheKey = 'splash_video_cache';
-}
-
-// Video Requirements
-class SplashVideoConfig {
-  static const double maxDuration = 4.0;           // seconds (server-validated)
-  static const int maxFileSize = 5 * 1024 * 1024;  // 5MB
-  static const String allowedMimeType = 'video/mp4';
-  static const String fallback = 'static_splash_image';
-}
-```
-
-**App Startup Flow:**
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    App Launch                               │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│   VideoSplashScreen Widget                                  │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. Check cached video (path_provider)               │   │
-│   │ 2. Fetch /api/v1/mobile/splash-video metadata       │   │
-│   │ 3. Download video if URL changed                    │   │
-│   │ 4. Play video (max 4 seconds)                       │   │
-│   │ 5. Animated fade-out (500ms)                        │   │
-│   └─────────────────────────────────────────────────────┘   │
-│   Fallback: Static splash image if video unavailable        │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│   Auth State Check → Navigate to Auth/Main Stack            │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│   Branch Context Check                                      │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │ 1. Check Redis for session:{userId}:branch_context  │   │
-│   │ 2. If found → proceed to Home Page (Quick Sale)     │   │
-│   │ 3. If NOT found → redirect to Address Selection     │   │
-│   │    a. User picks a saved address                    │   │
-│   │    b. POST /api/v1/branch/resolve {address_id}      │   │
-│   │    c. Backend maps post_office → branch_id          │   │
-│   │    d. Branch context stored in Redis session        │   │
-│   │    e. Redirect to Home Page (filtered by branch)    │   │
-│   └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Admin Portal Configuration:**
-- Location: Settings → App Settings → Splash Video
-- Validation: Client-side duration check using HTML5 video element
-- Instruction: "Please upload a 4-second MP4 video for the app splash screen"
+One real, verified gotcha for anyone building on this machine: `flutter build apk
+--debug` has been observed to silently reuse a stale compiled Dart kernel and not pick
+up source changes — always `flutter clean` first. See `LOCAL_DEV_SETUP.md`.
 
 ---
 
 ## 🗄️ Database Schema (As-Built)
 
-### PostgreSQL Tables
-
-#### Core Tables
-```sql
--- Users
-users (user_id, email, password_hash, full_name, phone, is_verified, created_at)
-
--- Admin Users (Multi-Branch RBAC)
-admin_users (admin_id, email, password_hash, full_name, role, branch_id, is_active)
-
--- Branches
-branches (branch_id, name, code, address, city, phone, manager_id, is_active)
-
--- Branch Inventory
-branch_inventory (inventory_id, branch_id, product_id, variant_id, stock_quantity, 
-                  reserved_quantity, low_stock_threshold)
-
--- Stock Transfers
-stock_transfers (transfer_id, from_branch_id, to_branch_id, product_id, variant_id,
-                 quantity, status, requested_by_id, approved_by_id)
-```
-
-#### Product Tables
-```sql
--- Products
-products (product_id, name, slug, description, category_id, price, sku, 
-          stock_quantity, is_active, has_variants, rating_average)
-
--- Product Images (1 Thumbnail + 4 Gallery)
-product_images (image_id, product_id, image_url, is_primary, sort_order)
-
--- Variant Types
-variant_types (variant_type_id, name, display_name, display_order)
-
--- Variant Options
-variant_options (variant_option_id, variant_type_id, value, display_value, color_hex)
-
--- Product Variants
-product_variants (variant_id, product_id, sku, price, stock_quantity, weight, image_url)
-
--- Variant-Option Mapping
-product_variant_options (variant_id, variant_type_id, variant_option_id)
-```
-
-#### Order Tables
-```sql
--- Orders
-orders (order_id, user_id, branch_id, total_amount, status, payment_status,
-        delivery_address_id, delivery_slot, created_at)
-
--- Order Items
-order_items (order_item_id, order_id, product_id, variant_id, quantity, unit_price)
-```
-
-#### Wishlist Tables
-```sql
--- Wishlist Items (with variant and price tracking)
-wishlist_items (wishlist_item_id, user_id, product_id, variant_id, price_at_watch, added_at)
-```
-
-#### System Settings Tables
-```sql
--- System Settings (App Configuration including Splash Video)
-system_settings (
-    setting_id UUID PRIMARY KEY,
-    setting_key VARCHAR(100) UNIQUE NOT NULL,  -- e.g., 'splash_video'
-    setting_value JSONB NOT NULL,               -- Configuration as JSON
-    setting_type VARCHAR(50) DEFAULT 'system',  -- 'system' | 'app' | 'feature'
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-)
-
--- Example: Splash Video Setting
--- setting_key: 'splash_video'
--- setting_value: {
---     "video_url": "https://storage.example.com/splash/video.mp4",
---     "duration": 4.0,
---     "file_size": 2500000,
---     "mime_type": "video/mp4",
---     "uploaded_by": "admin-uuid",
---     "uploaded_at": "2026-01-29T10:30:00Z"
--- }
-```
+**Moved to a dedicated document, regenerated 2026-08-10 directly from
+`information_schema` against the live database** — see
+[`DATABASE_SPECIFICATION.md`](DATABASE_SPECIFICATION.md) for the real, complete,
+column-by-column schema (30 tables), every foreign key, and the migration history.
+The table sketches previously inlined here were significantly out of date — wrong
+table names (`admin_users` → really `admins`; `system_settings` → really
+`app_settings`, with a plain `key`/`value text` shape, not a JSONB `setting_value`),
+columns that don't exist (`has_variants`, `rating_average` on `products`; `variant_id`
+directly on `branch_inventory`/`stock_transfers`, which is actually product-level, not
+variant-level), and a whole `product_variant_options` mapping table that isn't real
+(see [Product & Variant Architecture](#-product--variant-architecture-verified-2026-08-10-against-the-live-schema)
+above). Don't reintroduce inline schema sketches here — keep `DATABASE_SPECIFICATION.md`
+as the single source of truth so the two can't drift apart again.
 
 ---
 
@@ -955,13 +771,16 @@ async def add_security_headers(request, call_next):
     return response
 ```
 
-### Rate Limiting
+### Rate Limiting (✅ Verified 2026-08-10 — `app/config/settings.py` defaults)
 
-| Endpoint Type | Window | Max Requests |
-|---------------|--------|--------------|
-| General API | 15 min | 1000 |
-| Auth Endpoints | 15 min | 5 |
-| Password Reset | 1 hour | 3 |
+| Endpoint type | Window | Max requests |
+|---|---|---|
+| General API | 1 min | 60 |
+| Auth endpoints | 1 min | 10 |
+| Password reset | 1 hour | 3 |
+
+(The February version's numbers — 1000/15min general, 5/15min auth — don't match the
+real config; corrected above.)
 
 ### CORS Configuration
 
@@ -980,99 +799,55 @@ app.add_middleware(
 
 ---
 
-## 🚀 Deployment Architecture
+## 🚀 Deployment Architecture (✅ Verified 2026-08-10 — the biggest gap in the February version, which only ever documented local dev)
 
-### Docker Compose (Development)
+### Production: how a push actually goes live
 
-```yaml
-version: '3.8'
-services:
-  postgres_db:
-    image: ankane/pgvector          # PostgreSQL 15 + pgvector
-    container_name: sribees_postgres
-    environment:
-      POSTGRES_USER: sribees_user
-      POSTGRES_PASSWORD: sribees_password_123
-      POSTGRES_DB: sribeesonline
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sribees_user -d sribeesonline"]
+**Backend** (`fastapi_backend` repo, its own GitHub remote):
+1. Push to `main` triggers two independent GitHub Actions workflows: `deploy.yml`
+   (`CI — Lint & Test`: ruff, then mypy and pytest — both `|| true`, so only ruff can
+   actually fail the job) and `deploy-backend-ec2.yml` (`Build & Deploy Backend`).
+2. The deploy workflow builds the production Docker image (multi-stage `Dockerfile`,
+   `production` target — gunicorn + 4 UvicornWorkers, not the dev target's single
+   `uvicorn --reload`), pushes it to GHCR, then SSHes into a single AWS EC2 instance
+   and runs `docker compose` there (`docker/ec2-docker-compose.yml`) — Postgres+pgvector,
+   Redis, and the API container, fronted by Nginx with Let's Encrypt TLS.
+3. Migrations (`migrations/*.sql`) are applied as an explicit CD step, in filename
+   order, idempotently — see [Migration history](DATABASE_SPECIFICATION.md#migration-history).
+4. A smoke test (`scripts/smoke_test.py`) runs against the live deployment at the end.
 
-  redis_cache:
-    image: redis:7-alpine
-    container_name: sribees_redis
-    command: redis-server --appendonly yes --requirepass sribees_redis_password
-    ports:
-      - "6379:6379"
+Full detail: [`DEPLOYMENT.md`](../DEPLOYMENT.md) at the backend repo root.
 
-  s3-local:
-    image: minio/minio               # S3-compatible object storage
-    container_name: sribees_minio
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: password123
-    ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # MinIO Console UI
+**Admin dashboard & partner portal** (their own repos): deployed by **Vercel's native
+GitHub integration** — pushing to `main` deploys directly, confirmed via Vercel's own
+commit-status check on GitHub. There is no GitHub Actions deploy step for either.
+`admin/.github/workflows/e2e.yml` runs the Playwright suite against a real,
+freshly-seeded backend on every push as a CI *gate*, but it does not deploy anything
+— it checks out the backend repo separately (needs a `BACKEND_REPO_TOKEN` secret with
+read access to it, since that repo is private) and boots a throwaway instance just
+for the test run.
 
-  fastapi_backend:
-    build:
-      context: ./fastapi_backend
-      target: development            # hot-reload with uvicorn
-    container_name: sribees_backend
-    environment:
-      DATABASE_URL: postgresql+asyncpg://sribees_user:sribees_password_123@postgres_db:5432/sribeesonline
-      REDIS_URL: redis://:sribees_redis_password@redis_cache:6379/0
-      S3_ENDPOINT_URL: http://s3-local:9000
-      S3_PUBLIC_URL_PREFIX: http://localhost:9000/sribees-assets
-      S3_EMULATOR_URL_PREFIX: http://10.0.2.2:9000/sribees-assets
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres_db: { condition: service_healthy }
-      redis_cache: { condition: service_healthy }
+**Mobile app**: built and distributed manually (Flutter APK/IPA) — not part of any
+CI/CD pipeline above.
 
-volumes:
-  postgres_data:
-  redis_data:
-  minio_data:
-```
+**There is no Kubernetes and no Terraform anywhere in this project**, despite both
+being listed in the February version's tech stack table — production is a single EC2
+host running Docker Compose.
 
-### Environment Variables
+### Local development stack
 
-```bash
-# Database
-DATABASE_HOST=postgres_db
-DATABASE_PORT=5432
-DATABASE_NAME=sribeesonline
-DATABASE_USER=sribees_user
-DATABASE_PASSWORD=sribees_password_123
-
-# Redis
-REDIS_HOST=redis_cache
-REDIS_PORT=6379
-REDIS_PASSWORD=sribees_redis_password
-
-# S3 / MinIO (local development)
-AWS_ACCESS_KEY_ID=admin
-AWS_SECRET_ACCESS_KEY=password123
-S3_BUCKET_NAME=sribees-assets
-S3_ENDPOINT_URL=http://s3-local:9000
-S3_PUBLIC_URL_PREFIX=http://localhost:9000/sribees-assets
-S3_EMULATOR_URL_PREFIX=http://10.0.2.2:9000/sribees-assets
-
-# JWT
-JWT_SECRET_KEY=local-dev-secret-key-change-in-production-123456
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES=60
-JWT_REFRESH_TOKEN_EXPIRE_DAYS=7
-
-# API
-API_VERSION=v1
-PORT=8000
-APP_ENV=development
-```
+The compose file lives at **`fastapi_backend/docker-compose.yml`**, not the workspace
+root (a February-era assumption baked into some of this doc's old command examples,
+and one that had rotted the file's own `context:` paths until fixed 2026-08-10 — see
+`LOCAL_DEV_SETUP.md`'s "What changed" section for the full story). Real services:
+`postgres_db` (`ankane/pgvector`), `redis_cache`, `s3-local` (MinIO) + `minio_init`
+(one-shot bucket setup), `fastapi_backend` (dev target, `uvicorn --reload`), plus an
+`admin` service for a fully-containerized admin build that the documented workflow
+doesn't actually use (see `LOCAL_DEV_SETUP.md` Part 2 — the admin dashboard runs via
+`npm run dev` instead). Credentials, ports and env vars are exactly as this doc's
+February version listed them (`sribees_user`/`sribees_password_123`, MinIO
+`admin`/`password123`, etc.) — those specifics were still accurate and are not
+repeated here; see the file itself or `LOCAL_DEV_SETUP.md`.
 
 ---
 

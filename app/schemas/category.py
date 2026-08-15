@@ -12,10 +12,20 @@ from pydantic import BaseModel, Field
 # ============================================================================
 
 class CategoryCreate(BaseModel):
-    """Schema for creating a new category."""
+    """
+    Schema for creating a new category.
+
+    ``name``/``description`` are the ENGLISH copy every other language falls
+    back to, so English stays required while the ``_si``/``_ta`` translations
+    are optional.
+    """
     name: str = Field(..., min_length=1, max_length=100)
+    name_si: Optional[str] = Field(None, max_length=100, description="Sinhala name")
+    name_ta: Optional[str] = Field(None, max_length=100, description="Tamil name")
     slug: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
+    description_si: Optional[str] = None
+    description_ta: Optional[str] = None
     image_url: Optional[str] = None
     parent_category_id: Optional[UUID] = None
     is_active: bool = True
@@ -24,8 +34,12 @@ class CategoryCreate(BaseModel):
 class CategoryUpdate(BaseModel):
     """Schema for updating a category."""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
+    name_si: Optional[str] = Field(None, max_length=100, description="Sinhala name")
+    name_ta: Optional[str] = Field(None, max_length=100, description="Tamil name")
     slug: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = None
+    description_si: Optional[str] = None
+    description_ta: Optional[str] = None
     image_url: Optional[str] = None
     parent_category_id: Optional[UUID] = None
     is_active: Optional[bool] = None

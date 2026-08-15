@@ -30,6 +30,7 @@ from app.config.redis import RedisKeys, RedisTTL
 from app.config.settings import settings
 from app.services.embedding_service import GeminiAPIError
 from app.services.product_service import ProductService
+from app.utils.i18n import DEFAULT_LANGUAGE
 
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 REQUEST_TIMEOUT = 60.0
@@ -200,7 +201,10 @@ class ChatService:
 
     @staticmethod
     async def _match_products(
-        db: AsyncSession, branch_id: Optional[UUID], search_terms: List[str]
+        db: AsyncSession,
+        branch_id: Optional[UUID],
+        search_terms: List[str],
+        lang: str = DEFAULT_LANGUAGE,
     ) -> List[dict]:
         if not branch_id or not search_terms:
             return []
@@ -223,7 +227,13 @@ class ChatService:
                 # cashback/price/discount, so this is the same effective
                 # data every other product listing shows — no separate
                 # cashback lookup needed.
-                matches.append(format_product(item["product"], branch_overrides=item["effective"]))
+                matches.append(
+                    format_product(
+                        item["product"],
+                        branch_overrides=item["effective"],
+                        lang=lang,
+                    )
+                )
 
         return matches
 
@@ -240,11 +250,14 @@ class ChatService:
         message: str,
         image_base64: Optional[str] = None,
         image_mime_type: Optional[str] = None,
+        lang: str = DEFAULT_LANGUAGE,
     ) -> Dict[str, Any]:
         history = await ChatService.get_history(redis, session_id)
 
         result = await ChatService._ask_gemini(message, history, image_base64, image_mime_type)
-        products = await ChatService._match_products(db, branch_id, result["search_terms"])
+        products = await ChatService._match_products(
+            db, branch_id, result["search_terms"], lang=lang
+        )
 
         await ChatService._append_turn(redis, session_id, history, message, result["reply"])
 
