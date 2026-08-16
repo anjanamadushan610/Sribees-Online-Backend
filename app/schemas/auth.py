@@ -187,6 +187,11 @@ class UpdateProfileRequest(BaseModel):
         max_length=100,
         description="User's full name",
     )
+    email: Optional[EmailStr] = Field(
+        None,
+        description="Email address. Required for phone-only accounts before they can "
+        "use a card/bank payment method -- checked for uniqueness against other accounts.",
+    )
     phone: Optional[str] = Field(None, max_length=20, description="Phone number")
     profile_picture_url: Optional[str] = Field(
         None,

@@ -777,6 +777,13 @@ class AuthService:
 
         if data.full_name is not None:
             user.full_name = data.full_name
+        if data.email is not None and data.email != user.email:
+            existing = await db.execute(
+                select(User).where(User.email == data.email, User.user_id != user.user_id)
+            )
+            if existing.scalar_one_or_none() is not None:
+                raise EmailAlreadyExistsError()
+            user.email = data.email
         if data.phone is not None:
             user.phone = data.phone
         if data.profile_picture_url is not None:
