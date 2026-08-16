@@ -101,13 +101,14 @@ jobs:
           # for whichever one is empty.
           MARX_IPG_API_KEY: ${{ secrets.MARX_IPG_API_KEY }}
           MARX_IPG_BASE_URL: ${{ secrets.MARX_IPG_BASE_URL }}
+          MARX_IPG_RETURN_URL: ${{ secrets.MARX_IPG_RETURN_URL }}
           MARX_GATEWAY_METHODS_ENABLED: ${{ secrets.MARX_GATEWAY_METHODS_ENABLED }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_GATEWAY_METHODS_ENABLED
+          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED
           # MUST stay false. script_stop makes the action test every command's
           # exit status itself and return on the first non-zero one. That check
           # sits outside bash, so it ignores `set +e` AND the rule that a
@@ -179,6 +180,11 @@ jobs:
               grep -v '^MARX_IPG_BASE_URL=' .env > .env.tmp || true
               mv .env.tmp .env
               echo "MARX_IPG_BASE_URL=${MARX_IPG_BASE_URL}" >> .env
+            fi
+            if [ -n "${MARX_IPG_RETURN_URL:-}" ]; then
+              grep -v '^MARX_IPG_RETURN_URL=' .env > .env.tmp || true
+              mv .env.tmp .env
+              echo "MARX_IPG_RETURN_URL=${MARX_IPG_RETURN_URL}" >> .env
             fi
             if [ -n "${MARX_GATEWAY_METHODS_ENABLED:-}" ]; then
               grep -v '^MARX_GATEWAY_METHODS_ENABLED=' .env > .env.tmp || true

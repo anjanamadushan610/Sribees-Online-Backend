@@ -266,11 +266,19 @@ class OrderService:
             user = await db.get(User, user_id)
             marx_method = MARX_PAYMENT_METHOD_MAP[data.payment_method]
             try:
+                # Marx requires a non-empty customerMail, but phone-only
+                # accounts (this app's primary signup path) have none --
+                # fall back to a deterministic placeholder tied to the
+                # account's phone number rather than blocking gateway
+                # checkout on having an email on file.
+                customer_mail = (user.email if user else None) or (
+                    f"{(user.phone or order_number).lstrip('+')}@guest.sribees.com"
+                )
                 gw = await MarxIPGService.create_order(
                     merchant_rid=order_number,
                     amount=breakdown.total,
                     return_url=settings.marx_ipg_return_url,
-                    customer_mail=user.email if user else "",
+                    customer_mail=customer_mail,
                     customer_mobile=user.phone if user else None,
                     order_summary=f"SRIBEESonline order {order_number}",
                     customer_reference=(user.full_name if user else None) or order_number,
