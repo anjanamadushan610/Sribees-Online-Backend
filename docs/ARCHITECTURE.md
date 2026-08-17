@@ -782,18 +782,16 @@ async def add_security_headers(request, call_next):
 (The February version's numbers — 1000/15min general, 5/15min auth — don't match the
 real config; corrected above.)
 
-### CORS Configuration
+### CORS Configuration (✅ Verified 2026-08-10 — real config is simpler than previously documented)
 
 ```python
-# FastAPI CORS configuration
-from fastapi.middleware.cors import CORSMiddleware
-
+# app/main.py, driven by app/config/settings.py — real, current values
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS if settings.ENVIRONMENT == "production" else ["*"],
+    allow_origins=settings.cors_origins,       # from CORS_ORIGINS env var, no prod/dev branch in code
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Content-Type", "Authorization", "X-Branch-ID"],
+    allow_methods=settings.cors_allow_methods,  # defaults to ["*"]
+    allow_headers=settings.cors_allow_headers,  # defaults to ["*"] — no X-Branch-ID allowlisting; that header isn't used (see RBAC section)
 )
 ```
 
@@ -874,164 +872,119 @@ async def log_requests(request, call_next):
     return response
 ```
 
-### Admin Audit Logs
+### Admin Audit Logs (❌ Does not exist — checked directly, 2026-08-10)
 
-```sql
-CREATE TABLE admin_audit_logs (
-    log_id UUID PRIMARY KEY,
-    admin_id UUID REFERENCES admin_users(admin_id),
-    branch_id UUID REFERENCES branches(branch_id),
-    action VARCHAR(100) NOT NULL,
-    resource_type VARCHAR(100) NOT NULL,
-    resource_id VARCHAR(255),
-    old_value JSONB,
-    new_value JSONB,
-    ip_address INET,
-    user_agent TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
+`admin_audit_logs` is **not a real table** — `to_regclass('public.admin_audit_logs')`
+returns null against the live database. No admin action (profile change, password
+reset, order status update, inventory edit) is currently written to any audit trail
+table. If audit logging is a real requirement, it needs to be built, not assumed to
+already exist from this doc.
 
 ---
 
-## 🌱 Seeding System
+## 🌱 Seeding System (✅ Verified 2026-08-10 — the February version's script names don't exist in this repo)
 
-### Available Scripts
+There is no `run_all_migrations.py`, `seed_admin_system.py`, `seed_manager.py`, or
+`seed-variants-images.js` anywhere in the codebase. Seeding is done entirely through
+the numbered SQL migrations (see `DATABASE_SPECIFICATION.md`'s
+[migration history](DATABASE_SPECIFICATION.md#migration-history)), applied via
+`bash scripts/setup.sh` — the one real, current entry point (see
+`LOCAL_DEV_SETUP.md`). The few `.py` files that *do* exist under `scripts/` are
+one-off helpers (`smoke_test.py`, `reconcile_marx_payments.py`), not a seeding
+pipeline.
 
-| Script | Purpose | Command |
-|--------|---------|---------|
-| `run_all_migrations.py` | Run all SQL migrations | `python scripts/run_all_migrations.py` |
-| `seed_admin_system.py` | Seed branches, admins, inventory | `python scripts/seed_admin_system.py` |
-| `seed_manager.py` | Seed watchlist data | `python scripts/seed_manager.py` |
-| `seed-variants-images.js` | Seed product variants & images | `node seed-variants-images.js` |
-
-### Recommended Execution Order
-
-```bash
-# 1. Start infrastructure
-docker compose up -d
-
-# 2. Run migrations
-python scripts/run_all_migrations.py
-
-# 3. Seed admin RBAC system
-python scripts/seed_admin_system.py
-
-# 4. Seed product variants
-python seed_variants_images.py
-```
-
-### Seeded Demo Data
+### Seeded demo data (real counts, this run)
 
 | Entity | Count | Details |
-|--------|-------|---------|
-| Branches | 3 | Colombo, Kandy, Galle (Sri Lanka) |
-| Admin Users | 10+ | Super admin, managers, staff per branch |
-| Categories | 6 | Groceries, Produce, Dairy, etc. |
-| Products | 10+ | With variants and images |
-| Variant Types | 4 | Size, Color, Weight, Pack Size |
+|---|---|---|
+| Branches | 5 | Colombo Main, Kandy City, Galle Fort, Negombo Beach, Kurunegala Hub |
+| Admins | 10 | One Super Admin; one Branch Manager per branch (5); one each of Marketing Manager, Inventory Manager, Customer Support |
+| Customers | 40 | `demo.customer01`–`40@sribees.test`, with addresses, wallets, wishlists, referral links |
+| Orders | ~4,700 | ~120 days of history — **only across Negombo Beach and Kurunegala Hub** (the other 3 branches have zero seeded orders; a real gap in the demo dataset, not a bug in anything reading it) |
+| Products | 15 | Global catalog, stocked per-branch via `branch_inventory` |
+| Categories | 3 | |
+| Partners | 5 | 1 lead + 3 active agents + 1 deliberately-deactivated agent, with a seeded sub-tree of referred customers |
+| Coupons | 6 | |
 
-### Demo Credentials
+Full demo login list (every role, every partner, sample customers) lives in
+[`admin/ADMIN_CREDENTIALS.md`](../../admin/ADMIN_CREDENTIALS.md) — don't duplicate
+credentials here, that file is the one to keep updated as seed data changes.
 
-| Email | Password | Role | Branch |
-|-------|----------|------|--------|
-| `superadmin@sribeesonline.lk` | `Admin@123` | super_admin | All |
-| `manager.colombo@sribeesonline.lk` | `Admin@123` | branch_manager | Colombo |
-| `staff1.colombo@sribeesonline.lk` | `Admin@123` | staff | Colombo |
-| `inventory@sribeesonline.lk` | `Admin@123` | inventory | All |
+*(Demo credentials table removed — see `admin/ADMIN_CREDENTIALS.md`, the maintained
+source of truth, rather than duplicating logins in two places that can drift apart.)*
 
 ---
 
-## 📁 File Structure Summary
+## 📁 File Structure Summary (✅ Verified 2026-08-10 — see `MONOREPO_README.md` for the full annotated version)
 
 ```
-SRIBEESonline/
-├── admin/                          # React Web Admin Dashboard
-│   ├── src/
-│   │   ├── api/                    # API layer (HTTP client)
-│   │   ├── components/             # React components
-│   │   ├── pages/                  # Route pages
-│   │   ├── store/                  # State management
-│   │   ├── types/                  # TypeScript types
-│   │   └── hooks/                  # Custom hooks
-│   ├── package.json
-│   └── vite.config.ts
-│
-├── mobile/                         # Flutter Mobile App
-│   ├── lib/
-│   │   ├── api/                    # Dio HTTP layer
-│   │   ├── widgets/                # Flutter widgets
-│   │   ├── screens/                # Screen widgets
-│   │   ├── providers/              # Riverpod providers
-│   │   └── utils/                  # Utilities
-│   ├── android/
-│   ├── ios/
-│   └── pubspec.yaml
-│
-├── fastapi_backend/                # Python FastAPI Backend
-│   ├── app/
-│   │   ├── api/                    # API routes
-│   │   │   └── v1/                 # API v1 endpoints
-│   │   ├── config/                 # Configuration
-│   │   ├── core/                   # Core utilities (auth, security)
-│   │   ├── models/                 # SQLAlchemy models
-│   │   ├── schemas/                # Pydantic schemas
-│   │   ├── services/               # Business logic
-│   │   └── utils/                  # Utilities
-│   ├── alembic/                    # Database migrations
-│   ├── requirements.txt
-│   └── Dockerfile
-│
-├── ARCHITECTURE.md                 # This document
-├── FEATURES.md                     # Feature documentation
-├── BACKEND_PLAN.md                 # Backend implementation plan
-└── USER_STORIES_BREAKDOWN.md       # User stories
+SRIBEESonline/                  # workspace root — local-only git history, no remote
+├── admin/                      # own repo — React 19 + Vite + Ant Design admin dashboard
+│   └── src/{api,components,pages,store,types,hooks}/
+├── partner-portal/             # own repo — same stack, separate app for the referral team
+│   └── src/{api,pages}/
+├── mobile/                     # own repo — Flutter; lib/{core,features}/, not lib/{api,widgets,screens}/
+├── fastapi_backend/            # own repo — Python FastAPI
+│   ├── app/{api/v1,config,core,models,schemas,services,utils}/
+│   ├── migrations/             # numbered raw .sql — no alembic/ directory exists
+│   ├── docker-compose.yml, docker/, scripts/
+│   └── docs/                   # you are here
+└── (no top-level ARCHITECTURE.md/FEATURES.md — those + their near-duplicates live
+    both here in fastapi_backend/docs/ and, confusingly, at the workspace root; see
+    MONOREPO_README.md's "Known documentation debt" section)
 ```
 
 ---
 
-## 🐳 Verified Local Infrastructure (February 17, 2026)
+## 🐳 Verified Local Infrastructure (re-verified 2026-08-10)
 
-### Container Status
+### Container status
 
 | Container | Image | Port | Status |
-|-----------|-------|------|--------|
+|---|---|---|---|
 | `sribees_postgres` | `ankane/pgvector` | 5432 | Healthy |
 | `sribees_redis` | `redis:7-alpine` | 6379 | Healthy |
 | `sribees_minio` | `minio/minio` | 9000, 9001 | Healthy |
-| `sribees_backend` | `fastapi_backend:dev` | 8000 | Healthy |
+| `sribees_minio_init` | `minio/mc` | — | Exits after creating the bucket — expected, not a failure |
+| `sribees_backend` | built from `fastapi_backend/Dockerfile`, `development` target | 8000 | Healthy |
+| `sribees_admin` | built from `admin/Dockerfile` | 3000 | Defined in `docker-compose.yml` but **not part of the documented workflow** — the admin dashboard runs via `npm run dev` (Vite, port 5173) instead; don't be surprised if this container is stopped/unhealthy |
 
-### Service Endpoints
+### Service endpoints
 
-| Service | URL |
-|---------|-----|
-| FastAPI Swagger UI | http://localhost:8000/docs |
-| FastAPI Health | http://localhost:8000/health |
-| MinIO Console | http://localhost:9001 (admin / password123) |
-| MinIO S3 API | http://localhost:9000 |
-| PostgreSQL | localhost:5432 |
-| Redis | localhost:6379 |
+Unchanged from the February version — still accurate: Swagger at
+`:8000/docs`, health at `:8000/health`, MinIO console at `:9001`
+(`admin`/`password123`), MinIO S3 API at `:9000`, Postgres at `:5432`, Redis at
+`:6379`.
 
-### Android Emulator Connectivity
+### Android emulator connectivity
 
-The Flutter mobile app uses `10.0.2.2` (Android emulator's alias for host localhost):
-- API: `http://10.0.2.2:8000/api/v1`
-- MinIO: `http://10.0.2.2:9000/sribees-assets/...`
+`10.0.2.2` is the Android emulator's alias for the host machine's `localhost` — the
+app and its API/MinIO URL rewriting logic for this were not independently re-traced
+in this pass (see the Flutter section's caveat above); the mechanism described in the
+February version is plausible but unverified here.
 
-The `X-Client-Platform: android-emulator` header triggers URL rewriting in `storage_service.py`, converting `localhost` MinIO URLs to `10.0.2.2` for emulator access.
+### Database schema — corrected
 
-### Database Schema (sribees schema)
+**There is no `sribees` schema.** The February version's claim of "16 tables verified
+across `sribees` and `public` schemas" describes the exact corrupting artifact removed
+2026-08-10 (see [How the schema actually gets built](DATABASE_SPECIFICATION.md#how-the-schema-actually-gets-built)
+in `DATABASE_SPECIFICATION.md`) — `docker/postgres/init.sql` used to hand-build a
+parallel `sribees.*` copy of the schema and repoint the database's default
+`search_path` at it, which raced the real SQLAlchemy-managed `public` schema tables
+and broke `create_all()` outright on a genuinely fresh volume (a table like `branches`
+would already exist under `sribees`, minus the columns the ORM expected, so creating
+a dependent table's foreign key would fail). Real, current count: **30 tables, all in
+`public`** — see `DATABASE_SPECIFICATION.md` for the complete list.
 
-16 tables verified across `sribees` and `public` schemas:
+### MinIO storage
 
-| Schema | Tables |
-|--------|--------|
-| `sribees` | users, admin_users, branches, products, categories, addresses, carts, orders, wishlists, product_reviews, notifications, audit_logs, post_office_branch_mapping, branch_inventory |
-| `sribees` | app_settings |
+Bucket `sribees-assets`, public-read policy — confirmed still accurate.
 
-### MinIO Storage
+---
 
-- Bucket: `sribees-assets` (public-read)
-- Splash Video: `splash/splash_video_initial.mp4` (539 KB)
-
-*Document reflects the as-built implementation state as of February 2026.*
+*This document was substantially re-verified against the live database, the running
+backend, and the actual frontend/mobile source on 2026-08-10 — see each section's
+✅/⚠️/❌ marker for what was individually checked versus carried over. Sections not
+marked were not touched in this pass and may carry the same kind of drift found
+everywhere else — verify against the actual code before relying on specifics that
+aren't flagged as checked.*
