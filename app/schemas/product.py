@@ -85,7 +85,8 @@ class ProductCreate(BaseModel):
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
     )
     sku: str = Field(..., min_length=1, max_length=100)
-    price: Decimal = Field(..., ge=0)
+    # gt, not ge: a 0.00 base price lists the item as free on the storefront.
+    price: Decimal = Field(..., gt=0)
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     # Required: an uncategorised product is invisible to storefront/mobile
@@ -132,7 +133,10 @@ class ProductUpdate(BaseModel):
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
     )
     sku: Optional[str] = Field(None, max_length=100)
-    price: Optional[Decimal] = Field(None, ge=0)
+    # gt, not ge: a 0.00 base price lists the item as free on the storefront.
+    # Optional here (a partial update may not touch price at all), but a
+    # price explicitly sent must be a real one.
+    price: Optional[Decimal] = Field(None, gt=0)
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     category_id: Optional[UUID] = None
