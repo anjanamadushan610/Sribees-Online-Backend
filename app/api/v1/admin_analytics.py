@@ -298,6 +298,10 @@ async def analytics_sales(
     """
     effective_branch = scope.resolve(branch_id)
     window = Window(days)
+    # `window.end` is always today (see Window.__init__), so the current
+    # series' last bucket covers a day that has not finished yet — flag it so
+    # the chart can draw it as "in progress" instead of a misleading drop.
+    today_iso = datetime.now(timezone.utc).date().isoformat()
 
     async def series_for(start_day: date, bounds: tuple[datetime, datetime]) -> list[dict]:
         # Bucket by the UTC calendar day, explicitly. A bare date(created_at)
@@ -328,7 +332,14 @@ async def analytics_sales(
         for i in range(days):
             d = (start_day + timedelta(days=i)).isoformat()
             entry = by_day.get(d, {"orders": 0, "revenue": 0.0})
-            out.append({"date": d, "orders": entry["orders"], "revenue": entry["revenue"]})
+            out.append(
+                {
+                    "date": d,
+                    "orders": entry["orders"],
+                    "revenue": entry["revenue"],
+                    "is_partial": d == today_iso,
+                }
+            )
         return out
 
     data = {
@@ -378,6 +389,9 @@ async def analytics_branches(
                 func.count(Order.order_id).label("orders"),
                 func.coalesce(func.sum(case((_is_revenue(), 1), else_=0)), 0).label("paid"),
                 func.count(distinct(Order.user_id)).label("customers"),
+                func.coalesce(
+                    func.sum(case((Order.status.in_(_VOID_STATUSES), 1), else_=0)), 0
+                ).label("cancelled"),
             ).where(Order.branch_id.isnot(None)),
             bounds,
         ).group_by(Order.branch_id)
@@ -387,6 +401,7 @@ async def analytics_branches(
                 "orders": int(row.orders or 0),
                 "paid": int(row.paid or 0),
                 "customers": int(row.customers or 0),
+                "cancelled": int(row.cancelled or 0),
             }
             for row in (await db.execute(stmt)).all()
         }
@@ -438,8 +453,14 @@ async def analytics_branches(
 
     rows = []
     for b in branches:
-        cur = current.get(b.branch_id, {"revenue": 0.0, "orders": 0, "paid": 0, "customers": 0})
-        prv = previous.get(b.branch_id, {"revenue": 0.0, "orders": 0, "paid": 0, "customers": 0})
+        cur = current.get(
+            b.branch_id,
+            {"revenue": 0.0, "orders": 0, "paid": 0, "customers": 0, "cancelled": 0},
+        )
+        prv = previous.get(
+            b.branch_id,
+            {"revenue": 0.0, "orders": 0, "paid": 0, "customers": 0, "cancelled": 0},
+        )
         stock = stock_by_branch.get(
             b.branch_id, {"skus": 0, "low_stock": 0, "units_on_hand": 0}
         )
@@ -458,6 +479,10 @@ async def analytics_branches(
                 "items_sold": items_by_branch.get(b.branch_id, 0),
                 "avg_order_value": (
                     round(cur["revenue"] / cur["paid"], 2) if cur["paid"] else 0.0
+                ),
+                "cancelled_orders": cur["cancelled"],
+                "cancellation_rate": (
+                    round((cur["cancelled"] / cur["orders"]) * 100, 1) if cur["orders"] else 0.0
                 ),
                 "previous_revenue": prv["revenue"],
                 "revenue_change": _pct_change(cur["revenue"], prv["revenue"]),
