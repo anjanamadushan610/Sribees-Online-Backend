@@ -570,10 +570,24 @@ async def update_product(
     fields = data.model_dump(exclude_unset=True)
     next_category = fields.get("category_id", product.category_id)
     next_subcategory = fields.get("subcategory_id", product.subcategory_id)
+    if next_category is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Category is required — a product cannot be left uncategorised.",
+        )
     try:
         await CategoryService.validate_subcategory(db, next_category, next_subcategory)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    # Same "what does the update leave behind" check for SKU: a partial update
+    # that doesn't touch it is fine, but explicitly clearing it is not.
+    next_sku = fields.get("sku", product.sku)
+    if not next_sku or not str(next_sku).strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="SKU is required.",
+        )
 
     try:
         updated = await ProductService.update(db, product, data)

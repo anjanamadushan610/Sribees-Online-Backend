@@ -84,11 +84,14 @@ class ProductCreate(BaseModel):
         None,
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
     )
-    sku: Optional[str] = Field(None, max_length=100)
+    sku: str = Field(..., min_length=1, max_length=100)
     price: Decimal = Field(..., ge=0)
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
-    category_id: Optional[UUID] = None
+    # Required: an uncategorised product is invisible to storefront/mobile
+    # category filtering and inventory sync silently disagrees on what
+    # "this product" even is without a SKU.
+    category_id: UUID
     subcategory_id: Optional[UUID] = Field(
         None,
         description="Sub-category — must be a child of category_id",

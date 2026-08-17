@@ -248,9 +248,30 @@ app.include_router(v1_router, prefix="/api")
 # the files live in the bucket and are fetched straight from MEDIA_BASE_URL, so
 # nothing is mounted here — the app never proxies them.
 if (settings.storage_backend or "local").strip().lower() == "local":
+    import mimetypes
     from pathlib import Path
 
     from fastapi.staticfiles import StaticFiles
+
+    # StaticFiles picks the response Content-Type from the extension via
+    # mimetypes.guess_type(), which serves unrecognized extensions as
+    # text/plain. Combined with the X-Content-Type-Options: nosniff security
+    # header, browsers then refuse to render the image at all — it 200s but
+    # shows as a broken <img>. Confirmed in prod: .jfif (a common "Save Image"
+    # extension from browsers/Google Images) isn't in Python 3.11's table on
+    # Linux. Uploads keep whatever extension the browser handed us (see
+    # LocalDiskStorageProvider.save), so every extension we accept for
+    # uploads (see ALLOWED_IMAGE_TYPES) is registered explicitly here rather
+    # than trusting the interpreter's table.
+    for _ext, _mime in (
+        (".jfif", "image/jpeg"),
+        (".jpg", "image/jpeg"),
+        (".jpeg", "image/jpeg"),
+        (".png", "image/png"),
+        (".webp", "image/webp"),
+        (".gif", "image/gif"),
+    ):
+        mimetypes.add_type(_mime, _ext)
 
     _media_root = Path(settings.media_root)
     # StaticFiles refuses to start if the directory is missing, which on a fresh
