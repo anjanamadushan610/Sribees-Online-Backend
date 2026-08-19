@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.core.dependencies import get_current_admin
+from app.models.branch import Branch
 from app.models.category import Category
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.product import Product
@@ -510,3 +511,30 @@ async def get_recent_orders(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get recent orders"
         )
+
+
+@router.get("/branch-options", response_model=dict)
+async def list_branch_options(
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_admin),
+):
+    """
+    Every active branch's id/name/code — for any admin-facing branch picker
+    (stock transfer From/To, the Orders branch filter, etc). This router has
+    no role restriction beyond being a signed-in admin, unlike `/admin/branches`
+    (Super Admin only, full branch management) — nothing returned here is
+    sensitive that isn't already shown elsewhere in the UI to every role.
+    """
+    rows = (
+        await db.execute(
+            select(Branch.branch_id, Branch.name, Branch.code)
+            .where(Branch.is_active.is_(True))
+            .order_by(Branch.name)
+        )
+    ).all()
+    return {
+        "success": True,
+        "data": {
+            "branches": [{"branch_id": str(r.branch_id), "name": r.name, "code": r.code} for r in rows]
+        },
+    }

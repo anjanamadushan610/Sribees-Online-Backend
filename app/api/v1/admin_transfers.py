@@ -17,7 +17,6 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -27,7 +26,6 @@ from app.core.dependencies import (
     inject_branch_filter,
     require_roles,
 )
-from app.models.branch import Branch
 from app.models.stock_transfer import TransferStatus
 from app.schemas.stock_transfer import StockTransferCreate, StockTransferReject
 from app.services.stock_transfer_service import (
@@ -86,30 +84,6 @@ def _require_approver(current_admin) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only Super Admin or Inventory Manager can act on transfers.",
         )
-
-
-@router.get("/branches", response_model=dict)
-async def list_transfer_branches(db: AsyncSession = Depends(get_db)):
-    """
-    Every active branch's id/name/code — for the "From"/"To" pickers on the
-    transfer-request forms. `/admin/branches` itself is Super Admin only
-    (full branch management), but a Branch/Inventory Manager still needs to
-    see the other branches to request stock from one; nothing here is
-    sensitive that isn't already shown elsewhere in the UI to every role.
-    """
-    rows = (
-        await db.execute(
-            select(Branch.branch_id, Branch.name, Branch.code)
-            .where(Branch.is_active.is_(True))
-            .order_by(Branch.name)
-        )
-    ).all()
-    return {
-        "success": True,
-        "data": {
-            "branches": [{"branch_id": str(r.branch_id), "name": r.name, "code": r.code} for r in rows]
-        },
-    }
 
 
 @router.get("", response_model=dict)
