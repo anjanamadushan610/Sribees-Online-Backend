@@ -263,9 +263,57 @@ def require_roles(*allowed_roles: str):
 RequireSuperAdmin = Depends(require_roles("super_admin"))
 RequireBranchManager = Depends(require_roles("super_admin", "branch_manager"))
 RequireMarketingManager = Depends(require_roles("super_admin", "branch_manager", "marketing_manager"))
-RequireStaff = Depends(require_roles("super_admin", "branch_manager", "staff"))
-RequireSupport = Depends(require_roles("super_admin", "support"))
 RequireInventory = Depends(require_roles("super_admin", "branch_manager", "inventory_manager"))
+
+
+async def require_base_role_admin(
+    admin: Annotated[dict, Depends(get_current_admin)],
+) -> dict:
+    """
+    Require one of the 5 original base roles — NOT a delegated staff account.
+
+    Staff accounts can never create or manage further staff (hierarchy is
+    capped at one level): gate every staff/role-management endpoint with
+    this, not with a role-string allow-list, so the restriction can't be
+    quietly widened by adding "staff" to some future require_roles() call.
+    """
+    from app.models.admin import AdminRole
+
+    if admin.role == AdminRole.STAFF:
+        raise InsufficientPermissionsError(
+            message="Staff accounts cannot create or manage other staff accounts.",
+        )
+    return admin
+
+
+def require_permission(resource: str, action: str):
+    """
+    Factory for a dependency that checks a concrete (resource, action)
+    permission against the admin's DB-derived effective permission set
+    (their role's row in role_permissions) — the granular counterpart to
+    require_roles(), which only checks the coarse role name.
+
+    Usage:
+        @router.get("/widgets")
+        async def list_widgets(
+            admin: AdminUser = Depends(require_permission("products", "read"))
+        ):
+            ...
+    """
+    async def permission_checker(
+        admin: Annotated[dict, Depends(get_current_admin)],
+        db: Annotated[AsyncSession, Depends(get_db)],
+    ) -> dict:
+        from app.services.permission_service import PermissionService
+
+        effective = await PermissionService.get_effective_permissions(db, admin)
+        if (resource, action) not in effective:
+            raise InsufficientPermissionsError(
+                message=f"This action requires the '{resource}:{action}' permission.",
+            )
+        return admin
+
+    return permission_checker
 
 
 # ============================================================================

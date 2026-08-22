@@ -13,16 +13,41 @@ from app.core.security import (
     verify_password,
     verify_token,
 )
-from app.models.admin import Admin, AdminRole, AdminSession
+from app.models.admin import Admin, AdminSession
+from app.models.role import Role
 from app.schemas.admin_auth import (
     AdminAuthData,
     AdminAuthResponse,
-    AdminListResponse,
     AdminProfileResponse,
     AdminResponse,
-    CreateAdminRequest,
 )
+from app.services.permission_service import PermissionService
 from app.utils.logger import logger
+
+
+async def _to_admin_response(admin: Admin, db: AsyncSession) -> AdminResponse:
+    """Build an AdminResponse including the admin's current role display
+    name and effective permission set, resolved fresh from the DB."""
+    role_name = None
+    if admin.role_id is not None:
+        role_name = (
+            await db.execute(select(Role.name).where(Role.role_id == admin.role_id))
+        ).scalar_one_or_none()
+
+    permissions = await PermissionService.get_effective_permissions(db, admin)
+
+    return AdminResponse(
+        admin_id=admin.admin_id,
+        email=admin.email,
+        full_name=admin.full_name,
+        role=admin.role,
+        role_name=role_name,
+        branch_id=admin.branch_id,
+        is_active=admin.is_active,
+        last_login=admin.last_login,
+        created_at=admin.created_at,
+        permissions=[{"resource": r, "action": a} for r, a in sorted(permissions)],
+    )
 
 
 class AdminAuthService:
@@ -81,16 +106,7 @@ class AdminAuthService:
             success=True,
             message="Login successful",
             data=AdminAuthData(
-                admin=AdminResponse(
-                    admin_id=admin.admin_id,
-                    email=admin.email,
-                    full_name=admin.full_name,
-                    role=admin.role,
-                    branch_id=admin.branch_id,
-                    is_active=admin.is_active,
-                    last_login=admin.last_login,
-                    created_at=admin.created_at,
-                ),
+                admin=await _to_admin_response(admin, db),
                 token=tokens["access_token"],
                 refresh_token=tokens["refresh_token"],
             )
@@ -162,16 +178,7 @@ class AdminAuthService:
             success=True,
             message="Token refreshed successfully",
             data=AdminAuthData(
-                admin=AdminResponse(
-                    admin_id=admin.admin_id,
-                    email=admin.email,
-                    full_name=admin.full_name,
-                    role=admin.role,
-                    branch_id=admin.branch_id,
-                    is_active=admin.is_active,
-                    last_login=admin.last_login,
-                    created_at=admin.created_at,
-                ),
+                admin=await _to_admin_response(admin, db),
                 token=tokens["access_token"],
                 refresh_token=tokens["refresh_token"],
             )
@@ -190,19 +197,7 @@ class AdminAuthService:
         if not admin:
             raise ValueError("Admin not found")
 
-        return AdminProfileResponse(
-            success=True,
-            admin=AdminResponse(
-                admin_id=admin.admin_id,
-                email=admin.email,
-                full_name=admin.full_name,
-                role=admin.role,
-                branch_id=admin.branch_id,
-                is_active=admin.is_active,
-                last_login=admin.last_login,
-                created_at=admin.created_at,
-            ),
-        )
+        return AdminProfileResponse(success=True, admin=await _to_admin_response(admin, db))
 
     @staticmethod
     async def update_profile(admin_id: UUID, full_name: str, db: AsyncSession) -> AdminProfileResponse:
@@ -222,19 +217,7 @@ class AdminAuthService:
 
         logger.info(f"Admin profile updated: {admin.email}")
 
-        return AdminProfileResponse(
-            success=True,
-            admin=AdminResponse(
-                admin_id=admin.admin_id,
-                email=admin.email,
-                full_name=admin.full_name,
-                role=admin.role,
-                branch_id=admin.branch_id,
-                is_active=admin.is_active,
-                last_login=admin.last_login,
-                created_at=admin.created_at,
-            ),
-        )
+        return AdminProfileResponse(success=True, admin=await _to_admin_response(admin, db))
 
     @staticmethod
     async def change_password(
@@ -261,78 +244,6 @@ class AdminAuthService:
         logger.info(f"Admin password changed: {admin.email}")
 
         return {"success": True, "message": "Password changed successfully"}
-
-    @staticmethod
-    async def create_admin(
-        data: CreateAdminRequest,
-        created_by: UUID,
-        db: AsyncSession
-    ) -> AdminResponse:
-        """
-        Create new admin user.
-        """
-        # Check if email exists
-        result = await db.execute(
-            select(Admin).where(Admin.email == data.email.lower())
-        )
-        if result.scalar_one_or_none():
-            raise ValueError("Email already registered")
-
-        # Create admin
-        admin = Admin(
-            admin_id=uuid4(),
-            email=data.email.lower(),
-            password_hash=hash_password(data.password),
-            full_name=data.full_name,
-            role=AdminRole(data.role.value),
-            branch_id=data.branch_id,
-            is_active=True,
-        )
-
-        db.add(admin)
-        await db.commit()
-        await db.refresh(admin)
-
-        logger.info(f"Admin created: {admin.email} by admin {created_by}")
-
-        return AdminResponse(
-            admin_id=admin.admin_id,
-            email=admin.email,
-            full_name=admin.full_name,
-            role=admin.role,
-            branch_id=admin.branch_id,
-            is_active=admin.is_active,
-            last_login=admin.last_login,
-            created_at=admin.created_at,
-        )
-
-    @staticmethod
-    async def list_admins(db: AsyncSession) -> AdminListResponse:
-        """
-        List all admin users.
-        """
-        result = await db.execute(
-            select(Admin).order_by(Admin.created_at.desc())
-        )
-        admins = result.scalars().all()
-
-        return AdminListResponse(
-            success=True,
-            admins=[
-                AdminResponse(
-                    admin_id=a.admin_id,
-                    email=a.email,
-                    full_name=a.full_name,
-                    role=a.role,
-                    branch_id=a.branch_id,
-                    is_active=a.is_active,
-                    last_login=a.last_login,
-                    created_at=a.created_at,
-                )
-                for a in admins
-            ],
-            total=len(admins),
-        )
 
     @staticmethod
     async def logout(admin_id: UUID, db: AsyncSession) -> dict:

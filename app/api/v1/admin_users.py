@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -19,6 +19,7 @@ from app.core.dependencies import get_current_admin, require_roles
 from app.core.security import hash_password
 from app.models.admin import Admin, AdminRole
 from app.models.branch import Branch
+from app.models.role import Role
 from app.schemas.admin_auth import CreateAdminRequest, UpdateAdminRequest
 
 router = APIRouter(
@@ -27,18 +28,33 @@ router = APIRouter(
 )
 
 
-def _format_admin(admin: Admin, branch_name: str | None) -> dict:
+def _format_admin(admin: Admin, branch_name: str | None, role_name: str | None = None) -> dict:
     return {
         "admin_id": str(admin.admin_id),
         "email": admin.email,
         "full_name": admin.full_name,
         "role": admin.role.value if hasattr(admin.role, "value") else admin.role,
+        "role_id": str(admin.role_id) if admin.role_id else None,
+        "role_name": role_name,
         "branch_id": str(admin.branch_id) if admin.branch_id else None,
         "branch_name": branch_name,
         "is_active": admin.is_active,
         "last_login": admin.last_login.isoformat() if admin.last_login else None,
         "created_at": admin.created_at.isoformat() if admin.created_at else None,
     }
+
+
+async def _system_role_id(db: AsyncSession, role: AdminRole) -> UUID:
+    """Look up the seeded system role's role_id for one of the 5 base roles."""
+    role_id = (
+        await db.execute(select(Role.role_id).where(Role.system_key == role.value))
+    ).scalar_one_or_none()
+    if role_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"System role '{role.value}' is not seeded. Run migration 037.",
+        )
+    return role_id
 
 
 async def _branch_name_map(db: AsyncSession, branch_ids: set[UUID]) -> dict[UUID, str]:
@@ -85,9 +101,17 @@ async def _get_admin_or_404(db: AsyncSession, admin_id: UUID) -> Admin:
 
 @router.get("", response_model=dict)
 async def list_admin_users(db: AsyncSession = Depends(get_db)):
-    """List all admin users, most recent first."""
+    """
+    List all base-role admin users, most recent first.
+
+    Excludes delegated staff accounts (role='staff') — those are managed on
+    their own surface (/admin/staff), scoped to whoever created them, not
+    listed network-wide here.
+    """
     admins = (
-        await db.execute(select(Admin).order_by(Admin.created_at.desc()))
+        await db.execute(
+            select(Admin).where(Admin.role != AdminRole.STAFF).order_by(Admin.created_at.desc())
+        )
     ).scalars().all()
 
     names = await _branch_name_map(db, {a.branch_id for a in admins if a.branch_id})
@@ -104,7 +128,12 @@ async def create_admin_user(
     data: CreateAdminRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Create an admin user with a role and optional branch assignment."""
+    """Create a base-role admin user with a role and optional branch assignment."""
+    if data.role == AdminRole.STAFF:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Staff accounts are created via /admin/staff, not here.",
+        )
     if await _email_taken(db, data.email):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -112,12 +141,14 @@ async def create_admin_user(
         )
     await _validate_branch(db, data.branch_id)
 
+    role = AdminRole(data.role.value)
     admin = Admin(
         admin_id=uuid4(),
         email=data.email.lower(),
         password_hash=hash_password(data.password),
         full_name=data.full_name.strip(),
-        role=AdminRole(data.role.value),
+        role=role,
+        role_id=await _system_role_id(db, role),
         branch_id=data.branch_id,
         is_active=True,
     )
@@ -160,7 +191,14 @@ async def update_admin_user(
         admin.password_hash = hash_password(fields["password"])
 
     if "role" in fields and fields["role"] is not None:
-        admin.role = AdminRole(fields["role"].value if hasattr(fields["role"], "value") else fields["role"])
+        new_role = AdminRole(fields["role"].value if hasattr(fields["role"], "value") else fields["role"])
+        if new_role == AdminRole.STAFF:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Staff accounts are managed via /admin/staff, not here.",
+            )
+        admin.role = new_role
+        admin.role_id = await _system_role_id(db, new_role)
 
     if "full_name" in fields and fields["full_name"]:
         admin.full_name = fields["full_name"].strip()
@@ -199,6 +237,16 @@ async def deactivate_admin_user(
 
     admin = await _get_admin_or_404(db, admin_id)
     admin.is_active = False
+
+    # Cascade: this admin's own delegated staff lose access too — an
+    # orphaned-but-still-active staff account left behind after its creator
+    # is deactivated would be an access-control gap, not a convenience.
+    result = await db.execute(
+        update(Admin).where(Admin.parent_admin_id == admin_id).values(is_active=False)
+    )
+
     await db.commit()
-    logger.info(f"[admin] Admin user deactivated: {admin_id}")
+    logger.info(
+        f"[admin] Admin user deactivated: {admin_id} (cascaded to {result.rowcount} staff account(s))"
+    )
     return {"success": True, "message": "Admin user deactivated successfully"}

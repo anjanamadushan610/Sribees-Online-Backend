@@ -17,7 +17,9 @@ from app.api.v1 import (
     admin_locations,
     admin_orders,
     admin_partners,
+    admin_roles,
     admin_settings,
+    admin_staff,
     admin_transfers,
     admin_users,
     app_public,
@@ -214,6 +216,22 @@ router.include_router(
     admin_users.router,
     prefix="/admin/users",
     tags=["Admin Users"],
+)
+
+# Admin Role management (/admin/roles) — any authenticated admin can read the
+# catalog; defining a role is restricted to base-role admins (require_base_role_admin).
+router.include_router(
+    admin_roles.router,
+    prefix="/admin/roles",
+    tags=["Admin Roles"],
+)
+
+# Admin Staff management (/admin/staff) — any base-role admin manages their
+# own delegated staff. Separate from /admin/users (Super-Admin-only, 5 base roles).
+router.include_router(
+    admin_staff.router,
+    prefix="/admin/staff",
+    tags=["Admin Staff"],
 )
 
 # Admin Partner management (/admin/partners) — Super Admin only. CRUD for the

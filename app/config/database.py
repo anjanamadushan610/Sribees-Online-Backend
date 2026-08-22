@@ -120,10 +120,10 @@ _SEED_BRANCHES = [
 
 # The accounts documented in admin/ADMIN_CREDENTIALS.md.
 #
-# NOTE ON ROLES: AdminRole has no `staff` member, so staff1.colombo is mapped to
-# CUSTOMER_SUPPORT — the narrowest role available. If staff are meant to do more
-# than support can, AdminRole needs a real STAFF member and a matching
-# permission set; this mapping is a placeholder, not a design decision.
+# NOTE ON ROLES: staff1.colombo is seeded as CUSTOMER_SUPPORT, a real base
+# role — not the delegated AdminRole.STAFF (role='staff') introduced by
+# migration 037, which requires a role_id pointing at a custom role a
+# base-role admin created at runtime and can't be pre-seeded here.
 _SEED_ADMINS = [
     # (email,                             full_name,               role,                            branch_code)
     ("superadmin@sribeesonline.lk",      "Super Admin",            "SUPER_ADMIN",       None),

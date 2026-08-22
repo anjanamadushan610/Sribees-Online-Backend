@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.schemas.roles import PermissionGrant
+
 
 class AdminRole(str, Enum):
     """Admin role types."""
@@ -16,6 +18,7 @@ class AdminRole(str, Enum):
     MARKETING_MANAGER = "marketing_manager"
     INVENTORY_MANAGER = "inventory_manager"
     CUSTOMER_SUPPORT = "customer_support"
+    STAFF = "staff"
 
 
 # Request Schemas
@@ -67,10 +70,16 @@ class AdminResponse(BaseModel):
     email: EmailStr
     full_name: str = Field(..., alias="fullName")
     role: AdminRole
+    role_name: Optional[str] = Field(None, alias="roleName")
     branch_id: Optional[UUID] = Field(None, alias="branchId")
     is_active: bool = Field(..., alias="isActive")
     last_login: Optional[datetime] = Field(None, alias="lastLogin")
     created_at: datetime = Field(..., alias="createdAt")
+    # Effective (resource, action) grants for this admin, resolved from
+    # role_permissions. Embedded here so the frontend gets a caller's
+    # permissions in the same round trip as login/profile — no separate
+    # fetch needed. See PermissionService.get_effective_permissions.
+    permissions: list[PermissionGrant] = []
 
     class Config:
         from_attributes = True

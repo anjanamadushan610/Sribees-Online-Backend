@@ -110,7 +110,10 @@ class AuditLog(Base):
 
     # Details
     description = Column(Text, nullable=True)
-    metadata = Column(JSONB, nullable=True)  # Additional context
+    # Python attribute can't be named `metadata` — that name is reserved by
+    # SQLAlchemy's declarative API (every mapped class inherits Base.metadata,
+    # a MetaData instance); the DB column itself is still named "metadata".
+    event_metadata = Column("metadata", JSONB, nullable=True)
 
     # Request context
     request_id = Column(String(36), nullable=True)
@@ -189,7 +192,7 @@ class AuditService:
             target_type=target_type,
             target_id=target_id,
             description=description,
-            metadata=sanitized_metadata,
+            event_metadata=sanitized_metadata,
             request_id=request_id,
             endpoint=endpoint,
             method=method,

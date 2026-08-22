@@ -140,15 +140,17 @@ Same shape: `*_id` PK, `user_id` → `users`, `token`, `expires_at`, `created_at
 
 ## 2. Admin & RBAC
 
-### `admins` — the 5-role RBAC system
+### `admins` — 5 base roles + delegated staff (migration 037)
 | Column | Type | Notes |
 |---|---|---|
 | `admin_id` (PK) | uuid | |
 | `email` | varchar(255) NOT NULL | |
 | `password_hash` | varchar(255) NOT NULL | Argon2 |
 | `full_name` | varchar(100) NOT NULL | |
-| `role` | **`admin_role_enum`** (Postgres native enum) NOT NULL | `SUPER_ADMIN`, `BRANCH_MANAGER`, `MARKETING_MANAGER`, `INVENTORY_MANAGER`, `CUSTOMER_SUPPORT` |
-| `branch_id` → `branches.branch_id` | nullable | **Required for Branch/Marketing/Inventory Manager; ignored for Super Admin and Customer Support** — see below |
+| `role` | **`admin_role_enum`** (Postgres native enum) NOT NULL | `SUPER_ADMIN`, `BRANCH_MANAGER`, `MARKETING_MANAGER`, `INVENTORY_MANAGER`, `CUSTOMER_SUPPORT`, `STAFF`. **Enum labels are the Python member NAMES** (uppercase) — SQLAlchemy's default `Enum` persistence for a `(str, Enum)` subclass — not the lowercase `.value` strings used everywhere in application code and in `roles.system_key` below. Any raw SQL comparing this column needs `LOWER(role::text)`. |
+| `role_id` → `roles.role_id` | NOT NULL, SET NULL on role delete | The admin's actual permission set. Base roles point at their seeded system role; staff point at a custom role. |
+| `parent_admin_id` → `admins.admin_id` | nullable, SET NULL, self-FK | Set only for `role='staff'` rows: the base-role admin who created this staff account. `CHECK (parent_admin_id IS NULL OR parent_admin_id <> admin_id)`. Doubles as both "created by" and "hierarchy parent" — depth is capped at one level (staff cannot create staff). |
+| `branch_id` → `branches.branch_id` | nullable | **Required for Branch/Marketing/Inventory Manager and for Staff; ignored for Super Admin and Customer Support** — see below |
 | `is_active` | boolean NOT NULL | |
 | `last_login` | timestamptz | |
 | `created_at`, `updated_at` | timestamptz | |
@@ -157,20 +159,59 @@ Same shape: `*_id` PK, `user_id` → `users`, `token`, `expires_at`, `created_at
 `inject_branch_filter`), not by a database constraint.** Two roles are *unscoped*
 (`UNSCOPED_ROLES = {"super_admin", "customer_support"}` — see fix on 2026-08-10) and
 see every branch's data regardless of what `branch_id` they carry; Branch Manager,
-Marketing Manager and Inventory Manager are each pinned to exactly one branch and
-**rejected at the API layer** if `branch_id` is `NULL`. A Customer Support admin's
-`branch_id`, if set, is purely informational (shown as a header tag) — it does not
-restrict what orders/customers they can see.
+Marketing Manager, Inventory Manager and Staff are each pinned to exactly one branch
+and **rejected at the API layer** if `branch_id` is `NULL` — staff creation requires
+a resolvable branch (the creator's own, or an explicit one) for exactly this reason.
+A Customer Support admin's `branch_id`, if set, is purely informational (shown as a
+header tag) — it does not restrict what orders/customers they can see.
 
-Full role → permission matrix (which resource each role can read/write) lives in
-`admin/src/types/admin.types.ts` (`ROLE_PERMISSIONS`) on the frontend and is mirrored
-by `require_roles(...)` router-level dependencies per endpoint on the backend — there
-is no single database table enumerating this; it's declared in code on both sides and
-has to be kept in sync by hand.
+### `roles`, `permissions`, `role_permissions` — delegated RBAC (migration 037)
+Real relational permission storage, replacing the old code-only matrix for anything
+touching staff delegation:
+- **`roles`**: `role_id` PK, `name`, `is_system` (the 5 base roles, seeded,
+  non-deletable in practice — no delete endpoint exists), `system_key` (unique,
+  lowercase, set only on system roles — `'super_admin'`, `'branch_manager'`, etc.,
+  used to map `admins.role` → `admins.role_id`), `created_by_admin_id` → `admins`
+  (SET NULL, null for system roles). A creator can't reuse a name they've already
+  used (`UNIQUE (created_by_admin_id, LOWER(name))` where non-null).
+- **`permissions`**: `permission_id` PK, `resource`, `action` — always concrete pairs,
+  never wildcards. `UNIQUE (resource, action)`.
+- **`role_permissions`**: join table, composite PK, both FKs `ON DELETE CASCADE`.
+
+Any base-role admin (not staff — enforced via `require_base_role_admin`, one
+hierarchy level only) can call `POST /admin/roles` or `POST /admin/staff` to define a
+custom role scoped to a **subset of their own current effective permissions**
+(`PermissionService.validate_delegation`), then create a staff account holding it.
+`users`, `branches`, `partners`, `settings` are deliberately **absent from the seeded
+catalog entirely** (`app/core/permission_catalog.py` `EXCLUDED_RESOURCES`) — those stay
+Super-Admin-exclusive powers no permission can ever grant to a staff account.
+
+Server-side enforcement for anything gated this way uses the new
+`require_permission(resource, action)` dependency (`app/core/dependencies.py`), which
+resolves an admin's effective set via a `role_id → role_permissions → permissions`
+join — the granular counterpart to the older `require_roles(...)` (still used
+unchanged by every pre-existing base-role-only route; nothing there was migrated).
+
+The old code-only matrix (`admin/src/types/admin.types.ts` `ROLE_PERMISSIONS`) is now
+**documentation only** — kept as the literal source migration 037's seed data was
+ported from, not read by any runtime authorization code. A staff account's effective
+permissions are embedded directly on `AdminResponse` (login/profile), so the frontend
+never needs a static role→permission lookup.
+
+Deactivating a base-role admin (`DELETE /admin/users/{id}`) **cascades**: every staff
+account with `parent_admin_id` pointing at them is deactivated too.
 
 ### `admin_sessions`
 Same shape as customer `sessions`: `session_id` PK, `admin_id` → `admins` (CASCADE),
 `refresh_token_hash`, `device_info`, `ip_address`, `user_agent`, `expires_at`.
+
+### `audit_logs` (migration 038)
+`AuditService` (`app/services/audit_service.py`) existed unused for a while — migration
+037's staff/role creation endpoints are its first real caller. `id` PK, `action`,
+`severity`, `actor_type`/`actor_id`/`actor_email`/`actor_ip`, `target_type`/`target_id`,
+`description`, `event_metadata` (JSONB — Python attribute name; the column itself is
+still named `metadata` in the DB, since `metadata` is reserved on SQLAlchemy
+declarative model classes), `request_id`, `endpoint`, `method`.
 
 ---
 

@@ -5,16 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import get_current_admin, require_super_admin
+from app.core.dependencies import get_current_admin
 from app.schemas.admin_auth import (
     AdminAuthResponse,
-    AdminListResponse,
     AdminLoginRequest,
     AdminProfileResponse,
     AdminRefreshRequest,
-    AdminResponse,
     ChangePasswordRequest,
-    CreateAdminRequest,
     UpdateProfileRequest,
 )
 from app.schemas.auth import MessageResponse
@@ -142,50 +139,6 @@ async def change_admin_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
-
-
-@router.post(
-    "/users",
-    response_model=AdminResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create admin user",
-    description="Create a new admin user (Super Admin only).",
-)
-async def create_admin(
-    data: CreateAdminRequest,
-    current_admin = Depends(require_super_admin),
-    db: AsyncSession = Depends(get_db),
-) -> AdminResponse:
-    """
-    Create a new admin user.
-
-    Only Super Admins can create new admin users.
-    """
-    try:
-        return await AdminAuthService.create_admin(data, current_admin.admin_id, db)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-
-@router.get(
-    "/users",
-    response_model=AdminListResponse,
-    summary="List admin users",
-    description="List all admin users (Super Admin only).",
-)
-async def list_admins(
-    current_admin = Depends(require_super_admin),
-    db: AsyncSession = Depends(get_db),
-) -> AdminListResponse:
-    """
-    List all admin users.
-
-    Only Super Admins can list admin users.
-    """
-    return await AdminAuthService.list_admins(db)
 
 
 @router.post(

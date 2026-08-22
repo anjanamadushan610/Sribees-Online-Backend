@@ -22,6 +22,7 @@ from app.models.product import (
     VariantType,
 )
 from app.models.referral import ReferralCommission, ReferralCommissionStatus
+from app.models.role import Permission, Role, RolePermission
 from app.models.stock_transfer import StockTransfer, TransferStatus
 from app.models.user import (
     Address,
@@ -78,6 +79,9 @@ __all__ = [
     "Admin",
     "AdminSession",
     "AdminRole",
+    "Role",
+    "Permission",
+    "RolePermission",
     # Branch models
     "Branch",
     "PostOfficeBranchMapping",
