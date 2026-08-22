@@ -72,14 +72,27 @@ FROM (VALUES
     ('support@sribeesonline.lk',          'Menaka Silva',       'CUSTOMER_SUPPORT',  NULL)
 ) AS v(email, full_name, role, branch_code)
 LEFT JOIN branches b ON b.code = v.branch_code
--- Arbitrate on EMAIL, not admin_id. admin_id here is md5-derived, so it never
--- matches an account somebody created through the admin panel — and `email`
--- carries a unique index. Conflicting on admin_id therefore does NOT swallow
--- that collision: it lets the INSERT proceed and hit a unique violation on
--- email, which aborts the migration and fails the whole deploy. Arbitrating on
--- the natural key leaves any existing account untouched, which is also the
--- behaviour you want — never overwrite a real admin's credentials.
-ON CONFLICT (email) DO NOTHING;
+-- Existence is checked with NOT EXISTS rather than ON CONFLICT (email), and the
+-- difference is not stylistic — ON CONFLICT does not save this statement.
+--
+-- 037_role_permission_system.sql ends by making admins.role_id NOT NULL. This
+-- file runs BEFORE it and cannot set role_id (the column does not exist yet at
+-- this point in the sequence), so from the second deploy onwards every row this
+-- statement builds carries role_id = NULL. NOT NULL is checked as the tuple is
+-- formed, before any unique index is consulted, so ON CONFLICT never gets a
+-- chance to skip the duplicate: the insert dies on the constraint and takes the
+-- whole migration — and the deploy — with it. NOT EXISTS never forms the row.
+--
+-- It also does the right thing on its own terms: matching on the natural key
+-- leaves an account somebody created through the admin panel completely
+-- untouched, rather than overwriting a real admin's credentials.
+--
+-- One consequence to know about: adding a NEW email to the list above, on a
+-- database where 037 has already run, will fail for exactly the reason above.
+-- Seed that admin from a migration numbered after 037 instead.
+WHERE NOT EXISTS (
+    SELECT 1 FROM admins a WHERE a.email = v.email
+);
 
 -- Point each branch at its manager, so the Branches screen shows an owner.
 UPDATE branches b

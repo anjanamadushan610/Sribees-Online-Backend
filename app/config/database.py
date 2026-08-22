@@ -149,13 +149,39 @@ async def _seed_admin_accounts() -> None:
     embedding precomputed hashes in a SQL migration, so the code that writes a
     hash is always the code that verifies it.
     """
-    from sqlalchemy import select
+    from sqlalchemy import select, text
 
     from app.core.security import hash_password
     from app.models.admin import Admin, AdminRole
     from app.models.branch import Branch
 
     async with get_db_context() as db:
+        # Resolve the system roles migration 037 seeds, so a new admin can be
+        # given the role_id that migration eventually makes NOT NULL.
+        #
+        # This is load-bearing, and its absence took the service down rather
+        # than just skipping a seed. The deploy boots the app BEFORE running
+        # migrations, so on the very first deploy role_id is still nullable and
+        # inserting without it works. On every deploy after that 037 has already
+        # run, the column is NOT NULL, and this function — which runs on EVERY
+        # boot — died on the constraint. A failed startup means the container
+        # never reports healthy, so the whole API stays down.
+        #
+        # The lookup is deliberately tolerant: on a database where 037 has not
+        # run yet, `roles` is absent or empty, role_ids stays empty, role_id
+        # stays None — and that is fine, because the column is still nullable
+        # at that point and 037's own backfill fills it in afterwards.
+        role_ids: dict[str, object] = {}
+        if (await db.execute(text("SELECT to_regclass('public.roles')"))).scalar() is not None:
+            role_ids = {
+                row.system_key: row.role_id
+                for row in (
+                    await db.execute(
+                        text("SELECT system_key, role_id FROM roles WHERE system_key IS NOT NULL")
+                    )
+                ).all()
+            }
+
         branch_ids: dict[str, object] = {}
         created_branches = 0
 
@@ -185,6 +211,9 @@ async def _seed_admin_accounts() -> None:
                 password_hash=hash_password(_SEED_PASSWORD),
                 full_name=full_name,
                 role=getattr(AdminRole, role_name),
+                # None until 037 has run and seeded the system roles; NOT NULL
+                # from then on. See the lookup above.
+                role_id=role_ids.get(role_name.lower()),
                 branch_id=branch_ids.get(branch_code) if branch_code else None,
                 is_active=True,
             ))

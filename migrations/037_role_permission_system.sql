@@ -64,6 +64,24 @@ CREATE TABLE IF NOT EXISTS role_permissions (
     PRIMARY KEY (role_id, permission_id)
 );
 
+-- 2b. Make the PK defaults real on a database where create_all() got there first.
+--
+-- This is load-bearing, and it is the reason the seeds below used to fail on
+-- every fresh deploy. The CREATE TABLE above declares
+-- `DEFAULT gen_random_uuid()`, but the deploy starts the app BEFORE running
+-- migrations (see deploy-backend-ec2.yml step 7), so SQLAlchemy create_all()
+-- has already built these tables — and the ORM declares the PK default
+-- Python-side (`default=uuid4`), which puts NO default on the column. The
+-- IF NOT EXISTS then skips this file's DDL, the default never lands, and the
+-- INSERTs below — which omit the id and let the default fill it — die with
+-- "null value in column role_id violates not-null constraint", taking the whole
+-- migration and the deploy with them.
+--
+-- The same trap is documented in 014_create_app_settings.sql. ALTER ... SET
+-- DEFAULT is idempotent and also repairs databases already deployed this way.
+ALTER TABLE roles       ALTER COLUMN role_id       SET DEFAULT gen_random_uuid();
+ALTER TABLE permissions ALTER COLUMN permission_id SET DEFAULT gen_random_uuid();
+
 -- Per-creator name uniqueness (two different creators may each name a role
 -- "Support Staff"); system role names stay globally unique via system_key.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_roles_creator_name
