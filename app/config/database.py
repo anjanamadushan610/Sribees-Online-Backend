@@ -201,8 +201,15 @@ async def _seed_admin_accounts() -> None:
 
         created_admins = []
         for email, full_name, role_name, branch_code in _SEED_ADMINS:
+            # Select only admin_id, not the whole ORM entity. select(Admin)
+            # expands to every mapped column — including role_id/
+            # parent_admin_id, which do not exist in the DB yet at this point
+            # in the deploy (app boots before migration 037 adds them) — and
+            # crashes with UndefinedColumnError, taking startup down with it.
+            # admin_id is present on every schema version this ever runs
+            # against, migrated or not.
             existing = (
-                await db.execute(select(Admin).where(Admin.email == email))
+                await db.execute(select(Admin.admin_id).where(Admin.email == email))
             ).scalar_one_or_none()
             if existing is not None:
                 continue
