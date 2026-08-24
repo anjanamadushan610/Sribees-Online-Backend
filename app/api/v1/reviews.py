@@ -94,7 +94,9 @@ async def submit_product_review(
     """
     Submit a review for a product.
 
-    A user may review a given product only once (duplicate → 409).
+    A user may review a given product only once (duplicate → 409). The
+    review must name a delivered order line (order_item_id) that belongs to
+    the caller and matches this product — see ProductReviewService.create_review.
     """
     pid = _parse_product_id(product_id)
     try:
@@ -103,16 +105,20 @@ async def submit_product_review(
             product_id=pid,
             user_id=current_user.user_id,
             rating=data.rating,
+            order_item_id=data.order_item_id,
             title=data.title,
             comment=data.comment,
         )
     except ValueError as e:
         message = str(e)
-        code = (
-            status.HTTP_409_CONFLICT
-            if "already reviewed" in message
-            else status.HTTP_400_BAD_REQUEST
-        )
+        if "already reviewed" in message:
+            code = status.HTTP_409_CONFLICT
+        elif "not found" in message:
+            code = status.HTTP_404_NOT_FOUND
+        elif "does not belong to you" in message:
+            code = status.HTTP_403_FORBIDDEN
+        else:
+            code = status.HTTP_400_BAD_REQUEST
         raise HTTPException(status_code=code, detail=message)
     except Exception as e:
         logger.error(f"Error creating review: {e}")

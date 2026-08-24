@@ -15,6 +15,7 @@ from app.config.database import get_db
 from app.config.redis import get_redis
 from app.config.settings import settings
 from app.core.dependencies import get_current_admin, get_current_user
+from app.models.order import OrderStatus
 from app.schemas.order import (
     CreateOrderRequest,
     OrderQuoteResponse,
@@ -30,6 +31,7 @@ from app.services.cart_service import CartService
 from app.services.courier_service import CourierService, CourierUnavailableError
 from app.services.invoice_service import InvoiceService
 from app.services.order_service import OrderService
+from app.services.product_review_service import ProductReviewService
 from app.services.pricing_service import PricingService
 from app.services.wallet_service import WalletService
 
@@ -140,8 +142,19 @@ def build_status_timeline(order) -> list:
     return timeline
 
 
-def format_order(order, include_items: bool = True, payment_redirect_url: Optional[str] = None) -> dict:
-    """Format order for API response."""
+def format_order(
+    order,
+    include_items: bool = True,
+    payment_redirect_url: Optional[str] = None,
+    reviewed_product_ids: Optional[set] = None,
+) -> dict:
+    """Format order for API response.
+
+    reviewed_product_ids (only meaningful/populated by the caller for a
+    delivered order): product ids the requesting user already has a review
+    for, so mobile can show "✓ Reviewed" per line item instead of a
+    write-review action without a second round trip.
+    """
     data = {
         "order_id": str(order.order_id),
         "order_number": order.order_number,
@@ -202,6 +215,7 @@ def format_order(order, include_items: bool = True, payment_redirect_url: Option
 
     # Items
     if include_items and order.items:
+        reviewed = reviewed_product_ids or set()
         data["items"] = [
             {
                 "order_item_id": str(item.order_item_id),
@@ -214,6 +228,7 @@ def format_order(order, include_items: bool = True, payment_redirect_url: Option
                 "unit_price": float(item.unit_price),
                 "subtotal": float(item.subtotal),
                 "tax_amount": float(item.tax_amount) if item.tax_amount else 0,
+                "is_reviewed": item.product_id in reviewed,
             }
             for item in order.items
         ]
@@ -464,9 +479,17 @@ async def get_order(
                 detail="Order not found"
             )
 
+        # Only a delivered order can show write-review actions at all, so
+        # only bother looking up existing reviews for one.
+        reviewed_product_ids = set()
+        if order.status == OrderStatus.DELIVERED.value and order.items:
+            reviewed_product_ids = await ProductReviewService.get_reviewed_product_ids(
+                db, current_user.user_id, [item.product_id for item in order.items]
+            )
+
         return {
             "success": True,
-            "data": format_order(order)
+            "data": format_order(order, reviewed_product_ids=reviewed_product_ids)
         }
     except HTTPException:
         raise

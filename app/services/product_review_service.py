@@ -14,7 +14,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.order import Order, OrderItem
+from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product, Review
 
 
@@ -116,24 +116,25 @@ class ProductReviewService:
         return existing is not None
 
     @staticmethod
-    async def _is_verified_purchase(
-        db: AsyncSession, user_id: UUID, product_id: UUID
-    ) -> bool:
-        """True if the user has an order containing this product."""
-        row = (
+    async def get_reviewed_product_ids(
+        db: AsyncSession, user_id: UUID, product_ids: List[UUID]
+    ) -> set[UUID]:
+        """Which of these product ids does the user already have a review
+        for? Used to show "✓ Reviewed" instead of a write-review action per
+        line item on a delivered order (app/api/v1/orders.py)."""
+        if not product_ids:
+            return set()
+        rows = (
             await db.execute(
-                select(OrderItem.order_item_id)
-                .join(Order, Order.order_id == OrderItem.order_id)
-                .where(
+                select(Review.product_id).where(
                     and_(
-                        Order.user_id == user_id,
-                        OrderItem.product_id == product_id,
+                        Review.user_id == user_id,
+                        Review.product_id.in_(product_ids),
                     )
                 )
-                .limit(1)
             )
-        ).scalar_one_or_none()
-        return row is not None
+        ).scalars().all()
+        return set(rows)
 
     @staticmethod
     async def create_review(
@@ -141,13 +142,19 @@ class ProductReviewService:
         product_id: UUID,
         user_id: UUID,
         rating: int,
+        order_item_id: UUID,
         title: Optional[str] = None,
         comment: Optional[str] = None,
     ) -> Review:
         """
-        Create a review. Enforces one review per (user, product).
+        Create a review. Enforces one review per (user, product), and that
+        order_item_id is a real, delivered order line belonging to this user
+        for this exact product — a review must be tied to a purchase the
+        customer actually received, not just any account/product pair.
 
-        Raises ValueError for validation / duplicate / missing product.
+        Raises ValueError for validation / duplicate / missing product /
+        ownership / delivery-status failures (see submit_product_review in
+        app/api/v1/reviews.py for how each message maps to an HTTP status).
         """
         if rating < 1 or rating > 5:
             raise ValueError("Rating must be between 1 and 5")
@@ -159,20 +166,31 @@ class ProductReviewService:
         if await ProductReviewService.has_reviewed(db, product_id, user_id):
             raise ValueError("You have already reviewed this product")
 
-        try:
-            verified = await ProductReviewService._is_verified_purchase(
-                db, user_id, product_id
+        row = (
+            await db.execute(
+                select(OrderItem, Order.user_id, Order.status)
+                .join(Order, Order.order_id == OrderItem.order_id)
+                .where(OrderItem.order_item_id == order_item_id)
             )
-        except Exception:
-            verified = False
+        ).one_or_none()
+        if row is None:
+            raise ValueError("Order item not found")
+        order_item, owner_id, order_status = row
+        if owner_id != user_id:
+            raise ValueError("This order does not belong to you")
+        if order_item.product_id != product_id:
+            raise ValueError("This order item is for a different product")
+        if order_status != OrderStatus.DELIVERED.value:
+            raise ValueError("You can review a product only after it has been delivered")
 
         review = Review(
             product_id=product_id,
             user_id=user_id,
+            order_item_id=order_item_id,
             rating=rating,
             title=title,
             comment=comment,
-            is_verified_purchase=verified,
+            is_verified_purchase=True,
         )
         db.add(review)
         await db.commit()
