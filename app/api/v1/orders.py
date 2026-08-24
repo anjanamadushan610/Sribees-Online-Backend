@@ -241,7 +241,14 @@ def format_order(
 
 
 def format_order_summary(order) -> dict:
-    """Format order summary for list views."""
+    """Format order summary for list views.
+
+    Includes a compact per-item preview (image/name/qty/price) so the order
+    history list can show product photos and let a customer tell orders
+    apart without opening each one — order.items is already eager-loaded by
+    OrderService.get_user_orders (selectinload), so this is free, no extra
+    query per order.
+    """
     return {
         "order_id": str(order.order_id),
         "order_number": order.order_number,
@@ -251,6 +258,17 @@ def format_order_summary(order) -> dict:
         "cashback_earned": float(order.cashback_earned or 0),
         "item_count": sum(item.quantity for item in order.items) if order.items else 0,
         "created_at": order.created_at.isoformat() if order.created_at else None,
+        "items": [
+            {
+                "product_id": str(item.product_id),
+                "product_name": item.product_name,
+                "product_image": item.product_image,
+                "quantity": item.quantity,
+                "unit_price": float(item.unit_price),
+                "subtotal": float(item.subtotal),
+            }
+            for item in order.items
+        ] if order.items else [],
     }
 
 
