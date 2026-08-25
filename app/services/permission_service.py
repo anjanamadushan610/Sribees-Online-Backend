@@ -36,7 +36,7 @@ class PermissionService:
                 .where(RolePermission.role_id == admin.role_id)
             )
         ).all()
-        return {(resource, action) for resource, action in rows}
+        return set(rows)
 
     @staticmethod
     async def get_effective_permission_ids(db: AsyncSession, admin: Admin) -> set[UUID]:

@@ -31,8 +31,8 @@ from app.services.cart_service import CartService
 from app.services.courier_service import CourierService, CourierUnavailableError
 from app.services.invoice_service import InvoiceService
 from app.services.order_service import OrderService
-from app.services.product_review_service import ProductReviewService
 from app.services.pricing_service import PricingService
+from app.services.product_review_service import ProductReviewService
 from app.services.wallet_service import WalletService
 
 # Prefix "/orders" is applied by app/api/v1/router.py — do not repeat it here.

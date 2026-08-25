@@ -24,8 +24,8 @@ from sqlalchemy.orm import selectinload
 from app.api.v1.admin_analytics import (
     Window,
     _in_window,
-    _period_totals,
     _pct_change,
+    _period_totals,
     _revenue_sum,
     _scoped,
 )

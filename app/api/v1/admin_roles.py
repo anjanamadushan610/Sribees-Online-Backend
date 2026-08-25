@@ -10,7 +10,7 @@ can never define a role (require_base_role_admin enforces the one-level cap).
 
 Prefix "/admin/roles" is applied by app/api/v1/router.py.
 """
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
