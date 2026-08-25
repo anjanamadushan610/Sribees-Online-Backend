@@ -146,6 +146,15 @@ class User(Base):
         default=True,
         nullable=False,
     )
+    is_blocked: bool = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    blocked_reason: Optional[str] = Column(
+        Text,
+        nullable=True,
+    )
     first_name: Optional[str] = Column(
         String(50),
         nullable=True,
@@ -191,6 +200,8 @@ class User(Base):
             "profilePictureUrl": self.profile_picture_url,
             "isVerified": self.is_verified,
             "twoFactorEnabled": self.two_factor_enabled,
+            "isBlocked": self.is_blocked,
+            "blockedReason": self.blocked_reason,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "lastLogin": self.last_login.isoformat() if self.last_login else None,

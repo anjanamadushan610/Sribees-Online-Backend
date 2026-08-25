@@ -20,6 +20,7 @@ from app.core.exceptions import (
     InvalidTokenError,
     TokenExpiredError,
     UnverifiedEmailError,
+    AuthorizationError,
 )
 from app.core.security import verify_token
 
@@ -79,6 +80,18 @@ async def get_current_user(
 
     if user is None:
         raise InvalidTokenError(message="User not found")
+
+    if user.is_blocked:
+        raise AuthorizationError(
+            message=f"Your account has been suspended: {user.blocked_reason or 'No reason provided'}",
+            error_code="ACCOUNT_BLOCKED"
+        )
+
+    if not user.is_active:
+        raise AuthorizationError(
+            message="Your account is inactive.",
+            error_code="ACCOUNT_INACTIVE"
+        )
 
     if not user.is_verified:
         raise UnverifiedEmailError()

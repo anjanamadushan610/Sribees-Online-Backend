@@ -299,6 +299,8 @@ async def get_customers(
                         "role": u.role,
                         "is_active": u.is_active,
                         "is_verified": u.is_verified,
+                        "is_blocked": u.is_blocked,
+                        "blocked_reason": u.blocked_reason,
                         "created_at": u.created_at.isoformat() if u.created_at else None,
                         "last_login": u.last_login.isoformat() if u.last_login else None
                     }
@@ -412,6 +414,403 @@ async def toggle_customer_status(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update user status"
+        )
+
+
+# ============================================================================
+# Customer Action Schemas & Routes
+# ============================================================================
+
+from pydantic import BaseModel, Field
+
+class UpdateCustomerPayload(BaseModel):
+    full_name: str = Field(..., min_length=1, max_length=100)
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+class BlockCustomerPayload(BaseModel):
+    reason: str = Field(..., min_length=1)
+
+
+@router.get("/customers/{user_id}/profile", response_model=dict)
+async def get_customer_profile(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_admin)
+):
+    try:
+        from uuid import UUID
+        from sqlalchemy.orm import selectinload
+        user_uuid = UUID(user_id)
+        
+        # Get user with addresses
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.addresses))
+            .where(User.user_id == user_uuid)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+            
+        # Get order statistics
+        orders_stats_result = await db.execute(
+            select(
+                func.count(Order.order_id).label("total_orders"),
+                func.sum(Order.total_amount).label("total_spent")
+            )
+            .where(Order.user_id == user_uuid, Order.status != "cancelled")
+        )
+        stats = orders_stats_result.first()
+        total_orders = stats.total_orders or 0
+        total_spent = float(stats.total_spent or 0)
+        
+        return {
+            "success": True,
+            "data": {
+                "user_id": str(user.user_id),
+                "email": user.email,
+                "full_name": user.full_name,
+                "phone": user.phone,
+                "is_active": user.is_active,
+                "is_blocked": user.is_blocked,
+                "blocked_reason": user.blocked_reason,
+                "is_verified": user.is_verified,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "last_login": user.last_login.isoformat() if user.last_login else None,
+                "addresses": [
+                    {
+                        "address_id": str(addr.address_id),
+                        "address_line1": addr.address_line1,
+                        "address_line2": addr.address_line2,
+                        "post_office": addr.post_office,
+                        "district": addr.district,
+                        "postal_code": addr.postal_code,
+                        "province": addr.province,
+                        "is_default": addr.is_default,
+                    }
+                    for addr in user.addresses
+                ],
+                "stats": {
+                    "total_orders": total_orders,
+                    "total_spent": total_spent
+                }
+            }
+        }
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+    except Exception as e:
+        logger.error(f"Error getting customer profile: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get profile")
+
+
+@router.get("/customers/{user_id}/orders", response_model=dict)
+async def get_customer_orders(
+    user_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_admin)
+):
+    try:
+        from uuid import UUID
+        user_uuid = UUID(user_id)
+        
+        # Get orders count
+        count_result = await db.execute(
+            select(func.count(Order.order_id)).where(Order.user_id == user_uuid)
+        )
+        total = count_result.scalar() or 0
+        
+        # Get orders
+        offset = (page - 1) * limit
+        orders_result = await db.execute(
+            select(Order)
+            .where(Order.user_id == user_uuid)
+            .order_by(Order.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        orders = orders_result.scalars().all()
+        
+        return {
+            "success": True,
+            "data": {
+                "orders": [
+                    {
+                        "order_id": str(o.order_id),
+                        "order_number": o.order_number,
+                        "total_amount": float(o.total_amount),
+                        "status": o.status,
+                        "payment_status": o.payment_status,
+                        "created_at": o.created_at.isoformat() if o.created_at else None
+                    }
+                    for o in orders
+                ],
+                "pagination": {
+                    "total": total,
+                    "page": page,
+                    "limit": limit,
+                    "pages": (total + limit - 1) // limit
+                }
+            }
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+    except Exception as e:
+        logger.error(f"Error getting customer orders: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get customer orders")
+
+
+@router.put("/customers/{user_id}", response_model=dict)
+async def update_customer(
+    user_id: str,
+    payload: UpdateCustomerPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_admin)
+):
+    try:
+        from uuid import UUID
+        user_uuid = UUID(user_id)
+
+        result = await db.execute(
+            select(User).where(User.user_id == user_uuid)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        if payload.email:
+            email_check = await db.execute(
+                select(User).where(User.email == payload.email, User.user_id != user_uuid)
+            )
+            if email_check.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email address is already in use by another customer"
+                )
+            user.email = payload.email
+
+        if payload.phone:
+            phone_check = await db.execute(
+                select(User).where(User.phone == payload.phone, User.user_id != user_uuid)
+            )
+            if phone_check.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Phone number is already in use by another customer"
+                )
+            user.phone = payload.phone
+
+        user.full_name = payload.full_name
+        await db.commit()
+
+        return {
+            "success": True,
+            "message": "Customer profile updated successfully",
+            "data": {
+                "user_id": str(user.user_id),
+                "email": user.email,
+                "full_name": user.full_name,
+                "phone": user.phone
+            }
+        }
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID"
+        )
+    except Exception as e:
+        logger.error(f"Error updating customer: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update customer"
+        )
+
+
+@router.post("/customers/{user_id}/block", response_model=dict)
+async def block_customer(
+    user_id: str,
+    payload: BlockCustomerPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_admin)
+):
+    try:
+        from uuid import UUID
+        user_uuid = UUID(user_id)
+
+        result = await db.execute(
+            select(User).where(User.user_id == user_uuid)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        user.is_blocked = True
+        user.blocked_reason = payload.reason
+        user.is_active = False  # Deactivate as well for safety
+        
+        # Terminate active sessions
+        from app.models.user import Session
+        from sqlalchemy import delete
+        await db.execute(
+            delete(Session).where(Session.user_id == user_uuid)
+        )
+        
+        await db.commit()
+
+        return {
+            "success": True,
+            "message": "Customer account blocked successfully."
+        }
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID"
+        )
+    except Exception as e:
+        logger.error(f"Error blocking customer: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to block customer"
+        )
+
+
+@router.post("/customers/{user_id}/unblock", response_model=dict)
+async def unblock_customer(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_admin)
+):
+    try:
+        from uuid import UUID
+        user_uuid = UUID(user_id)
+
+        result = await db.execute(
+            select(User).where(User.user_id == user_uuid)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        user.is_blocked = False
+        user.blocked_reason = None
+        user.is_active = True  # Reactivate
+        await db.commit()
+
+        return {
+            "success": True,
+            "message": "Customer account unblocked successfully."
+        }
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID"
+        )
+    except Exception as e:
+        logger.error(f"Error unblocking customer: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to unblock customer"
+        )
+
+
+@router.delete("/customers/{user_id}", response_model=dict)
+async def delete_customer(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_admin)
+):
+    try:
+        from uuid import UUID
+        user_uuid = UUID(user_id)
+
+        # Check if user exists
+        result = await db.execute(
+            select(User).where(User.user_id == user_uuid)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Check if user has orders
+        order_check = await db.execute(
+            select(func.count(Order.order_id)).where(Order.user_id == user_uuid)
+        )
+        has_orders = (order_check.scalar() or 0) > 0
+
+        if not has_orders:
+            # Hard delete
+            await db.delete(user)
+            await db.commit()
+            return {
+                "success": True,
+                "message": "User account and associated data permanently deleted."
+            }
+        else:
+            # Anonymize (Soft delete)
+            from app.models.user import Address
+            from sqlalchemy import delete
+            user.full_name = "Deleted Account"
+            user.email = f"deleted_user_{user_id}@sribeesonline.lk"
+            user.phone = None
+            user.password_hash = None
+            user.profile_picture_url = None
+            user.is_active = False
+            user.is_blocked = True
+            user.blocked_reason = "Account Anonymized / Deleted"
+            
+            # Delete addresses
+            await db.execute(
+                delete(Address).where(Address.user_id == user_uuid)
+            )
+            
+            # Delete sessions
+            from app.models.user import Session
+            await db.execute(
+                delete(Session).where(Session.user_id == user_uuid)
+            )
+            
+            await db.commit()
+            return {
+                "success": True,
+                "message": "User account anonymized successfully. Order history preserved for accounting."
+            }
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID"
+        )
+    except Exception as e:
+        logger.error(f"Error deleting customer: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete customer account"
         )
 
 
