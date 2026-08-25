@@ -64,7 +64,7 @@ def _format_inventory_row(inv: BranchInventory, product: Product, branch: Branch
         # Stock
         "stock_quantity": stock,
         "reserved_quantity": reserved,
-        "available_quantity": stock - reserved,
+        "available_quantity": max(0, stock - reserved),
         "low_stock_threshold": threshold,
         "is_low_stock": stock <= threshold,
         "is_active": inv.is_active,
@@ -272,6 +272,15 @@ async def update_inventory(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only modify inventory for your own branch.",
+        )
+
+    # Validation: stock_quantity cannot be less than reserved_quantity
+    new_stock = body.stock_quantity if body.stock_quantity is not None else inv.stock_quantity
+    new_reserved = body.reserved_quantity if body.reserved_quantity is not None else inv.reserved_quantity
+    if new_stock is not None and new_reserved is not None and new_stock < new_reserved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot set stock below reserved count of {new_reserved}. Resolve pending orders first.",
         )
 
     updated = await ProductService.update_inventory_row(
