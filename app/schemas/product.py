@@ -171,6 +171,12 @@ class SuggestKeywordsRequest(BaseModel):
     category: Optional[str] = None
 
 
+class SuggestSkuRequest(BaseModel):
+    """Draft product fields sent to the SKU suggestion endpoint."""
+    name: Optional[str] = None
+    category_id: Optional[UUID] = None
+
+
 class ProductImageCreate(BaseModel):
     """Schema for adding a product image."""
     image_url: str

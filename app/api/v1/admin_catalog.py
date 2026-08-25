@@ -41,6 +41,7 @@ from app.schemas.product import (
     ProductImageCreate,
     ProductUpdate,
     SuggestKeywordsRequest,
+    SuggestSkuRequest,
 )
 from app.services.category_service import CategoryService
 from app.services.embedding_service import GeminiAPIError
@@ -504,6 +505,43 @@ async def suggest_product_keywords(data: SuggestKeywordsRequest):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
     return {"success": True, "data": {"suggested_keywords": suggestion}}
+
+
+@router.post("/products/suggest-sku", response_model=dict)
+async def suggest_product_sku(
+    data: SuggestSkuRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Generate a unique SKU based on the product name and category.
+    """
+    import re
+
+    category_prefix = "UNCAT"
+    if data.category_id:
+        category = await CategoryService.get_by_id(db, data.category_id)
+        if category and category.name:
+            clean_cat = re.sub(r"[^A-Z0-9]", "", category.name.upper())
+            if clean_cat:
+                category_prefix = clean_cat[:4]
+
+    name_prefix = "PROD"
+    if data.name:
+        clean_name = re.sub(r"[^A-Z0-9]", "", data.name.upper())
+        if clean_name:
+            name_prefix = clean_name[:4]
+
+    base_sku = f"{category_prefix}-{name_prefix}"
+
+    counter = 1
+    while True:
+        sku = f"{base_sku}-{counter:03d}"
+        existing = await ProductService.get_by_sku(db, sku)
+        if not existing:
+            break
+        counter += 1
+
+    return {"success": True, "data": {"sku": sku}}
 
 
 @router.post("/products", response_model=dict, status_code=status.HTTP_201_CREATED)
