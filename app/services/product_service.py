@@ -205,6 +205,16 @@ class ProductService:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_by_sku(
+        db: AsyncSession,
+        sku: str,
+    ) -> Optional[Product]:
+        """Get product by SKU."""
+        query = select(Product).where(Product.sku == sku)
+        result = await db.execute(query)
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def get_by_id_or_slug(
         db: AsyncSession,
         identifier: str,

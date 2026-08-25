@@ -519,6 +519,14 @@ async def create_product(
             detail="Product with this slug already exists",
         )
 
+    if data.sku and data.sku.strip():
+        existing_sku = await ProductService.get_by_sku(db, data.sku.strip())
+        if existing_sku:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Product with this SKU already exists",
+            )
+
     try:
         await CategoryService.validate_subcategory(db, data.category_id, data.subcategory_id)
     except ValueError as exc:
@@ -588,6 +596,14 @@ async def update_product(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="SKU is required.",
         )
+
+    if next_sku and str(next_sku).strip():
+        existing_sku = await ProductService.get_by_sku(db, str(next_sku).strip())
+        if existing_sku and existing_sku.product_id != product.product_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Product with this SKU already exists",
+            )
 
     try:
         updated = await ProductService.update(db, product, data)
