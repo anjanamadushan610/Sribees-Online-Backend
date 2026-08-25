@@ -276,8 +276,8 @@ async def update_inventory(
 
     # Validation: stock_quantity cannot be less than reserved_quantity
     new_stock = body.stock_quantity if body.stock_quantity is not None else inv.stock_quantity
-    new_reserved = body.reserved_quantity if body.reserved_quantity is not None else inv.reserved_quantity
-    if new_stock is not None and new_reserved is not None and new_stock < new_reserved:
+    new_reserved = inv.reserved_quantity  # Reserved quantity is system-managed and read-only
+    if new_stock is not None and new_stock < new_reserved:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot set stock below reserved count of {new_reserved}. Resolve pending orders first.",
@@ -286,7 +286,7 @@ async def update_inventory(
     updated = await ProductService.update_inventory_row(
         db,
         inv,
-        **body.model_dump(exclude_unset=True),
+        **body.model_dump(exclude_unset=True, exclude={"reserved_quantity"}),
     )
     logger.info(f"[admin] Inventory {inventory_id} updated in branch {inv.branch_id}")
 
