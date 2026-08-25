@@ -207,8 +207,12 @@ class BranchInventory(Base):
     )
     is_active = Column(
         Boolean,
-        default=True,
-        comment="False = product hidden for this branch even if globally active",
+        default=False,
+        comment=(
+            "False = product hidden for this branch even if globally active. "
+            "Defaults False: stocking a product only makes it visible once the "
+            "Branch Manager explicitly activates it for their branch."
+        ),
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -317,6 +321,11 @@ class Review(Base):
     review_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    # The delivered order line item that justifies this review. Nullable —
+    # SET NULL on delete rather than blocking it — so existing reviews
+    # written before this column existed (no purchase link recorded) stay
+    # valid rather than being retroactively invalidated.
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.order_item_id", ondelete="SET NULL"), nullable=True)
     rating = Column(Integer, nullable=False)
     title = Column(String(255), nullable=True)
     comment = Column(Text, nullable=True)

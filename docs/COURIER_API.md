@@ -431,6 +431,19 @@ actually consider the parcel delivered, independent of whether the code has
 been confirmed (confirm the code at or before marking delivered, whichever
 order fits your flow).
 
+### Why "delivered" matters beyond shipping
+
+Marking an order `delivered` (via this push, or the admin's manual status
+override in the meantime) is also what unlocks the customer's "Write a
+Review" action in the app — reviews are only accepted for a product from a
+delivered order, entered from the customer's Past Orders screen, not from
+the product page directly. There's no separate endpoint to build for this:
+`status: "delivered"` through this same push is the full dependency. Send
+it promptly and only when the parcel has actually been handed over — a late
+or premature "delivered" push directly delays or wrongly unlocks a
+customer's ability to leave a review, not just the shipment-tracking
+display.
+
 ### Notes
 
 - The code is always exactly 3 digits (000–999). It is single-use per order —

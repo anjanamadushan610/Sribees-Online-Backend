@@ -27,10 +27,17 @@ class ReviewCreate(BaseModel):
 
 
 class SubmitReviewRequest(BaseModel):
-    """Body for POST /products/{id}/reviews — product_id comes from the path."""
+    """Body for POST /products/{id}/reviews — product_id comes from the path.
+
+    order_item_id is required: a review must name the delivered order line
+    it's reviewing, so the server can verify it belongs to the caller,
+    matches this product, and the order is actually delivered — see
+    ProductReviewService.create_review.
+    """
     rating: int = Field(..., ge=1, le=5, description="Star rating, 1-5")
     title: Optional[str] = Field(None, max_length=255)
     comment: Optional[str] = Field(None, max_length=2000)
+    order_item_id: UUID
 
     @field_validator("title", "comment", mode="before")
     @classmethod
@@ -45,6 +52,7 @@ class SubmitReviewRequest(BaseModel):
                 "rating": 5,
                 "title": "Great quality",
                 "comment": "Fresh and delivered fast.",
+                "order_item_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
             }
         }
 

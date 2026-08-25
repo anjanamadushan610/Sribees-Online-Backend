@@ -13,6 +13,7 @@ from app.api.v1 import (
     admin_branches,
     admin_catalog,
     admin_coupons,
+    admin_dashboard,
     admin_inventory,
     admin_locations,
     admin_orders,
@@ -232,6 +233,16 @@ router.include_router(
     admin_staff.router,
     prefix="/admin/staff",
     tags=["Admin Staff"],
+)
+
+# Admin Dashboard (/admin/dashboard) — the generic staff-role landing page's
+# stats. Gated purely on dashboard:read, with each metric further gated on
+# the specific permission it represents (see admin_dashboard.py) — separate
+# from /admin/analytics, which stays super_admin/branch_manager only.
+router.include_router(
+    admin_dashboard.router,
+    prefix="/admin/dashboard",
+    tags=["Admin Dashboard"],
 )
 
 # Admin Partner management (/admin/partners) — Super Admin only. CRUD for the
