@@ -16,11 +16,11 @@ from app.config.database import get_db
 from app.config.redis import get_redis
 from app.core.exceptions import (
     AuthenticationError,
+    AuthorizationError,
     InsufficientPermissionsError,
     InvalidTokenError,
     TokenExpiredError,
     UnverifiedEmailError,
-    AuthorizationError,
 )
 from app.core.security import verify_token
 

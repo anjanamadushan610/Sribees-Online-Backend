@@ -3,11 +3,14 @@ Admin API Endpoints
 """
 from datetime import datetime, timedelta
 from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
-from sqlalchemy import func, select
+from pydantic import BaseModel, Field
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config.database import get_db
 from app.core.dependencies import get_current_admin
@@ -15,7 +18,7 @@ from app.models.branch import Branch
 from app.models.category import Category
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.product import Product
-from app.models.user import User
+from app.models.user import Address, Session, User
 
 # Prefix "/admin" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Admin"])
@@ -421,7 +424,6 @@ async def toggle_customer_status(
 # Customer Action Schemas & Routes
 # ============================================================================
 
-from pydantic import BaseModel, Field
 
 class UpdateCustomerPayload(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=100)
@@ -439,10 +441,8 @@ async def get_customer_profile(
     current_user = Depends(get_current_admin)
 ):
     try:
-        from uuid import UUID
-        from sqlalchemy.orm import selectinload
         user_uuid = UUID(user_id)
-        
+
         # Get user with addresses
         result = await db.execute(
             select(User)
@@ -455,7 +455,7 @@ async def get_customer_profile(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
-            
+
         # Get order statistics
         orders_stats_result = await db.execute(
             select(
@@ -518,15 +518,14 @@ async def get_customer_orders(
     current_user = Depends(get_current_admin)
 ):
     try:
-        from uuid import UUID
         user_uuid = UUID(user_id)
-        
+
         # Get orders count
         count_result = await db.execute(
             select(func.count(Order.order_id)).where(Order.user_id == user_uuid)
         )
         total = count_result.scalar() or 0
-        
+
         # Get orders
         offset = (page - 1) * limit
         orders_result = await db.execute(
@@ -537,7 +536,7 @@ async def get_customer_orders(
             .offset(offset)
         )
         orders = orders_result.scalars().all()
-        
+
         return {
             "success": True,
             "data": {
@@ -662,14 +661,12 @@ async def block_customer(
         user.is_blocked = True
         user.blocked_reason = payload.reason
         user.is_active = False  # Deactivate as well for safety
-        
+
         # Terminate active sessions
-        from app.models.user import Session
-        from sqlalchemy import delete
         await db.execute(
             delete(Session).where(Session.user_id == user_uuid)
         )
-        
+
         await db.commit()
 
         return {
@@ -698,7 +695,6 @@ async def unblock_customer(
     current_user = Depends(get_current_admin)
 ):
     try:
-        from uuid import UUID
         user_uuid = UUID(user_id)
 
         result = await db.execute(
@@ -742,7 +738,6 @@ async def delete_customer(
     current_user = Depends(get_current_admin)
 ):
     try:
-        from uuid import UUID
         user_uuid = UUID(user_id)
 
         # Check if user exists
@@ -772,8 +767,6 @@ async def delete_customer(
             }
         else:
             # Anonymize (Soft delete)
-            from app.models.user import Address
-            from sqlalchemy import delete
             user.full_name = "Deleted Account"
             user.email = f"deleted_user_{user_id}@sribeesonline.lk"
             user.phone = None
@@ -782,18 +775,17 @@ async def delete_customer(
             user.is_active = False
             user.is_blocked = True
             user.blocked_reason = "Account Anonymized / Deleted"
-            
+
             # Delete addresses
             await db.execute(
                 delete(Address).where(Address.user_id == user_uuid)
             )
-            
+
             # Delete sessions
-            from app.models.user import Session
             await db.execute(
                 delete(Session).where(Session.user_id == user_uuid)
             )
-            
+
             await db.commit()
             return {
                 "success": True,
