@@ -23,7 +23,13 @@ from app.core.dependencies import get_current_admin, require_base_role_admin
 from app.core.permission_catalog import EXCLUDED_RESOURCES
 from app.models.admin import Admin, AdminRole
 from app.models.role import Permission, Role, RolePermission
-from app.schemas.roles import CreateRoleRequest, PermissionCatalogResponse, RoleListResponse, RoleOut, RoleResponse
+from app.schemas.roles import (
+    CreateRoleRequest,
+    PermissionCatalogResponse,
+    RoleListResponse,
+    RoleOut,
+    RoleResponse,
+)
 from app.services.permission_service import PermissionService
 
 router = APIRouter(tags=["Admin Roles"])

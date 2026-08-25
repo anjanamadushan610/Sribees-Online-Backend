@@ -467,7 +467,7 @@ async def get_customer_profile(
         stats = orders_stats_result.first()
         total_orders = stats.total_orders or 0
         total_spent = float(stats.total_spent or 0)
-        
+
         return {
             "success": True,
             "data": {
