@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
 
@@ -149,6 +149,7 @@ class User(Base):
     is_blocked: bool = Column(
         Boolean,
         default=False,
+        server_default=text("false"),
         nullable=False,
     )
     blocked_reason: Optional[str] = Column(

@@ -111,6 +111,9 @@ async def init_db() -> None:
                 logger.info("Adding is_blocked and blocked_reason columns to users table...")
                 await conn.execute(text("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN DEFAULT FALSE NOT NULL"))
                 await conn.execute(text("ALTER TABLE users ADD COLUMN blocked_reason TEXT NULL"))
+            else:
+                # Ensure database-level default exists for raw SQL migrations/seeds
+                await conn.execute(text("ALTER TABLE users ALTER COLUMN is_blocked SET DEFAULT FALSE"))
 
         logger.info("✅ PostgreSQL connected and tables initialized successfully")
 
