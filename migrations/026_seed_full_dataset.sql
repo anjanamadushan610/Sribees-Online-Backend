@@ -229,6 +229,26 @@ ON CONFLICT (variant_type_id) DO NOTHING;
 
 -- Pack sizes on the weighed goods. `price` is per-variant, so the small pack is
 -- cheaper than the product's base price and the large one dearer.
+DELETE FROM variant_options WHERE variant_id IN (
+    SELECT md5('sribees:demo-variant:' || p.product_id::text || ':' || v.suffix)::uuid
+    FROM products p
+    CROSS JOIN (VALUES
+        ('S'), ('M'), ('L')
+    ) AS v(suffix)
+    WHERE p.sku IS NOT NULL
+      AND p.weight_unit = 'kg'
+);
+
+DELETE FROM product_variants WHERE variant_id IN (
+    SELECT md5('sribees:demo-variant:' || p.product_id::text || ':' || v.suffix)::uuid
+    FROM products p
+    CROSS JOIN (VALUES
+        ('S'), ('M'), ('L')
+    ) AS v(suffix)
+    WHERE p.sku IS NOT NULL
+      AND p.weight_unit = 'kg'
+);
+
 INSERT INTO product_variants (
     variant_id, product_id, name, sku, price, compare_at_price,
     stock_quantity, is_active, sort_order
