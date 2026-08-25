@@ -121,7 +121,20 @@ jobs:
             set -euo pipefail
 
             echo "==== 1. UPDATE & INSTALL CORE DEPENDENCIES ===="
-            sudo apt-get update -y
+            # Wait for dpkg/apt lock to be released by retrying apt-get update
+            LOCK_ACQUIRED=0
+            for i in $(seq 1 30); do
+              if sudo apt-get update -y >/dev/null 2>&1; then
+                LOCK_ACQUIRED=1
+                break
+              fi
+              echo "Apt lock is held or network is busy. Waiting for lock release ($i/30)..."
+              sleep 10
+            done
+            if [ "$LOCK_ACQUIRED" -ne 1 ]; then
+              echo "ERROR: Could not acquire apt lock after 5 minutes."
+              exit 1
+            fi
             sudo apt-get install -y curl git gnupg lsb-release certbot python3-certbot-nginx nginx
 
             echo "==== 2. INSTALL DOCKER (if missing) ===="
