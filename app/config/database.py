@@ -101,9 +101,13 @@ async def init_db() -> None:
             await conn.run_sync(Base.metadata.create_all)
 
             # Ensure new columns exist on users table
-            try:
-                await conn.execute(text("SELECT is_blocked FROM users LIMIT 1"))
-            except Exception:
+            result = await conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'users' AND column_name = 'is_blocked'"
+                )
+            )
+            if result.first() is None:
                 logger.info("Adding is_blocked and blocked_reason columns to users table...")
                 await conn.execute(text("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN DEFAULT FALSE NOT NULL"))
                 await conn.execute(text("ALTER TABLE users ADD COLUMN blocked_reason TEXT NULL"))
