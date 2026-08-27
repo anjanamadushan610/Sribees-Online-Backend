@@ -280,3 +280,180 @@ class InvoiceService:
     @staticmethod
     def filename_for(order) -> str:
         return f"invoice_{order.order_number}.pdf"
+
+    @staticmethod
+    def generate_dispatch_manifest_pdf(orders, branch_name: str = "All Branches") -> bytes:
+        """
+        Build a PDF Courier Dispatch Manifest for a list of *orders* and return raw bytes.
+        """
+        if not REPORTLAB_AVAILABLE:
+            raise RuntimeError("PDF generation is unavailable (reportlab not installed).")
+
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            leftMargin=14 * mm,
+            rightMargin=14 * mm,
+            topMargin=14 * mm,
+            bottomMargin=14 * mm,
+            title=f"Dispatch Manifest - {branch_name}",
+        )
+
+        styles = getSampleStyleSheet()
+        brand = colors.HexColor(_BRAND)
+        ink = colors.HexColor(_INK)
+        muted = colors.HexColor(_MUTED)
+
+        h_title = ParagraphStyle(
+            "MTitle", parent=styles["Title"], fontSize=18, textColor=brand, spaceAfter=0, leading=20, fontName="Helvetica-Bold",
+        )
+        h_sub = ParagraphStyle(
+            "MSub", parent=styles["Normal"], fontSize=12, textColor=ink, alignment=TA_RIGHT, fontName="Helvetica-Bold",
+        )
+        label = ParagraphStyle(
+            "MLabel", parent=styles["Normal"], fontSize=8, textColor=muted, fontName="Helvetica-Bold", spaceAfter=2,
+        )
+        body = ParagraphStyle("MBody", parent=styles["Normal"], fontSize=8.5, textColor=ink, leading=11)
+        body_bold = ParagraphStyle("MBodyB", parent=body, fontName="Helvetica-Bold")
+        cell_right = ParagraphStyle("MCellR", parent=body, alignment=TA_RIGHT)
+
+        elements = []
+
+        # ---- Header -----------------------------------------------------
+        header = Table(
+            [[Paragraph("SRIBEES<font color='%s'>online</font>" % _INK, h_title),
+              Paragraph("DISPATCH MANIFEST", h_sub)]],
+            colWidths=[100 * mm, 82 * mm],
+        )
+        header.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        elements.append(header)
+        elements.append(Paragraph("Warehouse & Courier Handover Summary", ParagraphStyle("SubTag", parent=body, textColor=muted, fontSize=8.5)))
+        elements.append(Spacer(1, 4 * mm))
+
+        # ---- Meta Bar ---------------------------------------------------
+        total_value = sum(float(getattr(o, "total_amount", 0) or 0) for o in orders)
+        cod_orders = [o for o in orders if getattr(o, "payment_method", "") in ("cash_on_delivery", "CASH_ON_DELIVERY")]
+        cod_value = sum(float(getattr(o, "total_amount", 0) or 0) for o in cod_orders)
+        now_str = datetime.now().strftime("%b %d, %Y %H:%M")
+
+        meta = Table(
+            [
+                [Paragraph("BRANCH", label), Paragraph("GENERATED", label), Paragraph("TOTAL ORDERS", label), Paragraph("TOTAL VALUE", label), Paragraph("COD COLLECTION", label)],
+                [
+                    Paragraph(branch_name, body_bold),
+                    Paragraph(now_str, body),
+                    Paragraph(str(len(orders)), body_bold),
+                    Paragraph(_money(total_value), body_bold),
+                    Paragraph(_money(cod_value), body_bold),
+                ],
+            ],
+            colWidths=[38 * mm, 36 * mm, 28 * mm, 40 * mm, 40 * mm],
+        )
+        meta.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(_FILL)),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor(_LINE)),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(meta)
+        elements.append(Spacer(1, 5 * mm))
+
+        # ---- Orders Table -----------------------------------------------
+        head_style = ParagraphStyle("ThM", parent=body, textColor=colors.white, fontName="Helvetica-Bold", fontSize=8)
+        head_right = ParagraphStyle("ThMR", parent=head_style, alignment=TA_RIGHT)
+
+        table_rows = [[
+            Paragraph("Order #", head_style),
+            Paragraph("Recipient & Contact", head_style),
+            Paragraph("Delivery Address / Post Office", head_style),
+            Paragraph("Items", head_right),
+            Paragraph("Total (LKR)", head_right),
+            Paragraph("Payment", head_style),
+        ]]
+
+        for o in orders:
+            cust = getattr(o, "user", None)
+            cust_name = getattr(cust, "full_name", None) or getattr(o, "customer_name", "Customer")
+            cust_phone = getattr(cust, "phone", None) or getattr(o, "customer_phone", "")
+            contact_str = f"<b>{cust_name}</b><br/>{cust_phone}" if cust_phone else f"<b>{cust_name}</b>"
+
+            addr = getattr(o, "delivery_address", None)
+            if addr:
+                po = getattr(addr, "post_office", "") or ""
+                dist = getattr(addr, "district", "") or ""
+                l1 = getattr(addr, "address_line1", "") or ""
+                addr_str = f"{l1}, {po} ({dist})" if po else l1
+            else:
+                addr_str = getattr(o, "address_summary", "—")
+
+            is_cod = getattr(o, "payment_method", "") in ("cash_on_delivery", "CASH_ON_DELIVERY")
+            pm_str = "COD" if is_cod else "PREPAID"
+            p_status = getattr(o, "payment_status", "pending").upper()
+            pay_str = f"<b>{pm_str}</b> ({p_status})"
+
+            items_cnt = len(getattr(o, "items", []) or []) or getattr(o, "item_count", 1)
+
+            table_rows.append([
+                Paragraph(getattr(o, "order_number", "—"), body_bold),
+                Paragraph(contact_str, body),
+                Paragraph(addr_str, body),
+                Paragraph(str(items_cnt), cell_right),
+                Paragraph(_money(getattr(o, "total_amount", 0)), cell_right),
+                Paragraph(pay_str, body),
+            ])
+
+        if len(table_rows) == 1:
+            table_rows.append([Paragraph("No orders found for dispatch", body), "", "", "", "", ""])
+
+        manifest_table = Table(table_rows, colWidths=[36 * mm, 38 * mm, 52 * mm, 14 * mm, 24 * mm, 18 * mm], repeatRows=1)
+        manifest_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), brand),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("LINEBELOW", (0, 1), (-1, -1), 0.3, colors.HexColor(_LINE)),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FCFAFB")]),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        elements.append(manifest_table)
+        elements.append(Spacer(1, 8 * mm))
+
+        # ---- Handover Signature Block ----------------------------------
+        sig_left = Table([
+            [Paragraph("<b>Warehouse Dispatcher:</b>", body)],
+            [Spacer(1, 10 * mm)],
+            [Paragraph("Signature: ______________________", body)],
+            [Paragraph("Name: ________________________", body)],
+        ], colWidths=[85 * mm])
+
+        sig_right = Table([
+            [Paragraph("<b>Courier Handover Agent:</b>", body)],
+            [Spacer(1, 10 * mm)],
+            [Paragraph("Signature: ______________________", body)],
+            [Paragraph("Driver / Agent Name: _____________", body)],
+        ], colWidths=[85 * mm])
+
+        for t in (sig_left, sig_right):
+            t.setStyle(TableStyle([
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+            ]))
+
+        signatures = Table([[sig_left, sig_right]], colWidths=[91 * mm, 91 * mm])
+        signatures.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+        elements.append(signatures)
+
+        doc.build(elements)
+        pdf = buffer.getvalue()
+        buffer.close()
+        logger.info(f"Dispatch Manifest PDF generated for {len(orders)} orders ({len(pdf)} bytes)")
+        return pdf
