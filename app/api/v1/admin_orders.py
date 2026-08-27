@@ -12,6 +12,7 @@ under.
 
 Prefix "/admin/orders" is applied by app/api/v1/router.py.
 """
+from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
@@ -196,6 +197,8 @@ async def list_orders(
     branch_id: Optional[UUID] = Query(
         None, description="Super Admin / Customer Support only: narrow to a branch (ignored for scoped admins)"
     ),
+    from_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
 ):
@@ -222,6 +225,18 @@ async def list_orders(
                 User.email.ilike(pattern),
             )
         )
+    if from_date:
+        try:
+            from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+            query = query.where(Order.created_at >= from_dt)
+        except ValueError:
+            pass
+    if to_date:
+        try:
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+            query = query.where(Order.created_at < to_dt)
+        except ValueError:
+            pass
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
@@ -262,12 +277,13 @@ async def export_orders_csv(
     order_status: Optional[OrderStatusEnum] = None,
     branch_id: Optional[UUID] = None,
     search: Optional[str] = Query(None, min_length=1),
+    from_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     order_ids: Optional[str] = Query(None, description="Comma separated UUIDs"),
 ):
     """Export orders to CSV file matching active filters or selected order_ids."""
     import csv
     import io
-    from datetime import datetime
 
     effective_branch = scope.resolve(branch_id)
 
@@ -290,6 +306,18 @@ async def export_orders_csv(
                 User.email.ilike(term),
             )
         )
+    if from_date:
+        try:
+            from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+            query = query.where(Order.created_at >= from_dt)
+        except ValueError:
+            pass
+    if to_date:
+        try:
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+            query = query.where(Order.created_at < to_dt)
+        except ValueError:
+            pass
     if order_ids:
         raw_ids = [id_str.strip() for id_str in order_ids.split(",") if id_str.strip()]
         try:
@@ -355,11 +383,12 @@ async def export_orders_pdf(
     order_status: Optional[OrderStatusEnum] = None,
     branch_id: Optional[UUID] = None,
     search: Optional[str] = Query(None, min_length=1),
+    from_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     order_ids: Optional[str] = Query(None, description="Comma separated UUIDs"),
 ):
     """Export orders to PDF Dispatch Manifest."""
     import io
-    from datetime import datetime
 
     effective_branch = scope.resolve(branch_id)
 
@@ -382,6 +411,18 @@ async def export_orders_pdf(
                 User.email.ilike(term),
             )
         )
+    if from_date:
+        try:
+            from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+            query = query.where(Order.created_at >= from_dt)
+        except ValueError:
+            pass
+    if to_date:
+        try:
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+            query = query.where(Order.created_at < to_dt)
+        except ValueError:
+            pass
     if order_ids:
         raw_ids = [id_str.strip() for id_str in order_ids.split(",") if id_str.strip()]
         try:
