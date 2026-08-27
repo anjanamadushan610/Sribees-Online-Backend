@@ -8,6 +8,8 @@ from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
 
+from zoneinfo import ZoneInfo
+
 from loguru import logger
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -129,8 +131,9 @@ class OrderService:
 
     @staticmethod
     def generate_order_number() -> str:
-        """Generate unique order number."""
-        timestamp = datetime.now().strftime("%Y%m%d")
+        """Generate unique order number using Asia/Colombo date."""
+        colombo_tz = ZoneInfo("Asia/Colombo")
+        timestamp = datetime.now(colombo_tz).strftime("%Y%m%d")
         random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         return f"FC-{timestamp}-{random_part}"
 

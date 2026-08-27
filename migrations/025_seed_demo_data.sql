@@ -241,10 +241,10 @@ SELECT
     s.branch_id,
     s.order_date,
     -- Spread through the trading day (08:00–20:00) rather than all at midnight.
-    (s.order_date
+    ((s.order_date
         + make_interval(hours => 8 + (pg_temp.demo_hash(('h' || s.code || s.order_date::text || s.slot)) % 12),
                         mins  => pg_temp.demo_hash(('m' || s.code || s.order_date::text || s.slot)) % 60)
-    )::timestamptz AS created_at,
+    )::timestamp AT TIME ZONE 'Asia/Colombo')::timestamptz AS created_at,
     pg_temp.demo_hash(('r' || s.code || s.order_date::text || s.slot)) % 100 AS roll,
     pg_temp.demo_hash(('c' || s.code || s.order_date::text || s.slot))       AS cust_roll,
     s.slot
