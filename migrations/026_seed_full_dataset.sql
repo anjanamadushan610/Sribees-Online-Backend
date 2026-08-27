@@ -52,8 +52,8 @@ $$ SELECT ('x' || substr(md5(t), 1, 7))::bit(28)::int $$;
 -- so such an account can log in and then 403 on every branch-scoped screen.
 -- -----------------------------------------------------------------------------
 -- Ensure system roles exist in `roles` if the `roles` table exists
-INSERT INTO roles (name, is_system, system_key)
-SELECT v.name, v.is_system, v.system_key
+INSERT INTO roles (role_id, name, is_system, system_key)
+SELECT gen_random_uuid(), v.name, v.is_system, v.system_key
 FROM (VALUES
     ('Super Admin', TRUE, 'super_admin'),
     ('Branch Manager', TRUE, 'branch_manager'),
