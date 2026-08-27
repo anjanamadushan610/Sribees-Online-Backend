@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.database import get_db
-from app.core.dependencies import BranchScope, inject_branch_filter, require_roles
+from app.core.dependencies import BranchScope, get_current_admin, inject_branch_filter, require_roles
 from app.models.branch import Branch
 from app.models.order import Order
 from app.models.user import User
@@ -119,6 +119,58 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
             "cashback_earned": float(order.cashback_earned or 0),
             "total_amount": float(order.total_amount or 0),
         },
+        "history": [
+            {
+                "history_id": str(h.history_id),
+                "old_status": h.old_status,
+                "new_status": h.new_status,
+                "changed_by": h.changed_by or "System",
+                "notes": h.notes,
+                "created_at": h.created_at.isoformat() if h.created_at else None,
+            }
+            for h in (order.status_history or [])
+        ] if order.status_history else [
+            *(
+                [{
+                    "history_id": "placed",
+                    "old_status": None,
+                    "new_status": "pending",
+                    "changed_by": "Customer",
+                    "notes": "Order placed by customer",
+                    "created_at": order.created_at.isoformat(),
+                }] if order.created_at else []
+            ),
+            *(
+                [{
+                    "history_id": "shipped",
+                    "old_status": "processing",
+                    "new_status": "shipped",
+                    "changed_by": "System (Fulfillment)",
+                    "notes": "Dispatched to courier",
+                    "created_at": order.shipped_at.isoformat(),
+                }] if order.shipped_at else []
+            ),
+            *(
+                [{
+                    "history_id": "delivered",
+                    "old_status": "shipped",
+                    "new_status": "delivered",
+                    "changed_by": "System (Delivery)",
+                    "notes": "Delivered to customer",
+                    "created_at": order.delivered_at.isoformat(),
+                }] if order.delivered_at else []
+            ),
+            *(
+                [{
+                    "history_id": "cancelled",
+                    "old_status": "pending",
+                    "new_status": "cancelled",
+                    "changed_by": "System",
+                    "notes": "Order cancelled",
+                    "created_at": order.cancelled_at.isoformat(),
+                }] if order.cancelled_at else []
+            ),
+        ],
     }
 
 
@@ -371,6 +423,7 @@ async def _load_scoped_order(db: AsyncSession, order_id: UUID, scope: BranchScop
                 selectinload(Order.items),
                 selectinload(Order.delivery_address),
                 selectinload(Order.user),
+                selectinload(Order.status_history),
             )
             .where(Order.order_id == order_id)
         )
@@ -435,6 +488,7 @@ async def update_order_status(
     body: UpdateOrderStatusRequest,
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(get_current_admin),
 ):
     """
     Update an order's status. On transition to SHIPPED or DELIVERED, notify the
@@ -442,7 +496,8 @@ async def update_order_status(
     """
     order = await _load_scoped_order(db, order_id, scope)
 
-    await OrderService.update_status(db, order, body.status)
+    admin_name = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
+    await OrderService.update_status(db, order, body.status, changed_by=f"Admin ({admin_name})")
 
     if body.status in _NOTIFY_STATUSES:
         try:

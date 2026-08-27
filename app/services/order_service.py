@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config.settings import settings
 from app.models.branch import Branch
-from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
+from app.models.order import Order, OrderItem, OrderStatus, OrderStatusHistory, PaymentStatus
 from app.models.product import Product
 from app.models.user import Address, User
 from app.models.wallet import WalletTransactionType
@@ -334,6 +334,16 @@ class OrderService:
 
         db.add(order)
         await db.flush()  # Get order_id
+
+        history = OrderStatusHistory(
+            order_id=order.order_id,
+            old_status=None,
+            new_status=OrderStatus.PENDING.value,
+            changed_by="Customer",
+            notes="Order placed by customer",
+            created_at=datetime.now(ZoneInfo("Asia/Colombo")),
+        )
+        db.add(history)
 
         # Redeem the coupon atomically within this transaction. The conditional
         # UPDATE guards used_count < usage_limit under a row lock, so two orders
@@ -932,19 +942,19 @@ class OrderService:
     async def update_status(
         db: AsyncSession,
         order: Order,
-        status: OrderStatusEnum
+        status: OrderStatusEnum,
+        changed_by: str = "Admin",
+        notes: Optional[str] = None,
     ) -> Order:
-        """Update order status."""
-        # Detect the transition INTO cancelled so we release the coupon exactly
-        # once (a no-op re-cancel must not double-release).
+        """Update order status and log history."""
+        old_status = order.status
         was_cancelled = order.status == OrderStatus.CANCELLED.value
-
         was_delivered = order.status == OrderStatus.DELIVERED.value
 
         order.status = status.value
 
-        # Set timestamps based on status
-        now = datetime.utcnow()
+        colombo_tz = ZoneInfo("Asia/Colombo")
+        now = datetime.now(colombo_tz)
         if status == OrderStatusEnum.SHIPPED:
             order.shipped_at = now
         elif status == OrderStatusEnum.DELIVERED:
@@ -955,16 +965,24 @@ class OrderService:
             ):
                 order.payment_status = PaymentStatus.PAID.value
             if not was_delivered:
-                # Referral commission only becomes real once the goods arrive —
-                # accruing on placement would let someone order, claim, cancel.
                 from app.services.referral_service import ReferralService
 
                 await ReferralService.mark_claimable_for_order(db, order.order_id)
         elif status == OrderStatusEnum.CANCELLED:
             order.cancelled_at = now
             if not was_cancelled:
-                # Reverse coupon + wallet effects atomically within this txn.
                 await OrderService._reverse_order_financials(db, order)
+
+        # Log status transition in audit history
+        history = OrderStatusHistory(
+            order_id=order.order_id,
+            old_status=old_status,
+            new_status=status.value,
+            changed_by=changed_by,
+            notes=notes or f"Status updated to {status.value.replace('_', ' ').title()}",
+            created_at=now,
+        )
+        db.add(history)
 
         await db.commit()
         await db.refresh(order)

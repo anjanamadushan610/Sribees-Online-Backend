@@ -133,6 +133,12 @@ class Order(Base):
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     delivery_address = relationship("Address")
     branch = relationship("Branch")
+    status_history = relationship(
+        "OrderStatusHistory",
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="OrderStatusHistory.created_at.asc()",
+    )
 
     def __repr__(self):
         return f"<Order {self.order_number}>"
@@ -168,3 +174,22 @@ class OrderItem(Base):
 
     def __repr__(self):
         return f"<OrderItem {self.order_item_id}>"
+
+
+class OrderStatusHistory(Base):
+    """Order status change history model for audit logging."""
+
+    __tablename__ = "order_status_history"
+
+    history_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.order_id", ondelete="CASCADE"), nullable=False, index=True)
+    old_status = Column(String(50), nullable=True)
+    new_status = Column(String(50), nullable=False)
+    changed_by = Column(String(255), default="System")
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    order = relationship("Order", back_populates="status_history")
+
+    def __repr__(self):
+        return f"<OrderStatusHistory {self.old_status} -> {self.new_status}>"
