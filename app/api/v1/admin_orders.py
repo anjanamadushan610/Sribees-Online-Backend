@@ -198,6 +198,170 @@ async def list_orders(
     }
 
 
+@router.get("/export/csv")
+async def export_orders_csv(
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    order_status: Optional[OrderStatusEnum] = None,
+    branch_id: Optional[UUID] = None,
+    search: Optional[str] = Query(None, min_length=1),
+    order_ids: Optional[str] = Query(None, description="Comma separated UUIDs"),
+):
+    """Export orders to CSV file matching active filters or selected order_ids."""
+    import csv
+    import io
+    from datetime import datetime
+
+    effective_branch = scope.resolve(branch_id)
+
+    query = select(Order).options(
+        selectinload(Order.user),
+        selectinload(Order.items),
+        selectinload(Order.delivery_address),
+    )
+
+    if effective_branch is not None:
+        query = query.where(Order.branch_id == effective_branch)
+    if order_status:
+        query = query.where(Order.status == order_status.value)
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.outerjoin(User, Order.user_id == User.user_id).where(
+            or_(
+                Order.order_number.ilike(term),
+                User.full_name.ilike(term),
+                User.email.ilike(term),
+            )
+        )
+    if order_ids:
+        raw_ids = [id_str.strip() for id_str in order_ids.split(",") if id_str.strip()]
+        try:
+            uuid_ids = [UUID(id_str) for id_str in raw_ids]
+            query = query.where(Order.order_id.in_(uuid_ids))
+        except ValueError:
+            pass
+
+    query = query.order_by(Order.created_at.desc())
+    res = await db.execute(query)
+    orders = res.scalars().unique().all()
+
+    branches_res = await db.execute(select(Branch))
+    branch_map = {b.branch_id: b.name for b in branches_res.scalars().all()}
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Order Number", "Date", "Customer Name", "Customer Email", "Customer Phone",
+        "Branch", "Post Office", "Items Count", "Subtotal (LKR)", "Shipping (LKR)",
+        "Discount (LKR)", "Total (LKR)", "Payment Method", "Payment Status", "Order Status",
+    ])
+
+    for o in orders:
+        cust = o.user
+        cust_name = cust.full_name if cust else "Customer"
+        cust_email = cust.email if cust else ""
+        cust_phone = cust.phone if cust else ""
+        branch_name = branch_map.get(o.branch_id, "Unassigned")
+        addr = o.delivery_address
+        po = addr.post_office if addr else ""
+
+        writer.writerow([
+            o.order_number,
+            o.created_at.strftime("%Y-%m-%d %H:%M") if o.created_at else "",
+            cust_name,
+            cust_email,
+            cust_phone,
+            branch_name,
+            po,
+            len(o.items or []),
+            float(o.subtotal or 0),
+            float(o.shipping_amount or 0),
+            float(o.discount_amount or 0),
+            float(o.total_amount or 0),
+            o.payment_method or "",
+            o.payment_status or "",
+            o.status or "",
+        ])
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=orders_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"},
+    )
+
+
+@router.get("/export/pdf")
+async def export_orders_pdf(
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    order_status: Optional[OrderStatusEnum] = None,
+    branch_id: Optional[UUID] = None,
+    search: Optional[str] = Query(None, min_length=1),
+    order_ids: Optional[str] = Query(None, description="Comma separated UUIDs"),
+):
+    """Export orders to PDF Dispatch Manifest."""
+    import io
+    from datetime import datetime
+
+    effective_branch = scope.resolve(branch_id)
+
+    query = select(Order).options(
+        selectinload(Order.user),
+        selectinload(Order.items),
+        selectinload(Order.delivery_address),
+    )
+
+    if effective_branch is not None:
+        query = query.where(Order.branch_id == effective_branch)
+    if order_status:
+        query = query.where(Order.status == order_status.value)
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.outerjoin(User, Order.user_id == User.user_id).where(
+            or_(
+                Order.order_number.ilike(term),
+                User.full_name.ilike(term),
+                User.email.ilike(term),
+            )
+        )
+    if order_ids:
+        raw_ids = [id_str.strip() for id_str in order_ids.split(",") if id_str.strip()]
+        try:
+            uuid_ids = [UUID(id_str) for id_str in raw_ids]
+            query = query.where(Order.order_id.in_(uuid_ids))
+        except ValueError:
+            pass
+
+    query = query.order_by(Order.created_at.desc())
+    res = await db.execute(query)
+    orders = res.scalars().unique().all()
+
+    branch_name = "All Branches"
+    if effective_branch:
+        b_res = await db.execute(select(Branch).where(Branch.branch_id == effective_branch))
+        b_obj = b_res.scalar_one_or_none()
+        if b_obj:
+            branch_name = b_obj.name
+
+    try:
+        pdf_bytes = InvoiceService.generate_dispatch_manifest_pdf(orders, branch_name=branch_name)
+    except RuntimeError as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error generating dispatch manifest PDF: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate dispatch manifest PDF",
+        )
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=dispatch_manifest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"},
+    )
+
+
 async def _load_scoped_order(db: AsyncSession, order_id: UUID, scope: BranchScope) -> Order:
     """Fetch an order with relations, enforcing branch isolation."""
     order = (
@@ -367,155 +531,3 @@ async def reconcile_marx_payments(db: AsyncSession = Depends(get_db)):
         "data": result,
         "message": f"Checked {result['checked']} pending gateway order(s)",
     }
-
-
-@router.get("/export/csv")
-async def export_orders_csv(
-    db: AsyncSession = Depends(get_db),
-    scope: BranchScope = Depends(inject_branch_filter),
-    order_status: Optional[OrderStatusEnum] = None,
-    branch_id: Optional[UUID] = None,
-    search: Optional[str] = Query(None, min_length=1),
-    order_ids: Optional[str] = Query(None, description="Comma separated UUIDs"),
-):
-    """Export orders to CSV file matching active filters or selected order_ids."""
-    import csv
-    import io
-    from datetime import datetime
-
-    query = select(Order).options(
-        selectinload(Order.user),
-        selectinload(Order.items),
-        selectinload(Order.delivery_address),
-    )
-
-    query = scope.apply_to_query(query, Order, override_branch_id=branch_id)
-    if order_status:
-        query = query.where(Order.status == order_status.value)
-    if search:
-        term = f"%{search.strip()}%"
-        query = query.outerjoin(User, Order.user_id == User.user_id).where(
-            or_(
-                Order.order_number.ilike(term),
-                User.full_name.ilike(term),
-                User.email.ilike(term),
-            )
-        )
-    if order_ids:
-        raw_ids = [id_str.strip() for id_str in order_ids.split(",") if id_str.strip()]
-        try:
-            uuid_ids = [UUID(id_str) for id_str in raw_ids]
-            query = query.where(Order.order_id.in_(uuid_ids))
-        except ValueError:
-            pass
-
-    query = query.order_by(Order.created_at.desc())
-    res = await db.execute(query)
-    orders = res.scalars().all()
-
-    branches_res = await db.execute(select(Branch))
-    branch_map = {b.branch_id: b.name for b in branches_res.scalars().all()}
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "Order Number", "Date", "Customer Name", "Customer Email", "Customer Phone",
-        "Branch", "Post Office", "Items Count", "Subtotal (LKR)", "Shipping (LKR)",
-        "Discount (LKR)", "Total (LKR)", "Payment Method", "Payment Status", "Order Status",
-    ])
-
-    for o in orders:
-        cust = o.user
-        cust_name = cust.full_name if cust else "Customer"
-        cust_email = cust.email if cust else ""
-        cust_phone = cust.phone if cust else ""
-        branch_name = branch_map.get(o.branch_id, "Unassigned")
-        addr = o.delivery_address
-        po = addr.post_office if addr else ""
-
-        writer.writerow([
-            o.order_number,
-            o.created_at.strftime("%Y-%m-%d %H:%M") if o.created_at else "",
-            cust_name,
-            cust_email,
-            cust_phone,
-            branch_name,
-            po,
-            len(o.items or []),
-            float(o.subtotal or 0),
-            float(o.shipping_amount or 0),
-            float(o.discount_amount or 0),
-            float(o.total_amount or 0),
-            o.payment_method or "",
-            o.payment_status or "",
-            o.status or "",
-        ])
-
-    output.seek(0)
-    return StreamingResponse(
-        io.BytesIO(output.getvalue().encode("utf-8-sig")),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=orders_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"},
-    )
-
-
-@router.get("/export/pdf")
-async def export_orders_pdf(
-    db: AsyncSession = Depends(get_db),
-    scope: BranchScope = Depends(inject_branch_filter),
-    order_status: Optional[OrderStatusEnum] = None,
-    branch_id: Optional[UUID] = None,
-    search: Optional[str] = Query(None, min_length=1),
-    order_ids: Optional[str] = Query(None, description="Comma separated UUIDs"),
-):
-    """Export orders to PDF Dispatch Manifest."""
-    import io
-    from datetime import datetime
-
-    query = select(Order).options(
-        selectinload(Order.user),
-        selectinload(Order.items),
-        selectinload(Order.delivery_address),
-    )
-
-    query = scope.apply_to_query(query, Order, override_branch_id=branch_id)
-    if order_status:
-        query = query.where(Order.status == order_status.value)
-    if search:
-        term = f"%{search.strip()}%"
-        query = query.outerjoin(User, Order.user_id == User.user_id).where(
-            or_(
-                Order.order_number.ilike(term),
-                User.full_name.ilike(term),
-                User.email.ilike(term),
-            )
-        )
-    if order_ids:
-        raw_ids = [id_str.strip() for id_str in order_ids.split(",") if id_str.strip()]
-        try:
-            uuid_ids = [UUID(id_str) for id_str in raw_ids]
-            query = query.where(Order.order_id.in_(uuid_ids))
-        except ValueError:
-            pass
-
-    query = query.order_by(Order.created_at.desc())
-    res = await db.execute(query)
-    orders = res.scalars().all()
-
-    branch_name = "All Branches"
-    if branch_id:
-        b_res = await db.execute(select(Branch).where(Branch.branch_id == branch_id))
-        b_obj = b_res.scalar_one_or_none()
-        if b_obj:
-            branch_name = b_obj.name
-
-    try:
-        pdf_bytes = InvoiceService.generate_dispatch_manifest_pdf(orders, branch_name=branch_name)
-    except RuntimeError as e:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
-
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=dispatch_manifest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"},
-    )
