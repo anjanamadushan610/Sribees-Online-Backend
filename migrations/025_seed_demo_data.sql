@@ -381,6 +381,7 @@ JOIN (
             ELSE 'refunded'
         END AS status,
         CASE
+            WHEN (o2.roll % 3 = 0) AND o2.roll >= 68 AND o2.roll < 99 THEN 'pending'
             WHEN o2.roll < 88 THEN 'paid'
             WHEN o2.roll < 92 THEN 'paid'
             WHEN o2.roll < 96 THEN 'pending'

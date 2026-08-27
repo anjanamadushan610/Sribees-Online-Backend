@@ -947,6 +947,11 @@ class OrderService:
             order.shipped_at = now
         elif status == OrderStatusEnum.DELIVERED:
             order.delivered_at = now
+            if (
+                order.payment_method == PaymentMethodEnum.COD.value
+                and order.payment_status != PaymentStatus.PAID.value
+            ):
+                order.payment_status = PaymentStatus.PAID.value
             if not was_delivered:
                 # Referral commission only becomes real once the goods arrive —
                 # accruing on placement would let someone order, claim, cancel.
