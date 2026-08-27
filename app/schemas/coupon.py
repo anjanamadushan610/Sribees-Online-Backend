@@ -28,6 +28,7 @@ class CouponCreate(BaseModel):
     discount_type: CouponDiscountType = CouponDiscountType.PERCENTAGE
     discount_value: Decimal = Field(..., gt=0)
     min_order_value: Decimal = Field(default=Decimal("0"), ge=0)
+    max_discount_amount: Optional[Decimal] = Field(default=None, ge=0)
     usage_limit: Optional[int] = Field(default=None, ge=1, description="NULL = unlimited")
     valid_from: datetime
     valid_until: datetime
@@ -43,6 +44,8 @@ class CouponCreate(BaseModel):
         if self.valid_until <= self.valid_from:
             raise ValueError("valid_until must be after valid_from")
         _validate_discount(self.discount_type, self.discount_value)
+        if self.discount_type == CouponDiscountType.FIXED and self.min_order_value < self.discount_value:
+            raise ValueError("min_order_value must be greater than or equal to discount_value for fixed discounts")
         return self
 
 
@@ -53,6 +56,7 @@ class CouponUpdate(BaseModel):
     discount_type: Optional[CouponDiscountType] = None
     discount_value: Optional[Decimal] = Field(None, gt=0)
     min_order_value: Optional[Decimal] = Field(None, ge=0)
+    max_discount_amount: Optional[Decimal] = Field(None, ge=0)
     usage_limit: Optional[int] = Field(None, ge=1)
     valid_from: Optional[datetime] = None
     valid_until: Optional[datetime] = None

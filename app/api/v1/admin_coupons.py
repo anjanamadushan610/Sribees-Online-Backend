@@ -37,6 +37,7 @@ def _format_coupon(c: Coupon) -> dict:
         "discount_type": c.discount_type,
         "discount_value": float(c.discount_value or 0),
         "min_order_value": float(c.min_order_value or 0),
+        "max_discount_amount": float(c.max_discount_amount) if getattr(c, "max_discount_amount", None) is not None else None,
         "usage_limit": c.usage_limit,
         "used_count": c.used_count or 0,
         "valid_from": c.valid_from.isoformat() if c.valid_from else None,

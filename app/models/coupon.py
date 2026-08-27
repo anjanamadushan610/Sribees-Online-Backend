@@ -45,6 +45,9 @@ class Coupon(Base):
     # Minimum cart subtotal required to apply the coupon.
     min_order_value = Column(Numeric(10, 2), nullable=False, default=0)
 
+    # Optional cap for percentage discounts.
+    max_discount_amount = Column(Numeric(10, 2), nullable=True)
+
     # NULL usage_limit = unlimited redemptions.
     usage_limit = Column(Integer, nullable=True)
     used_count = Column(Integer, nullable=False, default=0)
