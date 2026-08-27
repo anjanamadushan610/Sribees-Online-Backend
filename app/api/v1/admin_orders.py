@@ -23,7 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.database import get_db
-from app.core.dependencies import BranchScope, get_current_admin, inject_branch_filter, require_roles
+from app.core.dependencies import (
+    BranchScope,
+    get_current_admin,
+    inject_branch_filter,
+    require_roles,
+)
 from app.models.branch import Branch
 from app.models.order import Order
 from app.models.user import User

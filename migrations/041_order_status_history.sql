@@ -10,12 +10,16 @@ CREATE TABLE IF NOT EXISTS order_status_history (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Ensure history_id has DEFAULT gen_random_uuid() if pre-created by SQLAlchemy create_all()
+ALTER TABLE order_status_history ALTER COLUMN history_id SET DEFAULT gen_random_uuid();
+
 CREATE INDEX IF NOT EXISTS idx_order_status_history_order_id ON order_status_history(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_status_history_created_at ON order_status_history(created_at);
 
 -- Backfill initial "Placed" status entry for existing orders
-INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, notes, created_at)
+INSERT INTO order_status_history (history_id, order_id, old_status, new_status, changed_by, notes, created_at)
 SELECT 
+    gen_random_uuid(),
     order_id,
     NULL,
     'pending',
@@ -28,8 +32,9 @@ WHERE NOT EXISTS (
 );
 
 -- Backfill "Shipped" status entries for existing shipped orders
-INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, notes, created_at)
+INSERT INTO order_status_history (history_id, order_id, old_status, new_status, changed_by, notes, created_at)
 SELECT 
+    gen_random_uuid(),
     order_id,
     'processing',
     'shipped',
@@ -43,8 +48,9 @@ WHERE shipped_at IS NOT NULL
 );
 
 -- Backfill "Delivered" status entries for existing delivered orders
-INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, notes, created_at)
+INSERT INTO order_status_history (history_id, order_id, old_status, new_status, changed_by, notes, created_at)
 SELECT 
+    gen_random_uuid(),
     order_id,
     'shipped',
     'delivered',

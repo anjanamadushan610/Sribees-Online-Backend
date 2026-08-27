@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -181,7 +182,12 @@ class OrderStatusHistory(Base):
 
     __tablename__ = "order_status_history"
 
-    history_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    history_id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
     order_id = Column(UUID(as_uuid=True), ForeignKey("orders.order_id", ondelete="CASCADE"), nullable=False, index=True)
     old_status = Column(String(50), nullable=True)
     new_status = Column(String(50), nullable=False)

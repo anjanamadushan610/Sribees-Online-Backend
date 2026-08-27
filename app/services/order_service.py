@@ -16,7 +16,13 @@ from sqlalchemy.orm import selectinload
 
 from app.config.settings import settings
 from app.models.branch import Branch
-from app.models.order import Order, OrderItem, OrderStatus, OrderStatusHistory, PaymentStatus
+from app.models.order import (
+    Order,
+    OrderItem,
+    OrderStatus,
+    OrderStatusHistory,
+    PaymentStatus,
+)
 from app.models.product import Product
 from app.models.user import Address, User
 from app.models.wallet import WalletTransactionType
