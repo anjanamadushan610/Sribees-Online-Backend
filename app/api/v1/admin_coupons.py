@@ -15,6 +15,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -181,8 +182,6 @@ async def update_coupon(
     logger.info(f"[admin] Coupon updated: {coupon.coupon_id}")
     return {"success": True, "data": _format_coupon(coupon), "message": "Coupon updated successfully"}
 
-
-from sqlalchemy.exc import IntegrityError
 
 @router.delete("/{coupon_id}", response_model=dict)
 async def deactivate_or_delete_coupon(
