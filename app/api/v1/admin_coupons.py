@@ -182,14 +182,30 @@ async def update_coupon(
     return {"success": True, "data": _format_coupon(coupon), "message": "Coupon updated successfully"}
 
 
+from sqlalchemy.exc import IntegrityError
+
 @router.delete("/{coupon_id}", response_model=dict)
-async def deactivate_coupon(
+async def deactivate_or_delete_coupon(
     coupon_id: UUID,
+    hard: bool = Query(False, description="Hard delete from database"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft delete — sets is_active = False (redemption history is preserved)."""
+    """Deactivate (soft delete) or hard delete if hard=True."""
     coupon = await _get_or_404(db, coupon_id)
-    coupon.is_active = False
-    await db.commit()
-    logger.info(f"[admin] Coupon deactivated: {coupon_id}")
-    return {"success": True, "message": "Coupon deactivated successfully"}
+    if hard:
+        try:
+            await db.delete(coupon)
+            await db.commit()
+            logger.info(f"[admin] Coupon hard deleted: {coupon_id}")
+            return {"success": True, "message": "Coupon deleted permanently"}
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot permanently delete coupon as it has been redeemed in past orders. Deactivate it instead.",
+            )
+    else:
+        coupon.is_active = False
+        await db.commit()
+        logger.info(f"[admin] Coupon deactivated: {coupon_id}")
+        return {"success": True, "message": "Coupon deactivated successfully"}
