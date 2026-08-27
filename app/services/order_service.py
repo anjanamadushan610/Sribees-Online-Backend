@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
-
 from zoneinfo import ZoneInfo
 
 from loguru import logger
