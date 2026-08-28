@@ -1,9 +1,13 @@
 """
 Admin Branch Management API
 
-Full CRUD over store branches. Restricted to Super Admins (enforced at the
-router level). Delete is guarded: a branch that still has admins, inventory or
-post-office mappings attached cannot be removed — deactivate it instead.
+Full CRUD over store branches. Creating, editing and deleting a branch is
+restricted to Super Admins. Branch Managers get one narrower power on top of
+that: listing (scoped to their own branch) and flipping their own branch's
+``is_active`` status via ``PATCH /{branch_id}/status`` — see that route's
+docstring for why. Delete is guarded: a branch that still has admins,
+inventory or post-office mappings attached cannot be removed — deactivate it
+instead.
 
 Note on fields: the branch model uses Sri-Lankan location columns
 (``district`` + ``province``); the admin UI's "City" maps to ``district``.
@@ -14,19 +18,25 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
+from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import require_roles
-from app.models.admin import Admin
+from app.core.dependencies import get_current_admin, require_roles
+from app.models.admin import Admin, AdminRole
 from app.models.branch import Branch, PostOfficeBranchMapping
 from app.models.product import BranchInventory
 from app.schemas.branch import BranchCreate, BranchUpdate
 from app.services import branch_service
+from app.services.category_service import CategoryService
 
+# Router-level: Super Admin and Branch Manager may both reach this module.
+# Full CRUD (create/update/delete) is then locked back down to Super Admin
+# only via an extra per-route dependency below — only listing (scoped) and
+# the status-toggle route are open to Branch Managers.
 router = APIRouter(
-    dependencies=[Depends(require_roles("super_admin"))],
+    dependencies=[Depends(require_roles("super_admin", "branch_manager"))],
     tags=["Admin Branches"],
 )
 
@@ -71,9 +81,18 @@ async def _code_taken(db: AsyncSession, code: str, exclude_id: UUID | None = Non
 async def list_branches(
     include_inactive: bool = Query(True, description="Include inactive branches"),
     db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
 ):
-    """List all branches (active and inactive by default), with coverage."""
+    """
+    List branches, with coverage.
+
+    Super Admins see every branch (active and inactive by default). Branch
+    Managers are scoped to their own branch only — same isolation rule every
+    other branch-scoped admin surface applies.
+    """
     stmt = select(Branch).order_by(Branch.name)
+    if admin.role != AdminRole.SUPER_ADMIN:
+        stmt = stmt.where(Branch.branch_id == admin.branch_id)
     if not include_inactive:
         stmt = stmt.where(Branch.is_active.is_(True))
     branches = (await db.execute(stmt)).scalars().all()
@@ -88,12 +107,23 @@ async def list_branches(
     }
 
 
-@router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=dict,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def create_branch(
     data: BranchCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new branch."""
+    """
+    Create a new branch — Super Admin only.
+
+    Always starts inactive (``is_active=False``, the model default): the
+    branch only goes live once its Branch Manager activates it via
+    ``PATCH /{branch_id}/status``.
+    """
     if await _code_taken(db, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -112,12 +142,17 @@ async def create_branch(
     )
     db.add(branch)
     # Flush (not commit) so the branch gets a PK before its coverage mappings
-    # are written, then commit once so branch + coverage move together.
+    # and per-category rows are written, then commit once so everything moves
+    # together.
     await db.flush()
     if data.coverage_post_offices is not None:
         await branch_service.sync_branch_coverage(
             db, branch, data.coverage_post_offices
         )
+    # Every existing category gets a hidden row for this branch — same
+    # "starts dark until the branch manager turns it on" rule as the branch
+    # itself and as branch_inventory.
+    await CategoryService.seed_for_new_branch(db, branch.branch_id)
     await db.commit()
     await db.refresh(branch)
     coverage = await branch_service.get_branch_coverage(db, branch.branch_id)
@@ -129,13 +164,21 @@ async def create_branch(
     }
 
 
-@router.put("/{branch_id}", response_model=dict)
+@router.put(
+    "/{branch_id}",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def update_branch(
     branch_id: UUID,
     data: BranchUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a branch (name, code, address, district, province, phone, status)."""
+    """
+    Update a branch (name, code, address, district, province, phone, status)
+    — Super Admin only. A Branch Manager toggling their own branch's status
+    uses ``PATCH /{branch_id}/status`` instead.
+    """
     branch = await _get_branch_or_404(db, branch_id)
     fields = data.model_dump(exclude_unset=True)
     # coverage_post_offices is not a Branch column — sync it separately.
@@ -176,7 +219,11 @@ async def update_branch(
     }
 
 
-@router.delete("/{branch_id}", response_model=dict)
+@router.delete(
+    "/{branch_id}",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def delete_branch(
     branch_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -221,3 +268,43 @@ async def delete_branch(
     await db.commit()
     logger.info(f"[admin] Branch deleted: {branch_id}")
     return {"success": True, "message": "Branch deleted successfully"}
+
+
+class BranchStatusUpdate(BaseModel):
+    is_active: bool
+
+
+@router.patch("/{branch_id}/status", response_model=dict)
+async def set_branch_status(
+    branch_id: UUID,
+    data: BranchStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """
+    Activate or deactivate a branch.
+
+    A Super Admin creating a branch leaves it inactive by design — it is
+    invisible to customers and its inventory stays dark until someone who
+    actually runs the place says it's ready. Super Admins may toggle any
+    branch here; Branch Managers may only toggle their own.
+    """
+    if admin.role != AdminRole.SUPER_ADMIN and admin.branch_id != branch_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only change your own branch's status.",
+        )
+
+    branch = await _get_branch_or_404(db, branch_id)
+    branch.is_active = data.is_active
+    await db.commit()
+    await db.refresh(branch)
+    coverage = await branch_service.get_branch_coverage(db, branch.branch_id)
+    logger.info(
+        f"[admin] Branch {branch_id} status set to {data.is_active} by {admin.admin_id}"
+    )
+    return {
+        "success": True,
+        "data": _format_branch(branch, coverage),
+        "message": f"Branch {'activated' if data.is_active else 'deactivated'} successfully",
+    }

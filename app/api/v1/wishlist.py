@@ -14,6 +14,7 @@ from app.config.database import get_db
 from app.config.redis import get_redis
 from app.config.settings import settings
 from app.core.dependencies import get_current_user
+from app.core.media import media_url
 from app.schemas.cart import WishlistItemAdd
 from app.services import branch_service
 from app.services.product_service import ProductService
@@ -58,7 +59,7 @@ def format_wishlist_item(item, cashback_map: Optional[dict] = None) -> dict:
                 )
             ),
             "images": [
-                {"image_url": img.image_url, "is_primary": img.is_primary}
+                {"image_url": media_url(img.image_url), "is_primary": img.is_primary}
                 for img in (item.product.images or [])[:1]  # Just primary image
             ]
         }
@@ -68,7 +69,7 @@ def format_wishlist_item(item, cashback_map: Optional[dict] = None) -> dict:
         data["variant_name"] = item.variant.name
         data["variant_sku"] = item.variant.sku
         data["current_price"] = float(item.variant.price) if item.variant.price else None
-        data["variant_image"] = item.variant.image_url
+        data["variant_image"] = media_url(item.variant.image_url)
 
         # Calculate price drop
         if item.price_at_watch and item.variant.price:

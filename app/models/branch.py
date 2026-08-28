@@ -41,7 +41,9 @@ class Branch(Base):
         ForeignKey("admins.admin_id", ondelete="SET NULL"),
         nullable=True,
     )
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # New branches start inactive: a Super Admin creates the branch, but only
+    # its Branch Manager can bring it live (PATCH /admin/branches/{id}/status).
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

@@ -211,6 +211,11 @@ async def apply_coupon(
             code=coupon.code,
             discount_type=coupon.discount_type,
             discount_value=float(coupon.discount_value),
+            max_discount_amount=(
+                float(coupon.max_discount_amount)
+                if coupon.max_discount_amount is not None
+                else None
+            ),
         )
 
         return {

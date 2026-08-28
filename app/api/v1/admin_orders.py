@@ -12,7 +12,7 @@ under.
 
 Prefix "/admin/orders" is applied by app/api/v1/router.py.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -230,13 +230,16 @@ async def list_orders(
         )
     if from_date:
         try:
-            from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+            # tz-aware: Order.created_at is timestamptz, and a naive datetime
+            # here would silently compare as UTC regardless of what the admin
+            # meant (see Window in admin_analytics.py for the same pattern).
+            from_dt = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
             query = query.where(Order.created_at >= from_dt)
         except ValueError:
             pass
     if to_date:
         try:
-            to_dt = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
             query = query.where(Order.created_at < to_dt)
         except ValueError:
             pass
@@ -311,13 +314,16 @@ async def export_orders_csv(
         )
     if from_date:
         try:
-            from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+            # tz-aware: Order.created_at is timestamptz, and a naive datetime
+            # here would silently compare as UTC regardless of what the admin
+            # meant (see Window in admin_analytics.py for the same pattern).
+            from_dt = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
             query = query.where(Order.created_at >= from_dt)
         except ValueError:
             pass
     if to_date:
         try:
-            to_dt = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
             query = query.where(Order.created_at < to_dt)
         except ValueError:
             pass
@@ -416,13 +422,16 @@ async def export_orders_pdf(
         )
     if from_date:
         try:
-            from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+            # tz-aware: Order.created_at is timestamptz, and a naive datetime
+            # here would silently compare as UTC regardless of what the admin
+            # meant (see Window in admin_analytics.py for the same pattern).
+            from_dt = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
             query = query.where(Order.created_at >= from_dt)
         except ValueError:
             pass
     if to_date:
         try:
-            to_dt = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
             query = query.where(Order.created_at < to_dt)
         except ValueError:
             pass

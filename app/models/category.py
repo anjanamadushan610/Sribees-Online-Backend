@@ -3,7 +3,17 @@ Category SQLAlchemy Models
 """
 import uuid
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -53,3 +63,53 @@ class Category(Base):
 
     def __repr__(self):
         return f"<Category {self.name}>"
+
+
+class BranchCategory(Base):
+    """
+    Per-branch visibility toggle for a category.
+
+    Mirrors ``BranchInventory`` on the product side: every (category, branch)
+    pair gets a row, seeded eagerly whenever either side is created (see
+    ``admin_catalog.create_category`` / ``admin_branches.create_branch``).
+    New rows default to hidden — a brand new category or a brand new branch
+    starts dark until that branch's own manager turns it on. Existing pairs at
+    the time this table was introduced were backfilled active (migration 040)
+    so the live storefront did not go dark retroactively.
+    """
+
+    __tablename__ = "branch_categories"
+
+    branch_category_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    category_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("categories.category_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    branch_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("branches.branch_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    is_active = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        server_default="false",
+        comment="False = category hidden for this branch's customers, even if globally active",
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("category_id", "branch_id", name="uq_branch_category_category_branch"),
+        Index("idx_branch_category_branch_active", "branch_id", "is_active"),
+    )
+
+    category = relationship("Category", backref="branch_links")
+    branch = relationship("Branch", backref="category_links")
+
+    def __repr__(self):
+        return f"<BranchCategory category={self.category_id} branch={self.branch_id} active={self.is_active}>"

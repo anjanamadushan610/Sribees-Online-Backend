@@ -100,21 +100,6 @@ async def init_db() -> None:
             # Create all tables if they do not exist
             await conn.run_sync(Base.metadata.create_all)
 
-            # Ensure new columns exist on users table
-            result = await conn.execute(
-                text(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name = 'users' AND column_name = 'is_blocked'"
-                )
-            )
-            if result.first() is None:
-                logger.info("Adding is_blocked and blocked_reason columns to users table...")
-                await conn.execute(text("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN DEFAULT FALSE NOT NULL"))
-                await conn.execute(text("ALTER TABLE users ADD COLUMN blocked_reason TEXT NULL"))
-            else:
-                # Ensure database-level default exists for raw SQL migrations/seeds
-                await conn.execute(text("ALTER TABLE users ALTER COLUMN is_blocked SET DEFAULT FALSE"))
-
         logger.info("✅ PostgreSQL connected and tables initialized successfully")
 
         await _seed_admin_accounts()

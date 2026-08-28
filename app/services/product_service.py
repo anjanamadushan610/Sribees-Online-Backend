@@ -301,12 +301,16 @@ class ProductService:
             short_description_ta=data.short_description_ta,
             search_keywords=data.search_keywords,
             sku=data.sku,
-            price=data.price,
+            # Super Admin defines the catalog entry only — price, stock and
+            # cashback have no meaningful global value until a Branch Manager
+            # stocks the product into their branch (see BranchOverrideCreate).
+            price=Decimal("0"),
+            stock_quantity=0,
+            cashback_percentage=None,
             compare_at_price=data.compare_at_price,
             cost_price=data.cost_price,
             category_id=data.category_id,
             subcategory_id=data.subcategory_id,
-            stock_quantity=data.stock_quantity,
             low_stock_threshold=data.low_stock_threshold,
             weight=data.weight,
             weight_unit=data.weight_unit,

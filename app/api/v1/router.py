@@ -10,6 +10,7 @@ from app.api.v1 import (
     admin_analytics,
     admin_auth,
     admin_banners,
+    admin_branch_categories,
     admin_branches,
     admin_catalog,
     admin_coupons,
@@ -205,11 +206,20 @@ router.include_router(
     tags=["Admin Stock Transfers"],
 )
 
-# Admin Branch management (/admin/branches) — Super Admin only.
+# Admin Branch management (/admin/branches) — Super Admin only, except
+# listing (scoped) and status-toggle which Branch Managers may also reach.
 router.include_router(
     admin_branches.router,
     prefix="/admin/branches",
     tags=["Admin Branches"],
+)
+
+# Admin Branch Category visibility (/admin/branch-categories). Branch-scoped
+# via inject_branch_filter; restricted to super_admin/branch_manager.
+router.include_router(
+    admin_branch_categories.router,
+    prefix="/admin/branch-categories",
+    tags=["Admin Branch Categories"],
 )
 
 # Admin User management (/admin/users) — Super Admin only.

@@ -172,6 +172,17 @@ async def update_coupon(
             detail="Percentage discount cannot exceed 100",
         )
 
+    # Same rule CouponCreate enforces at creation time: a fixed discount can
+    # never exceed the order it applies to. A partial update can change either
+    # side without resending the other, so check the value the row *ends up*
+    # with, not just what this request happened to include.
+    new_min_order_value = fields.get("min_order_value", coupon.min_order_value)
+    if new_type_val == "fixed" and new_value is not None and new_min_order_value < new_value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="min_order_value must be greater than or equal to discount_value for fixed discounts",
+        )
+
     for key, value in fields.items():
         if key == "discount_type" and value is not None:
             coupon.discount_type = value.value

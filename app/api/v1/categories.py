@@ -1,23 +1,55 @@
 """
 Category API Endpoints
 """
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import get_current_admin
+from app.config.redis import get_redis
+from app.core.dependencies import get_current_admin, get_current_user_optional
 from app.core.media import media_url
 from app.schemas.category import (
     CategoryCreate,
     CategoryUpdate,
 )
+from app.services import branch_service
 from app.services.category_service import CategoryService
 from app.utils.i18n import localized, resolve_language
 
 # Prefix "/categories" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Categories"])
+
+
+async def _optional_branch_id(redis: Redis, request: Request, current_user):
+    """
+    Best-effort branch resolution for a customer request.
+
+    Mirrors the session-id convention in ``products._get_branch_context_for_request``
+    but never raises: a guest who has not picked a delivery address yet (or a
+    request with no device id) simply gets the unfiltered category list, the
+    same behaviour this endpoint always had. Once a branch IS known, categories
+    hidden for it (globally inactive, or not yet turned on by that branch's
+    manager) are excluded — see ``CategoryService.get_all``.
+    """
+    if current_user is not None:
+        session_id = str(current_user.user_id)
+    else:
+        device_id = request.headers.get("X-Device-Id") or request.headers.get("x-device-id")
+        if not device_id or not device_id.strip():
+            return None
+        session_id = f"guest:{device_id.strip()}"
+
+    context = await branch_service.get_branch_context(redis, session_id)
+    if context is None:
+        return None
+    try:
+        return UUID(context["branch_id"])
+    except (KeyError, ValueError, TypeError):
+        return None
 
 
 # ============================================================================
@@ -33,7 +65,9 @@ async def get_categories(
         False,
         description="Only categories with no parent — what the mobile home screen shows",
     ),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+    current_user=Depends(get_current_user_optional),
 ):
     """
     Get all categories.
@@ -46,14 +80,26 @@ async def get_categories(
 
     Names and descriptions come back in the caller's ``Accept-Language``
     (si/ta/en), falling back to English per field where no translation exists.
+
+    When the caller's delivery branch is already known (resolved the same way
+    product listings are), a category hidden for that branch is excluded —
+    see ``CategoryService.get_all``. Unresolved (no address picked yet) falls
+    back to the unfiltered list, same as before this existed.
     """
     try:
         lang = resolve_language(request.headers.get("accept-language"))
+        branch_id = None if include_inactive else await _optional_branch_id(
+            redis, request, current_user
+        )
 
         if hierarchical:
-            categories = await CategoryService.get_hierarchical(db, lang=lang)
+            categories = await CategoryService.get_hierarchical(
+                db, lang=lang, branch_id=branch_id
+            )
         else:
-            categories_raw = await CategoryService.get_all(db, include_inactive)
+            categories_raw = await CategoryService.get_all(
+                db, include_inactive, branch_id=branch_id
+            )
             if top_level_only:
                 categories_raw = [
                     c for c in categories_raw if not c.get("parent_category_id")

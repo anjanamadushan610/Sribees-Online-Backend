@@ -85,8 +85,11 @@ class ProductCreate(BaseModel):
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
     )
     sku: str = Field(..., min_length=1, max_length=100)
-    # gt, not ge: a 0.00 base price lists the item as free on the storefront.
-    price: Decimal = Field(..., gt=0)
+    # No price/stock_quantity/cashback_percentage here on purpose: the Super
+    # Admin defines the catalog entry only. A product carries no real price,
+    # stock or cashback rate until a Branch Manager stocks it into their own
+    # branch (POST /admin/inventory), which is the only place those values are
+    # ever set — see BranchOverrideCreate.
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     # Required: an uncategorised product is invisible to storefront/mobile
@@ -97,21 +100,11 @@ class ProductCreate(BaseModel):
         None,
         description="Sub-category — must be a child of category_id",
     )
-    stock_quantity: int = Field(0, ge=0)
     low_stock_threshold: int = Field(10, ge=0)
     weight: Optional[Decimal] = None
     weight_unit: str = "kg"
     is_active: bool = True
     is_featured: bool = False
-    cashback_percentage: Optional[float] = Field(
-        None,
-        ge=0,
-        le=100,
-        description=(
-            "Global cashback % for this product across all branches. "
-            "Null uses the platform rate; a branch can override it."
-        ),
-    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
 
@@ -133,10 +126,8 @@ class ProductUpdate(BaseModel):
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
     )
     sku: Optional[str] = Field(None, max_length=100)
-    # gt, not ge: a 0.00 base price lists the item as free on the storefront.
-    # Optional here (a partial update may not touch price at all), but a
-    # price explicitly sent must be a real one.
-    price: Optional[Decimal] = Field(None, gt=0)
+    # No price/stock_quantity/cashback_percentage — same reasoning as
+    # ProductCreate. Editing those happens per-branch, via the Inventory API.
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     category_id: Optional[UUID] = None
@@ -144,21 +135,11 @@ class ProductUpdate(BaseModel):
         None,
         description="Sub-category — must be a child of category_id",
     )
-    stock_quantity: Optional[int] = Field(None, ge=0)
     low_stock_threshold: Optional[int] = Field(None, ge=0)
     weight: Optional[Decimal] = None
     weight_unit: Optional[str] = None
     is_active: Optional[bool] = None
     is_featured: Optional[bool] = None
-    cashback_percentage: Optional[float] = Field(
-        None,
-        ge=0,
-        le=100,
-        description=(
-            "Global cashback % for this product across all branches. "
-            "Null uses the platform rate; a branch can override it."
-        ),
-    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
 
