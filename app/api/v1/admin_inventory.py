@@ -60,6 +60,9 @@ def _format_inventory_row(inv: BranchInventory, product: Product, branch: Branch
         "discount_percentage": inv.discount_percentage,
         "global_discount_percentage": product.discount_percentage,
         "effective_discount": effective["effective_discount"],
+        "cashback_percentage": inv.cashback_percentage,
+        "global_cashback_percentage": product.cashback_percentage,
+        "effective_cashback": effective["effective_cashback"],
         "is_on_sale": inv.is_on_sale,
         # Stock
         "stock_quantity": stock,

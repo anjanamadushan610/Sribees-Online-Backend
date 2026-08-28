@@ -38,6 +38,12 @@ class InventoryUpdateRequest(BaseModel):
         le=100,
         description="Local discount %. Null clears the override.",
     )
+    cashback_percentage: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Cashback % for this product in this branch. Null uses the platform rate.",
+    )
     is_on_sale: Optional[bool] = Field(None, description="Quick Sale flag for this branch")
     is_active: Optional[bool] = Field(
         None,
@@ -66,13 +72,24 @@ class BranchOverrideCreate(BaseModel):
         description="Super Admin only. Scoped admins always write to their own "
                     "branch; this field is ignored for them.",
     )
-    branch_price: Optional[Decimal] = Field(
-        None,
-        ge=0,
-        description="Local price. Omit to inherit the global product price.",
+    # Required, not a fallback-to-global override: the Super Admin no longer
+    # sets a real price/quantity/cashback on the global product, so the Branch
+    # Manager stocking it here is the ONLY place these values get set.
+    branch_price: Decimal = Field(
+        ...,
+        gt=0,
+        description="Price this branch sells the product at.",
     )
-    stock_quantity: int = Field(0, ge=0)
+    stock_quantity: int = Field(..., ge=0)
     low_stock_threshold: int = Field(10, ge=0)
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
+    cashback_percentage: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Cashback % for this product in this branch. Null uses the platform rate.",
+    )
     is_on_sale: bool = False
-    is_active: bool = True
+    # Defaults hidden: a newly-stocked product only goes live once the Branch
+    # Manager explicitly activates it (same rule as a newly-created branch).
+    is_active: bool = False
