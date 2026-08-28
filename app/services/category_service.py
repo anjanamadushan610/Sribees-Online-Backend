@@ -1,13 +1,14 @@
 """
 Category Service - Business Logic
 """
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.category import Category
+from app.models.branch import Branch
+from app.models.category import BranchCategory, Category
 from app.schemas.category import CategoryCreate, CategoryUpdate
 from app.utils.i18n import DEFAULT_LANGUAGE, localized
 
@@ -18,9 +19,19 @@ class CategoryService:
     @staticmethod
     async def get_all(
         db: AsyncSession,
-        include_inactive: bool = False
+        include_inactive: bool = False,
+        branch_id: Optional[UUID] = None,
     ) -> List[dict]:
-        """Get all categories with product counts."""
+        """
+        Get all categories with product counts.
+
+        *branch_id*, when given (and *include_inactive* is False), additionally
+        requires an active ``branch_categories`` row for that branch — a
+        category hidden from a branch (or not yet activated there) is excluded
+        from that branch's customers, mirroring branch_inventory for products.
+        Ignored when *include_inactive* is True (the admin "show me
+        everything" view has no branch context).
+        """
         query = (
             select(
                 Category,
@@ -33,6 +44,14 @@ class CategoryService:
 
         if not include_inactive:
             query = query.where(Category.is_active == True)
+            if branch_id is not None:
+                query = query.join(
+                    BranchCategory,
+                    and_(
+                        BranchCategory.category_id == Category.category_id,
+                        BranchCategory.branch_id == branch_id,
+                    ),
+                ).where(BranchCategory.is_active.is_(True))
 
         result = await db.execute(query)
         categories = result.all()
@@ -48,13 +67,22 @@ class CategoryService:
     @staticmethod
     async def get_all_simple(
         db: AsyncSession,
-        include_inactive: bool = False
+        include_inactive: bool = False,
+        branch_id: Optional[UUID] = None,
     ) -> List[Category]:
         """Get all categories without product counts (simpler query)."""
         query = select(Category).order_by(Category.name)
 
         if not include_inactive:
             query = query.where(Category.is_active == True)
+            if branch_id is not None:
+                query = query.join(
+                    BranchCategory,
+                    and_(
+                        BranchCategory.category_id == Category.category_id,
+                        BranchCategory.branch_id == branch_id,
+                    ),
+                ).where(BranchCategory.is_active.is_(True))
 
         result = await db.execute(query)
         return result.scalars().all()
@@ -63,14 +91,17 @@ class CategoryService:
     async def get_hierarchical(
         db: AsyncSession,
         lang: str = DEFAULT_LANGUAGE,
+        branch_id: Optional[UUID] = None,
     ) -> List[dict]:
         """
         Get categories in hierarchical structure (parent-child).
 
         *lang* selects the language for the customer-visible name/description,
         falling back to English per field where no translation exists.
+        *branch_id* narrows to that branch's active categories — see
+        ``get_all``.
         """
-        categories = await CategoryService.get_all_simple(db)
+        categories = await CategoryService.get_all_simple(db, branch_id=branch_id)
 
         # Build hierarchy
         category_map = {}
@@ -141,7 +172,13 @@ class CategoryService:
         db: AsyncSession,
         data: CategoryCreate
     ) -> Category:
-        """Create a new category."""
+        """
+        Create a new category.
+
+        Also seeds a hidden (``is_active=False``) ``branch_categories`` row for
+        every existing branch — the category exists platform-wide immediately,
+        but each branch's own manager decides when it goes live there.
+        """
         category = Category(
             name=data.name,
             name_si=data.name_si,
@@ -156,10 +193,97 @@ class CategoryService:
         )
 
         db.add(category)
+        # Flush (not commit) so the category has a PK before branch rows
+        # referencing it are written, then commit once so they move together.
+        await db.flush()
+        await CategoryService._seed_branch_rows(db, category.category_id)
         await db.commit()
         await db.refresh(category)
 
         return category
+
+    @staticmethod
+    async def _seed_branch_rows(db: AsyncSession, category_id: UUID) -> None:
+        """Create a hidden branch_categories row for *category_id* in every branch."""
+        branch_ids = (await db.execute(select(Branch.branch_id))).scalars().all()
+        if branch_ids:
+            db.add_all([
+                BranchCategory(category_id=category_id, branch_id=bid, is_active=False)
+                for bid in branch_ids
+            ])
+
+    @staticmethod
+    async def seed_for_new_branch(db: AsyncSession, branch_id: UUID) -> None:
+        """
+        Create a hidden branch_categories row for *branch_id* against every
+        existing category — the counterpart to ``_seed_branch_rows``, called
+        when a new branch is created so the (category, branch) matrix stays
+        fully populated in both directions.
+        """
+        category_ids = (await db.execute(select(Category.category_id))).scalars().all()
+        if category_ids:
+            db.add_all([
+                BranchCategory(category_id=cid, branch_id=branch_id, is_active=False)
+                for cid in category_ids
+            ])
+
+    @staticmethod
+    async def get_branch_category(
+        db: AsyncSession,
+        category_id: UUID,
+        branch_id: UUID,
+    ) -> Optional[BranchCategory]:
+        """Fetch the branch_categories row for a (category, branch) pair."""
+        result = await db.execute(
+            select(BranchCategory).where(
+                BranchCategory.category_id == category_id,
+                BranchCategory.branch_id == branch_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def list_for_branch(
+        db: AsyncSession,
+        branch_id: UUID,
+    ) -> List[Tuple[Category, bool]]:
+        """
+        Every category paired with its ``is_active`` status for *branch_id* —
+        including categories globally inactive or not yet activated here, so
+        a Branch Manager can see (and turn on) everything, not just what
+        already shows to customers.
+        """
+        result = await db.execute(
+            select(Category, BranchCategory.is_active)
+            .outerjoin(
+                BranchCategory,
+                and_(
+                    BranchCategory.category_id == Category.category_id,
+                    BranchCategory.branch_id == branch_id,
+                ),
+            )
+            .order_by(Category.name)
+        )
+        # A missing row (category created before this branch existed, in the
+        # narrow window before seeding runs) reads as hidden, not active.
+        return [(cat, bool(active)) for cat, active in result.all()]
+
+    @staticmethod
+    async def set_branch_status(
+        db: AsyncSession,
+        category_id: UUID,
+        branch_id: UUID,
+        is_active: bool,
+    ) -> BranchCategory:
+        """Activate/deactivate a category for one branch (upsert)."""
+        row = await CategoryService.get_branch_category(db, category_id, branch_id)
+        if row is None:
+            row = BranchCategory(category_id=category_id, branch_id=branch_id)
+            db.add(row)
+        row.is_active = is_active
+        await db.commit()
+        await db.refresh(row)
+        return row
 
     @staticmethod
     async def update(
