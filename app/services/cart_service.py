@@ -209,7 +209,8 @@ class CartService:
         user_id: str,
         code: str,
         discount_type: str,
-        discount_value: float
+        discount_value: float,
+        max_discount_amount: Optional[float] = None
     ) -> Dict[str, Any]:
         """Apply coupon to cart."""
         cart = await CartService.get_cart(user_id)
@@ -220,11 +221,16 @@ class CartService:
             discount_amount = subtotal * (discount_value / 100)
         else:
             discount_amount = min(discount_value, subtotal)
+        # Same cap PricingService applies at quote/checkout — without it this
+        # preview figure disagrees with cart["totals"]["discount"] below.
+        if max_discount_amount is not None:
+            discount_amount = min(discount_amount, max_discount_amount)
 
         cart["coupon"] = {
             "code": code,
             "discount_type": discount_type,
             "discount_value": discount_value,
+            "max_discount_amount": max_discount_amount,
             "discount_amount": round(discount_amount, 2)
         }
 

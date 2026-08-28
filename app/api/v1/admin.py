@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.database import get_db
-from app.core.dependencies import get_current_admin
+from app.core.dependencies import get_current_admin, require_roles
 from app.models.branch import Branch
 from app.models.category import Category
 from app.models.order import Order, OrderStatus, PaymentStatus
@@ -566,7 +566,11 @@ async def get_customer_orders(
         raise HTTPException(status_code=500, detail="Failed to get customer orders")
 
 
-@router.put("/customers/{user_id}", response_model=dict)
+@router.put(
+    "/customers/{user_id}",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin", "customer_support"))],
+)
 async def update_customer(
     user_id: str,
     payload: UpdateCustomerPayload,
@@ -637,7 +641,11 @@ async def update_customer(
         )
 
 
-@router.post("/customers/{user_id}/block", response_model=dict)
+@router.post(
+    "/customers/{user_id}/block",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin", "customer_support"))],
+)
 async def block_customer(
     user_id: str,
     payload: BlockCustomerPayload,
@@ -688,7 +696,11 @@ async def block_customer(
         )
 
 
-@router.post("/customers/{user_id}/unblock", response_model=dict)
+@router.post(
+    "/customers/{user_id}/unblock",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin", "customer_support"))],
+)
 async def unblock_customer(
     user_id: str,
     db: AsyncSession = Depends(get_db),
@@ -731,7 +743,11 @@ async def unblock_customer(
         )
 
 
-@router.delete("/customers/{user_id}", response_model=dict)
+@router.delete(
+    "/customers/{user_id}",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def delete_customer(
     user_id: str,
     db: AsyncSession = Depends(get_db),

@@ -116,7 +116,7 @@ class PricingService:
 
     @staticmethod
     def _discount(subtotal: Decimal, coupon: Optional[Dict[str, Any]]) -> Decimal:
-        """Discount from an applied coupon (percentage or fixed)."""
+        """Discount from an applied coupon (percentage or fixed), capped by max_discount_amount."""
         if not coupon:
             return Decimal("0")
         discount_type = coupon.get("discount_type")
@@ -125,6 +125,12 @@ class PricingService:
             discount = subtotal * (value / Decimal("100"))
         else:  # fixed
             discount = min(value, subtotal)
+        # A percentage coupon has no natural ceiling — this is what stops a
+        # "50% off" promo from handing out an unbounded discount on a large
+        # cart. Admin-configured; None means uncapped.
+        max_discount = coupon.get("max_discount_amount")
+        if max_discount is not None:
+            discount = min(discount, Decimal(str(max_discount)))
         return _money(discount)
 
     @staticmethod

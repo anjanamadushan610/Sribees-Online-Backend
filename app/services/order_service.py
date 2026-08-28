@@ -195,6 +195,11 @@ class OrderService:
                 "code": coupon_row.code,
                 "discount_type": coupon_row.discount_type,
                 "discount_value": float(coupon_row.discount_value),
+                "max_discount_amount": (
+                    float(coupon_row.max_discount_amount)
+                    if coupon_row.max_discount_amount is not None
+                    else None
+                ),
             }
 
         # Authoritative totals — same PricingService used by POST /orders/quote,
