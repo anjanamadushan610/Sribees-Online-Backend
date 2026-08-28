@@ -260,6 +260,7 @@ class OrderService:
             origin=origin,
             destination=destination,
             payment_method=to_courier_payment_method(data.payment_method),
+            wallet_amount=data.wallet_amount,
         )
 
         wallet_deduction = breakdown.wallet_deduction

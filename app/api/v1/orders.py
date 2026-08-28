@@ -403,6 +403,7 @@ async def quote_order(
             origin=origin,
             destination=destination,
             payment_method=to_courier_payment_method(data.payment_method),
+            wallet_amount=data.wallet_amount,
         )
 
         item_count = sum(i.get("quantity", 0) for i in cart.get("items", []))

@@ -169,6 +169,7 @@ class PricingService:
         origin: Optional[dict] = None,
         destination: Optional[dict] = None,
         payment_method: str = "cod",
+        wallet_amount: Optional[Decimal] = None,
     ) -> PriceBreakdown:
         """
         Build the authoritative price breakdown.
@@ -180,6 +181,11 @@ class PricingService:
             coupon: Applied coupon dict (``discount_type``/``discount_value``).
             use_wallet: Whether to apply the wallet balance to the total.
             wallet_balance: Available wallet balance (ignored if not use_wallet).
+            wallet_amount: Customer-chosen amount to deduct instead of the full
+                balance (ignored if not use_wallet). The server clamps this to
+                ``[0, min(wallet_balance, gross)]`` regardless of what the
+                client sends — a negative or over-balance value never reaches
+                the order, closing the gap a tampered request could exploit.
             delivery_fee: Flat delivery fee override (from platform settings),
                 used as the fallback when the courier is unavailable or no
                 origin/destination is resolvable yet. Falls back to the static
@@ -228,7 +234,15 @@ class PricingService:
 
         wallet_deduction = Decimal("0")
         if use_wallet and wallet_balance and wallet_balance > 0:
-            wallet_deduction = _money(min(_money(wallet_balance), gross))
+            max_deduction = _money(min(_money(wallet_balance), gross))
+            if wallet_amount is not None:
+                # Clamp, never trust: a client-supplied amount outside
+                # [0, max_deduction] is capped rather than rejected, so a
+                # stale quote (balance dropped since the field was typed)
+                # still produces a sane, safe order instead of an error.
+                wallet_deduction = _money(max(Decimal("0"), min(Decimal(str(wallet_amount)), max_deduction)))
+            else:
+                wallet_deduction = max_deduction
 
         total = _money(gross - wallet_deduction)
 

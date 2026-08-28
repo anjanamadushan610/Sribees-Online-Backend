@@ -135,8 +135,19 @@ class CreateOrderRequest(BaseModel):
     # COD, WALLET, or one of the Marx IPG gateway methods (MARX_OTHER/MARX_AMEX/MARX_BANK).
     payment_method: str = "COD"
     coupon_code: Optional[str] = None
-    # When true, the available wallet balance is applied to reduce the total.
+    # When true, the wallet is applied to reduce the total. Defaults to the
+    # full available balance (capped at the order total); wallet_amount
+    # narrows that to a smaller customer-chosen amount — see
+    # PricingService.compute_breakdown for the clamping/validation.
     use_wallet: bool = False
+    wallet_amount: Optional[Decimal] = Field(
+        None,
+        ge=0,
+        description=(
+            "Custom amount to deduct from the wallet, ignored unless "
+            "use_wallet is true. Omit to use the full available balance."
+        ),
+    )
     notes: Optional[str] = None
 
     @field_validator("payment_method")
@@ -163,6 +174,11 @@ class QuoteOrderRequest(BaseModel):
     """
     delivery_address_id: Optional[str] = None
     use_wallet: bool = False
+    wallet_amount: Optional[Decimal] = Field(
+        None,
+        ge=0,
+        description="Custom wallet amount to preview; omit to preview the full available balance.",
+    )
     coupon_code: Optional[str] = None
     # Selected payment method, so the courier's COD-collection fee (if any)
     # prices correctly into the preview. Defaults to COD when omitted.
