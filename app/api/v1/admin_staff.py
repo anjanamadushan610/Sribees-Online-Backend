@@ -56,15 +56,16 @@ async def _staff_out(db: AsyncSession, admin: Admin, branch_name: str | None) ->
 
 
 async def _get_own_staff_or_404(db: AsyncSession, current_admin: Admin, admin_id: UUID) -> Admin:
-    """404s if the id doesn't exist or isn't a staff row; 403s if it's not
-    this caller's own staff account."""
+    """404s if the id doesn't exist or isn't a staff row; 403s if caller is not Super Admin
+    and staff's assigned branch doesn't match caller's branch."""
     target = (
         await db.execute(select(Admin).where(Admin.admin_id == admin_id, Admin.role == AdminRole.STAFF))
     ).scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Staff account not found")
-    if target.parent_admin_id != current_admin.admin_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your staff account")
+    if current_admin.role != AdminRole.SUPER_ADMIN:
+        if current_admin.branch_id is None or target.branch_id != current_admin.branch_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a staff account in your branch")
     return target
 
 
@@ -73,16 +74,16 @@ async def list_staff(
     current_admin: Admin = Depends(require_base_role_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Every admin (including Super Admin) sees only the staff accounts they
-    personally created."""
-    query = (
-        select(Admin)
-        .where(
-            Admin.role == AdminRole.STAFF,
-            Admin.parent_admin_id == current_admin.admin_id,
-        )
-        .order_by(Admin.created_at.desc())
-    )
+    """Super Admin sees every staff account network-wide; Branch Managers see all staff
+    assigned to their own branch."""
+    query = select(Admin).where(Admin.role == AdminRole.STAFF).order_by(Admin.created_at.desc())
+    if current_admin.role != AdminRole.SUPER_ADMIN:
+        if current_admin.branch_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Your account is not assigned to a branch.",
+            )
+        query = query.where(Admin.branch_id == current_admin.branch_id)
 
     staff = (await db.execute(query)).scalars().all()
     names = await _branch_name_map(db, {a.branch_id for a in staff if a.branch_id})
