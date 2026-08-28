@@ -193,16 +193,30 @@ async def sweep(db: AsyncSession) -> Tuple[int, int]:
     Reconciliation poll (contract section 7a). Returns (rows_seen, rows_applied).
 
     Pages ``GET /ecommerce/shipments?updated_since=<cursor>`` and applies every
-    row to the matching order. The cursor is only advanced on a clean pass:
-    a partial failure re-reads the same window next time, which is safe
-    because applying a payload is idempotent, and is much better than skipping
-    a ``delivered`` we never saw.
+    row to the matching order. The cursor only advances on a clean pass: a
+    partial failure re-reads the same window next time, which is safe because
+    applying a payload is idempotent, and is much better than skipping a
+    ``delivered`` we never saw.
 
-    The cursor is rewound by a minute on each run. SribeesExpress timestamps
-    in UTC and our clock is not theirs; a small overlap costs one extra page
-    and closes the window where a shipment updated during the previous request
-    would be missed forever.
+    **The cursor is our own start-of-run timestamp, not a value read from the
+    rows.** It has to be: ``updated_since`` filters on a field SribeesExpress
+    never actually serializes — no ``updated_at`` appears anywhere in a
+    shipment response (see docs/SRIBEESEXPRESS_OPEN_ITEMS.md section 2, which
+    asks them to add it). ``created_at`` is not a substitute; a shipment booked
+    Monday and delivered Friday would drag the cursor back to Monday on every
+    sweep, so it would never advance at all.
+
+    Taking the time *before* the first request, rather than after the last, is
+    what makes this safe: anything SribeesExpress updates while the sweep is
+    running is stamped at or after that instant, so the next run still sees it.
+    The extra minute of rewind covers clock skew between their host and ours.
+    Both are mitigations for the missing field, not a fix — a shipment updated
+    inside the skew window is still re-read rather than missed, which is the
+    direction we want to fail in.
     """
+    # Captured BEFORE the first request -- see the docstring. Using the time
+    # the sweep *finished* would silently skip anything updated mid-run.
+    started_at = datetime.now(timezone.utc)
     cursor = await _get_cursor(db)
     since = (cursor - timedelta(minutes=1)) if cursor else None
 
@@ -210,7 +224,6 @@ async def sweep(db: AsyncSession) -> Tuple[int, int]:
     applied = 0
     offset = 0
     limit = settings.courier_sync_batch_limit
-    high_water = cursor
 
     try:
         while True:
@@ -238,9 +251,6 @@ async def sweep(db: AsyncSession) -> Tuple[int, int]:
                     continue
                 if await apply_shipment_payload(db, order, row, commit=False):
                     applied += 1
-                row_at = _parse_dt(row.get("updated_at") or row.get("at"))
-                if row_at and (high_water is None or row_at > high_water):
-                    high_water = row_at
 
             await db.commit()
             if len(rows) < limit:
@@ -252,6 +262,6 @@ async def sweep(db: AsyncSession) -> Tuple[int, int]:
         await _set_cursor(db, synced_at=None, error=str(exc)[:500])
         return seen, applied
 
-    await _set_cursor(db, synced_at=high_water or datetime.now(timezone.utc), error=None)
+    await _set_cursor(db, synced_at=started_at, error=None)
     logger.info(f"Courier reconciliation sweep: {seen} shipment(s) seen, {applied} applied")
     return seen, applied

@@ -261,15 +261,6 @@ class Settings(BaseSettings):
         default=3.0,
         description="Per-request timeout. One retry on timeout/5xx, never on 4xx.",
     )
-    courier_handover_code_for_cod: bool = Field(
-        default=False,
-        description=(
-            "Send handover_code on COD bookings too. OFF because SribeesExpress currently "
-            "rejects a code on a COD shipment (contract section 7: 'prepaid orders only') -- "
-            "flip to True only once they confirm they accept it. See "
-            "docs/SRIBEESEXPRESS_INTEGRATION_GAPS.md section 14."
-        ),
-    )
     courier_sync_batch_limit: int = Field(
         default=100,
         description="Page size for the GET /ecommerce/shipments reconciliation sweep (contract section 7a).",

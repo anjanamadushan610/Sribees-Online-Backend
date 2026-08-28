@@ -2,12 +2,13 @@
 Shipments, pickup locations and webhook endpoints — contract sections 7, 7a,
 8, 8a, 9, 10.1 and 12.
 
-Plus one mock-only test harness, ``POST .../simulate-delivery``, which drives
-"the rider entered code X at the door" and pushes a properly **HMAC-signed**
-``shipment.status_changed`` back into the real backend. Signing it for real is
-the point: an unsigned convenience path would let the backend's signature
-verification rot untested, and that verification is the only thing standing
-between the orders table and the open internet.
+Plus one mock-only test harness, ``POST .../_advance``, which drives a
+shipment to any status -- including "the rider entered code X at the door" --
+and pushes a properly **HMAC-signed** ``shipment.status_changed`` back into
+the real backend. Signing it for real is the point: an unsigned convenience
+path would let the backend's signature verification rot untested, and that
+verification is the only thing standing between the orders table and the open
+internet.
 """
 import hashlib
 import hmac
@@ -91,7 +92,13 @@ def _shipment_response(s: dict) -> dict:
         "requested_delivery_window": s.get("requested_delivery_window"),
         "handling": s.get("handling") or [],
         "created_at": s["created_at"],
-        "updated_at": s["updated_at"],
+        # NOTE: `updated_at` is deliberately NOT serialized, because the real
+        # contract does not serialize it either -- `updated_since` (section
+        # 7a) filters on a field that never appears in any response. It is
+        # tracked internally here purely so that filter can work. A mock more
+        # generous than production would hide the exact bug we have reported
+        # (SRIBEESEXPRESS_OPEN_ITEMS.md section 2); when they add the field,
+        # add it here too.
         "tracking_url": f"https://mock-courier.local/track?waybill={s['shipment_id']}",
     }
 

@@ -63,26 +63,16 @@ def test_prepaid_orders_are_always_code_eligible():
         assert is_code_eligible(_FakeOrder(method)) is True
 
 
-def test_cod_orders_are_not_code_eligible_by_default(monkeypatch):
+def test_cod_orders_are_never_code_eligible():
     """
-    SribeesExpress rejects a handover code on a COD shipment today (contract
-    section 7). Sending one would 400 the whole booking, so the default must
-    stay off -- see docs/SRIBEESEXPRESS_INTEGRATION_GAPS.md section 14.
+    SribeesExpress rejects a handover code on a COD shipment (contract section
+    7) -- sending one would 400 the whole booking, not just skip the code.
     """
-    monkeypatch.setattr(settings, "courier_handover_code_for_cod", False, raising=False)
     assert is_code_eligible(_FakeOrder(PaymentMethodEnum.COD.value)) is False
 
 
-def test_cod_becomes_code_eligible_behind_the_flag(monkeypatch):
-    """The day SribeesExpress accepts it, one setting is the whole change."""
-    monkeypatch.setattr(settings, "courier_handover_code_for_cod", True, raising=False)
-    assert is_code_eligible(_FakeOrder(PaymentMethodEnum.COD.value)) is True
-
-
 @pytest.mark.asyncio
-async def test_generate_for_order_is_a_noop_for_ineligible_orders(monkeypatch):
-    monkeypatch.setattr(settings, "courier_handover_code_for_cod", False, raising=False)
-
+async def test_generate_for_order_is_a_noop_for_cod():
     class _Order(_FakeOrder):
         delivery_verification_code = None
         delivery_verification_status = "not_required"

@@ -14,14 +14,12 @@ Redis-TTL'd: the code must survive from "payment confirmed" — possibly hours
 before dispatch — until actual handover, and a 3-minute OTP lifetime is wrong
 for that.
 
-**COD is the open gap.** SribeesExpress currently accepts a handover code on
-**prepaid shipments only** (contract section 7: "never send this for a cod
-order"), on the reasoning that cash in hand is its own proof. It is not proof
-that the *right* customer received the parcel, and it leaves us with no
-evidence in a dispute — see ``docs/SRIBEESEXPRESS_INTEGRATION_GAPS.md``
-section 14. The code path here is already COD-capable and gated behind
-``settings.courier_handover_code_for_cod``; flip that on the day they accept
-it, and no other change is needed.
+**Prepaid orders only.** SribeesExpress accepts a handover code on prepaid
+shipments and rejects one on a COD shipment (contract section 7: "never send
+this for a cod order"), on the reasoning that a rider collecting cash in hand
+is its own proof. We are not asking them to change that. A COD parcel is
+handed over on the cash exchange alone, and ``cod.collected`` on the delivered
+webhook is what records it.
 """
 import secrets
 from datetime import datetime, timezone
@@ -42,14 +40,12 @@ MAX_CODE_DIGITS = 6
 
 def is_code_eligible(order: Order) -> bool:
     """
-    Whether this order should carry a handover code.
+    Whether this order should carry a handover code: prepaid yes, COD no.
 
-    Prepaid always. COD only once SribeesExpress accepts one — see the module
-    docstring; sending a code on a COD shipment today is a documented ``400``.
+    Not a preference -- SribeesExpress rejects a code on a COD shipment with a
+    ``400``, so sending one would fail the whole booking (contract section 7).
     """
-    if order.payment_method == PaymentMethodEnum.COD.value:
-        return settings.courier_handover_code_for_cod
-    return True
+    return order.payment_method != PaymentMethodEnum.COD.value
 
 
 class DeliveryVerificationService:
