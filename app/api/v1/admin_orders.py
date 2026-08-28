@@ -26,9 +26,7 @@ from sqlalchemy.orm import selectinload
 from app.config.database import get_db
 from app.core.dependencies import (
     BranchScope,
-    get_current_admin,
     inject_branch_filter,
-    require_roles,
     require_permission,
 )
 from app.models.branch import Branch

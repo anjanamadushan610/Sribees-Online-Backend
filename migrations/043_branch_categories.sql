@@ -27,6 +27,15 @@ CREATE TABLE IF NOT EXISTS branch_categories (
 CREATE INDEX IF NOT EXISTS idx_branch_category_branch_active ON branch_categories(branch_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_branch_category_category ON branch_categories(category_id);
 
+-- Same trap as migration 037 (see its comment block): SQLAlchemy create_all()
+-- builds the table with the PK default defined Python-side (default=uuid4),
+-- which puts NO DEFAULT on the column itself. CREATE TABLE IF NOT EXISTS then
+-- skips the DDL above (table already exists), so the DEFAULT never lands, and
+-- the INSERT below — which omits branch_category_id — fails with
+-- "null value ... violates not-null constraint". ALTER ... SET DEFAULT is
+-- idempotent and fixes both fresh and pre-existing databases.
+ALTER TABLE branch_categories ALTER COLUMN branch_category_id SET DEFAULT gen_random_uuid();
+
 -- Backfill every existing (category, branch) pair as ACTIVE — preserves
 -- today's live storefront. New rows created going forward default to FALSE.
 INSERT INTO branch_categories (category_id, branch_id, is_active)
