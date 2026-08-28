@@ -262,7 +262,8 @@ def require_roles(*allowed_roles: str):
     async def role_checker(
         admin: Annotated[dict, Depends(get_current_admin)],
     ) -> dict:
-        if admin.role not in allowed_roles:
+        role_str = admin.role.value if hasattr(admin.role, "value") else str(admin.role)
+        if role_str not in allowed_roles:
             raise InsufficientPermissionsError(
                 required_roles=list(allowed_roles),
                 message=f"This action requires one of these roles: {', '.join(allowed_roles)}",

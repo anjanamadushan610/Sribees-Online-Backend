@@ -139,9 +139,13 @@ async def create_admin_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="An admin with this email already exists",
         )
+    role = AdminRole(data.role.value if hasattr(data.role, "value") else data.role)
+    if role.value not in {"super_admin", "customer_support"} and data.branch_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A branch assignment is required for the '{role.value}' role.",
+        )
     await _validate_branch(db, data.branch_id)
-
-    role = AdminRole(data.role.value)
     admin = Admin(
         admin_id=uuid4(),
         email=data.email.lower(),
