@@ -57,13 +57,13 @@ async def _staff_out(db: AsyncSession, admin: Admin, branch_name: str | None) ->
 
 async def _get_own_staff_or_404(db: AsyncSession, current_admin: Admin, admin_id: UUID) -> Admin:
     """404s if the id doesn't exist or isn't a staff row; 403s if it's not
-    this caller's own staff (Super Admin may act on any staff account)."""
+    this caller's own staff account."""
     target = (
         await db.execute(select(Admin).where(Admin.admin_id == admin_id, Admin.role == AdminRole.STAFF))
     ).scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Staff account not found")
-    if current_admin.role != AdminRole.SUPER_ADMIN and target.parent_admin_id != current_admin.admin_id:
+    if target.parent_admin_id != current_admin.admin_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your staff account")
     return target
 
@@ -73,11 +73,16 @@ async def list_staff(
     current_admin: Admin = Depends(require_base_role_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Super Admin sees every staff account network-wide; everyone else sees
-    only the staff they personally created."""
-    query = select(Admin).where(Admin.role == AdminRole.STAFF).order_by(Admin.created_at.desc())
-    if current_admin.role != AdminRole.SUPER_ADMIN:
-        query = query.where(Admin.parent_admin_id == current_admin.admin_id)
+    """Every admin (including Super Admin) sees only the staff accounts they
+    personally created."""
+    query = (
+        select(Admin)
+        .where(
+            Admin.role == AdminRole.STAFF,
+            Admin.parent_admin_id == current_admin.admin_id,
+        )
+        .order_by(Admin.created_at.desc())
+    )
 
     staff = (await db.execute(query)).scalars().all()
     names = await _branch_name_map(db, {a.branch_id for a in staff if a.branch_id})
