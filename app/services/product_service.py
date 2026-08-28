@@ -330,10 +330,25 @@ class ProductService:
     async def update(
         db: AsyncSession,
         product: Product,
-        data: ProductUpdate
+        data: ProductUpdate,
+        exclude: Optional[set] = None,
     ) -> Product:
-        """Update an existing product."""
+        """
+        Update an existing product.
+
+        *exclude* drops fields from the write even though the caller supplied
+        them — for a field the router redirected elsewhere (see
+        admin_catalog.update_product's branch-scoped is_active handling).
+        Reassigning ``data.is_active = None`` in the caller does NOT achieve
+        this: Pydantic's ``exclude_unset`` tracks whether a field was ever
+        supplied, not its current value, so an explicitly-provided field stays
+        in ``model_dump(exclude_unset=True)`` as ``None`` even after being
+        overwritten — silently nulling the column instead of leaving it alone.
+        """
         update_data = data.model_dump(exclude_unset=True)
+        if exclude:
+            for key in exclude:
+                update_data.pop(key, None)
 
         for field, value in update_data.items():
             setattr(product, field, value)

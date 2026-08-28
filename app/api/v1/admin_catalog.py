@@ -657,8 +657,17 @@ async def update_product(
         )
 
     # Branch Manager / Staff active status toggle isolation:
-    # Non-super admin updating is_active sets BranchInventory.is_active for their branch only.
-    if data.is_active is not None and current_admin.role != AdminRole.SUPER_ADMIN:
+    # Non-super admin updating is_active sets BranchInventory.is_active for
+    # their branch only. `exclude={"is_active"}` below is what actually keeps
+    # this off the global product — reassigning data.is_active to None here
+    # does NOT remove it from the update (see ProductService.update's
+    # docstring); a bare reassignment previously let this silently null out
+    # the product's GLOBAL is_active on every scoped-admin toggle, hiding it
+    # from every branch instead of just the caller's own.
+    redirect_active_to_branch = (
+        data.is_active is not None and current_admin.role != AdminRole.SUPER_ADMIN
+    )
+    if redirect_active_to_branch:
         if scope.branch_id is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -670,7 +679,6 @@ async def update_product(
             branch_id=scope.branch_id,
             is_active=data.is_active,
         )
-        data.is_active = None
 
     if data.slug and data.slug != product.slug:
         existing = await ProductService.get_by_slug(db, data.slug, include_inactive=True)
@@ -714,7 +722,10 @@ async def update_product(
             )
 
     try:
-        updated = await ProductService.update(db, product, data)
+        updated = await ProductService.update(
+            db, product, data,
+            exclude={"is_active"} if redirect_active_to_branch else None,
+        )
         updated = await ProductService.get_by_id(db, updated.product_id, include_inactive=True)
         logger.info(f"[admin] Product updated: {updated.product_id}")
         return {
