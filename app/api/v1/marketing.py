@@ -16,15 +16,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import require_roles
+from app.core.dependencies import require_permission
 from app.schemas.product import BranchInventoryUpdateRequest
 from app.services.product_service import ProductService
 
 router = APIRouter()
 
-RequireMarketingManager = Depends(
-    require_roles("super_admin", "branch_manager", "marketing_manager")
-)
+RequireMarketingRead = Depends(require_permission("marketing", "read"))
+RequireMarketingUpdate = Depends(require_permission("marketing", "update"))
 
 
 # ============================================================================
@@ -145,7 +144,7 @@ async def list_marketing_products(
         None, description="Super Admin only: which branch to list"
     ),
     db: AsyncSession = Depends(get_db),
-    admin=RequireMarketingManager,
+    admin=RequireMarketingRead,
 ):
     resolved_branch = _resolve_branch_id(admin, branch_id)
     offset = (page - 1) * limit
@@ -195,7 +194,7 @@ async def update_branch_inventory(
         None, description="Super Admin only: which branch to update"
     ),
     db: AsyncSession = Depends(get_db),
-    admin=RequireMarketingManager,
+    admin=RequireMarketingUpdate,
 ):
     branch_id = _resolve_branch_id(admin, branch_id)
 
@@ -244,7 +243,7 @@ async def preview_quick_sale(
         None, description="Super Admin only: which branch to preview"
     ),
     db: AsyncSession = Depends(get_db),
-    admin=RequireMarketingManager,
+    admin=RequireMarketingRead,
 ):
     branch_id = _resolve_branch_id(admin, branch_id)
 

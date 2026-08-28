@@ -18,15 +18,15 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import BranchScope, inject_branch_filter, require_roles
+from app.core.dependencies import BranchScope, inject_branch_filter, require_permission
 from app.models.branch import Branch
 from app.models.product import BranchInventory, Product
 from app.schemas.inventory import BranchOverrideCreate, InventoryUpdateRequest
 from app.services.product_service import ProductService
 
-# Stock management is limited to Super Admins, Branch Managers and Inventory Managers.
+# Allow any admin (or staff) holding inventory:read; writes additionally need inventory:update.
 router = APIRouter(
-    dependencies=[Depends(require_roles("super_admin", "branch_manager", "inventory_manager"))],
+    dependencies=[Depends(require_permission("inventory", "read"))],
     tags=["Admin Inventory"],
 )
 
@@ -182,7 +182,8 @@ async def list_unstocked_catalog(
     }
 
 
-@router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=dict, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("inventory", "update"))])
 async def stock_product_in_branch(
     body: BranchOverrideCreate,
     db: AsyncSession = Depends(get_db),
@@ -243,7 +244,8 @@ async def stock_product_in_branch(
     }
 
 
-@router.put("/{inventory_id}", response_model=dict)
+@router.put("/{inventory_id}", response_model=dict,
+            dependencies=[Depends(require_permission("inventory", "update"))])
 async def update_inventory(
     inventory_id: UUID,
     body: InventoryUpdateRequest,

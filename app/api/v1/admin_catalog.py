@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.products import format_product
 from app.config.database import get_db
 from app.config.settings import settings
-from app.core.dependencies import require_roles
+from app.core.dependencies import require_permission
 from app.core.media import media_path, media_url
 from app.schemas.category import CategoryCreate, CategoryUpdate
 from app.schemas.product import (
@@ -49,9 +49,10 @@ from app.services.keyword_suggestion_service import suggest_search_keywords
 from app.services.product_service import ProductService
 from app.services.storage import StorageError, get_storage
 
-# Catalog management is limited to Super Admins and Inventory Managers.
+# Any admin (or staff) with products:read can browse the catalog;
+# write routes add granular create/update/delete checks per-route.
 router = APIRouter(
-    dependencies=[Depends(require_roles("super_admin", "inventory_manager"))],
+    dependencies=[Depends(require_permission("products", "read"))],
     tags=["Admin Catalog"],
 )
 
@@ -237,6 +238,7 @@ async def list_categories(
     "/categories/upload-image",
     response_model=dict,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("categories", "create"))],
 )
 async def upload_category_image(
     file: UploadFile = File(..., description="Image file (JPEG/PNG/WebP/GIF)"),
@@ -257,7 +259,8 @@ async def upload_category_image(
     }
 
 
-@router.post("/categories", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("/categories", response_model=dict, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("categories", "create"))])
 async def create_category(
     data: CategoryCreate,
     db: AsyncSession = Depends(get_db),
@@ -293,7 +296,8 @@ async def create_category(
         )
 
 
-@router.put("/categories/{category_id}", response_model=dict)
+@router.put("/categories/{category_id}", response_model=dict,
+            dependencies=[Depends(require_permission("categories", "update"))])
 async def update_category(
     category_id: str,
     data: CategoryUpdate,
@@ -346,7 +350,8 @@ async def update_category(
         )
 
 
-@router.delete("/categories/{category_id}", response_model=dict)
+@router.delete("/categories/{category_id}", response_model=dict,
+               dependencies=[Depends(require_permission("categories", "update"))])
 async def delete_category(
     category_id: str,
     db: AsyncSession = Depends(get_db),
@@ -544,7 +549,8 @@ async def suggest_product_sku(
     return {"success": True, "data": {"sku": sku}}
 
 
-@router.post("/products", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("/products", response_model=dict, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("products", "create"))])
 async def create_product(
     data: ProductCreate,
     db: AsyncSession = Depends(get_db),
@@ -588,7 +594,8 @@ async def create_product(
         )
 
 
-@router.put("/products/{product_id}", response_model=dict)
+@router.put("/products/{product_id}", response_model=dict,
+            dependencies=[Depends(require_permission("products", "update"))])
 async def update_product(
     product_id: str,
     data: ProductUpdate,
@@ -660,7 +667,8 @@ async def update_product(
         )
 
 
-@router.delete("/products/{product_id}", response_model=dict)
+@router.delete("/products/{product_id}", response_model=dict,
+               dependencies=[Depends(require_permission("products", "delete"))])
 async def delete_product(
     product_id: str,
     db: AsyncSession = Depends(get_db),
@@ -689,7 +697,8 @@ async def delete_product(
 # Product Images
 # ============================================================================
 
-@router.post("/products/upload-image", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("/products/upload-image", response_model=dict, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("products", "create"))])
 async def upload_product_image(
     file: UploadFile = File(..., description="Image file (JPEG/PNG/WebP/GIF)"),
 ):
@@ -712,7 +721,8 @@ async def upload_product_image(
     }
 
 
-@router.post("/products/{product_id}/images", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("/products/{product_id}/images", response_model=dict, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("products", "update"))])
 async def add_product_image(
     product_id: str,
     data: ProductImageCreate,
@@ -750,7 +760,8 @@ async def add_product_image(
         )
 
 
-@router.patch("/products/{product_id}/images/{image_id}/primary", response_model=dict)
+@router.patch("/products/{product_id}/images/{image_id}/primary", response_model=dict,
+              dependencies=[Depends(require_permission("products", "update"))])
 async def set_primary_product_image(
     product_id: str,
     image_id: str,
@@ -798,7 +809,8 @@ async def set_primary_product_image(
     }
 
 
-@router.delete("/products/{product_id}/images/{image_id}", response_model=dict)
+@router.delete("/products/{product_id}/images/{image_id}", response_model=dict,
+               dependencies=[Depends(require_permission("products", "update"))])
 async def remove_product_image(
     product_id: str,
     image_id: str,

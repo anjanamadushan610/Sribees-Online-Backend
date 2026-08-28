@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.settings import settings
-from app.core.dependencies import BranchScope, inject_branch_filter, require_roles
+from app.core.dependencies import BranchScope, inject_branch_filter, require_permission
 from app.core.media import media_url
 from app.models.banner import Banner
 from app.schemas.banner import BannerCreate, BannerUpdate
@@ -45,7 +45,7 @@ from app.services.storage import StorageError, get_storage
 # operations (stock, orders, transfers); promotions are deliberately a separate
 # desk, so they are not on this router.
 router = APIRouter(
-    dependencies=[Depends(require_roles("super_admin", "marketing_manager"))],
+    dependencies=[Depends(require_permission("banners", "read"))],
     tags=["Admin Banners"],
 )
 
@@ -160,6 +160,7 @@ async def list_banners(
     "/upload-image",
     response_model=dict,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("banners", "create"))],
 )
 async def upload_banner_image(
     file: UploadFile = File(..., description="Image file (JPEG/PNG/WebP/GIF)"),
@@ -216,7 +217,8 @@ async def upload_banner_image(
 # POST / — create
 # ============================================================================
 
-@router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=dict, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("banners", "create"))])
 async def create_banner(
     body: BannerCreate,
     db: AsyncSession = Depends(get_db),
@@ -261,7 +263,8 @@ async def create_banner(
 # PUT /{banner_id} — update
 # ============================================================================
 
-@router.put("/{banner_id}", response_model=dict)
+@router.put("/{banner_id}", response_model=dict,
+            dependencies=[Depends(require_permission("banners", "update"))])
 async def update_banner(
     banner_id: UUID,
     body: BannerUpdate,
@@ -289,7 +292,8 @@ async def update_banner(
 # DELETE /{banner_id}
 # ============================================================================
 
-@router.delete("/{banner_id}", response_model=dict)
+@router.delete("/{banner_id}", response_model=dict,
+               dependencies=[Depends(require_permission("banners", "delete"))])
 async def delete_banner(
     banner_id: UUID,
     db: AsyncSession = Depends(get_db),

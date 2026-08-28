@@ -24,7 +24,7 @@ from app.core.dependencies import (
     BranchScope,
     get_current_admin,
     inject_branch_filter,
-    require_roles,
+    require_permission,
 )
 from app.models.stock_transfer import TransferStatus
 from app.schemas.stock_transfer import StockTransferCreate, StockTransferReject
@@ -35,7 +35,7 @@ from app.services.stock_transfer_service import (
 )
 
 router = APIRouter(
-    dependencies=[Depends(require_roles("super_admin", "branch_manager", "inventory_manager"))],
+    dependencies=[Depends(require_permission("transfers", "read"))],
     tags=["Admin Stock Transfers"],
 )
 
@@ -123,7 +123,8 @@ async def list_transfers(
     }
 
 
-@router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=dict, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("transfers", "create"))])
 async def create_transfer(
     body: StockTransferCreate,
     db: AsyncSession = Depends(get_db),
@@ -185,7 +186,8 @@ async def _load_or_404(db: AsyncSession, transfer_id: UUID) -> TransferRow:
     return row
 
 
-@router.post("/{transfer_id}/approve", response_model=dict)
+@router.post("/{transfer_id}/approve", response_model=dict,
+             dependencies=[Depends(require_permission("transfers", "update"))])
 async def approve_transfer(
     transfer_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -206,7 +208,8 @@ async def approve_transfer(
     return {"success": True, "data": _format(found), "message": "Transfer approved"}
 
 
-@router.post("/{transfer_id}/reject", response_model=dict)
+@router.post("/{transfer_id}/reject", response_model=dict,
+             dependencies=[Depends(require_permission("transfers", "update"))])
 async def reject_transfer(
     transfer_id: UUID,
     body: StockTransferReject,
@@ -228,7 +231,8 @@ async def reject_transfer(
     return {"success": True, "data": _format(found), "message": "Transfer rejected"}
 
 
-@router.post("/{transfer_id}/ship", response_model=dict)
+@router.post("/{transfer_id}/ship", response_model=dict,
+             dependencies=[Depends(require_permission("transfers", "update"))])
 async def ship_transfer(
     transfer_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -249,7 +253,8 @@ async def ship_transfer(
     return {"success": True, "data": _format(found), "message": "Transfer marked in transit"}
 
 
-@router.post("/{transfer_id}/complete", response_model=dict)
+@router.post("/{transfer_id}/complete", response_model=dict,
+             dependencies=[Depends(require_permission("transfers", "update"))])
 async def complete_transfer(
     transfer_id: UUID,
     db: AsyncSession = Depends(get_db),

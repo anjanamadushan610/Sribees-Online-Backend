@@ -29,6 +29,7 @@ from app.core.dependencies import (
     get_current_admin,
     inject_branch_filter,
     require_roles,
+    require_permission,
 )
 from app.models.branch import Branch
 from app.models.order import Order
@@ -38,8 +39,10 @@ from app.services.invoice_service import InvoiceService
 from app.services.notification_service import NotificationService
 from app.services.order_service import OrderService
 
+# Allow base-role admins and staff accounts that hold orders:read.
+# Write routes additionally require orders:update (declared per-route).
 router = APIRouter(
-    dependencies=[Depends(require_roles("super_admin", "branch_manager", "customer_support"))],
+    dependencies=[Depends(require_permission("orders", "read"))],
     tags=["Admin Orders"],
 )
 
@@ -534,7 +537,7 @@ async def update_order_status(
     body: UpdateOrderStatusRequest,
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
-    admin=Depends(get_current_admin),
+    admin=Depends(require_permission("orders", "update")),
 ):
     """
     Update an order's status. On transition to SHIPPED or DELIVERED, notify the
@@ -565,7 +568,8 @@ async def update_order_status(
     }
 
 
-@router.post("/{order_id}/return/approve", response_model=dict)
+@router.post("/{order_id}/return/approve", response_model=dict,
+             dependencies=[Depends(require_permission("orders", "update"))])
 async def approve_order_return(
     order_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -590,7 +594,8 @@ async def approve_order_return(
     }
 
 
-@router.post("/{order_id}/return/reject", response_model=dict)
+@router.post("/{order_id}/return/reject", response_model=dict,
+             dependencies=[Depends(require_permission("orders", "update"))])
 async def reject_order_return(
     order_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -615,7 +620,7 @@ async def reject_order_return(
 @router.post(
     "/reconcile-payments",
     response_model=dict,
-    dependencies=[Depends(require_roles("super_admin"))],
+    dependencies=[Depends(require_permission("orders", "update"))],
 )
 async def reconcile_marx_payments(db: AsyncSession = Depends(get_db)):
     """

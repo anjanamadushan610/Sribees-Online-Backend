@@ -28,7 +28,7 @@ from sqlalchemy import and_, case, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import BranchScope, inject_branch_filter, require_roles
+from app.core.dependencies import BranchScope, inject_branch_filter, require_permission
 from app.models.branch import Branch
 from app.models.category import Category
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
@@ -36,7 +36,7 @@ from app.models.product import BranchInventory, Product
 from app.models.user import User
 
 router = APIRouter(
-    dependencies=[Depends(require_roles("super_admin", "branch_manager"))],
+    dependencies=[Depends(require_permission("analytics", "read"))],
     tags=["Admin Analytics"],
 )
 
