@@ -28,13 +28,21 @@ from fastapi import (
     status,
 )
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.products import format_product
 from app.config.database import get_db
 from app.config.settings import settings
-from app.core.dependencies import require_permission
+from app.core.dependencies import (
+    BranchScope,
+    get_current_admin,
+    inject_branch_filter,
+    require_permission,
+)
 from app.core.media import media_path, media_url
+from app.models.admin import Admin, AdminRole
+from app.models.product import BranchInventory
 from app.schemas.category import CategoryCreate, CategoryUpdate
 from app.schemas.product import (
     ProductCreate,
@@ -393,6 +401,22 @@ async def delete_category(
 # Product Management  (/admin/products)
 # ============================================================================
 
+async def _get_branch_inventory_map(
+    db: AsyncSession, branch_id: UUID, product_ids: list[UUID]
+) -> dict[UUID, BranchInventory]:
+    if not product_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(BranchInventory).where(
+                BranchInventory.branch_id == branch_id,
+                BranchInventory.product_id.in_(product_ids),
+            )
+        )
+    ).scalars().all()
+    return {row.product_id: row for row in rows}
+
+
 @router.get("/products", response_model=dict)
 async def list_products(
     page: int = Query(1, ge=1),
@@ -404,15 +428,15 @@ async def list_products(
     sort_by: str = Query("created_at", pattern="^(created_at|price|name|view_count)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+    scope: BranchScope = Depends(inject_branch_filter),
 ):
     """
     List global-catalog products with search, category filter and pagination.
 
-    Returns products in **all** branches/states (active and inactive); this is
-    the admin view, not the branch-scoped customer listing.
-
-    Filtering by ``category_id`` includes products filed under any of that
-    category's sub-categories; ``subcategory_id`` narrows to one leaf.
+    For Super Admin, returns master products with global is_active status.
+    For Scoped Admins (Branch Managers/Staff), returns products overlayed with
+    their branch-specific is_active status.
     """
     cat_uuid = None
     if category_id:
@@ -448,10 +472,22 @@ async def list_products(
         is_active=is_active,
     )
 
+    if not scope.is_unscoped and scope.branch_id:
+        p_ids = [p.product_id for p in products]
+        inv_map = await _get_branch_inventory_map(db, scope.branch_id, p_ids)
+        formatted_products = []
+        for p in products:
+            inv = inv_map.get(p.product_id)
+            branch_active = inv.is_active if inv else False
+            eff = {"is_active": branch_active}
+            formatted_products.append(format_product(p, branch_overrides=eff))
+    else:
+        formatted_products = [format_product(p) for p in products]
+
     return {
         "success": True,
         "data": {
-            "products": [format_product(p) for p in products],
+            "products": formatted_products,
             "pagination": {
                 "total": total,
                 "page": page,
@@ -466,6 +502,8 @@ async def list_products(
 async def get_product(
     product_id: str,
     db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+    scope: BranchScope = Depends(inject_branch_filter),
 ):
     """Get a single product by ID or slug (includes inactive)."""
     product = await ProductService.get_by_id_or_slug(db, product_id, include_inactive=True)
@@ -474,10 +512,17 @@ async def get_product(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found",
         )
+
+    eff = None
+    if not scope.is_unscoped and scope.branch_id:
+        inv_map = await _get_branch_inventory_map(db, scope.branch_id, [product.product_id])
+        inv = inv_map.get(product.product_id)
+        eff = {"is_active": inv.is_active if inv else False}
+
     return {
         "success": True,
         "data": format_product(
-            product, include_variants=True, include_translations=True
+            product, include_variants=True, include_translations=True, branch_overrides=eff
         ),
     }
 
@@ -600,6 +645,8 @@ async def update_product(
     product_id: str,
     data: ProductUpdate,
     db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+    scope: BranchScope = Depends(inject_branch_filter),
 ):
     """Update an existing product."""
     product = await ProductService.get_by_id_or_slug(db, product_id, include_inactive=True)
@@ -608,6 +655,22 @@ async def update_product(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found",
         )
+
+    # Branch Manager / Staff active status toggle isolation:
+    # Non-super admin updating is_active sets BranchInventory.is_active for their branch only.
+    if data.is_active is not None and current_admin.role != AdminRole.SUPER_ADMIN:
+        if scope.branch_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Your account is not assigned to a branch.",
+            )
+        await ProductService.upsert_branch_override(
+            db,
+            product_id=product.product_id,
+            branch_id=scope.branch_id,
+            is_active=data.is_active,
+        )
+        data.is_active = None
 
     if data.slug and data.slug != product.slug:
         existing = await ProductService.get_by_slug(db, data.slug, include_inactive=True)
