@@ -493,3 +493,110 @@ Please reply, per section, with one of: **will build** (+ rough date) /
 **already exists** (+ where) / **won't build** (+ what we should do instead).
 
 §1, §2 and §3 are the ones that decide our launch date.
+
+---
+
+# Round 2 — after your 2026-08-28 response
+
+You built §2, §5c, §6.2, §7a, §8a, §9, §11.4 and §12, and gave clear answers on
+the rest. We have integrated against all of it — the client, the signed
+webhook path, pickup-location registration and the reconciliation sweep are
+written and merged on our side, gated only on sandbox keys.
+
+Three items are still open. §14 is the one that matters.
+
+## 14. REOPENED — the handover code on COD orders
+
+Your response: *"A COD rider collecting cash in hand is its own proof; they
+mark `delivered` directly, no code involved."*
+
+We understand the reasoning and it is not unreasonable — a rider who steals a
+COD parcel owes the COD amount, so the incentive is largely self-correcting.
+But that argument covers **rider theft**, which is your exposure. It does not
+cover the two cases that are *ours*, and those are the ones we have to answer
+for as merchant of record:
+
+1. **Wrong recipient.** A neighbour, a security guard, or a relative accepts
+   the parcel and pays. Cash is collected, `delivered` fires, `cod.collected`
+   flips true — and the actual customer never received their order. Every
+   signal in the contract says this delivery succeeded. Nothing about cash in
+   hand distinguishes "the right person paid" from "someone paid."
+2. **The dispute.** A customer says "I never got it." We hold: a status your
+   rider set, and a collection flag your rider set. Both are the same party's
+   self-attestation. We have nothing that originated with the customer. The
+   chargeback-equivalent argument, the refund decision, and the customer's
+   trust all land on us with no evidence to work from.
+
+A handover code fixes both, because it is the one piece of information that
+can only come from the customer, and it costs the rider one extra screen.
+
+**What we are asking for is narrower than §1 was.** Not a change of default,
+not COD-by-default behaviour — just: **accept `handover_code` on a COD
+shipment when the merchant explicitly sends one.** Everything else already
+works. Concretely, drop this from your validation:
+
+```
+if handover_code and cod_amount > 0:  ->  400 handover_code_not_allowed_for_cod
+```
+
+Keep it opt-in, keep it off by default, and merchants who agree with your
+reasoning simply never send the field. Order-of-operations at the door would
+be exactly what you already implement for prepaid, with the cash step in
+front: rider collects, rider enters the code, parcel is released, shipment
+goes `delivered` with both the `handover` and `cod` blocks populated.
+
+We have already built our side for this. `handover_code` generation is
+COD-capable today and sits behind a single config flag
+(`courier_handover_code_for_cod`, currently `false`) purely because your API
+would `400` the booking. **The day you accept it, our change is one boolean.**
+
+If the answer is still no, we would like to know:
+
+- What *do* you recommend a merchant hold as proof of a COD handover in a
+  dispute? A photo, a signature capture, an OTP of your own — anything the
+  rider does not author alone.
+- Would you accept the code on COD for a **subset** of shipments — say, above
+  a `cod_amount` threshold? Our exposure is concentrated in the large baskets.
+
+## 15. Still open from round 1
+
+**§3 remittance/settlement — you asked us for a payout policy. We think that
+is the wrong way round.** SribeesExpress holds our customers' cash; the
+cadence, the deductions and what "paid" means operationally are your
+commercial terms, not ours. We cannot specify a policy for money we do not
+control.
+
+What we can tell you is what we need to *read*, which is unchanged from §3:
+which shipments a payout covers, what was deducted, and when it landed. Even
+without a finished policy, a read-only view of "COD collected but not yet
+remitted", plus a `remittance_id` on the shipment once it settles, would let
+us reconcile. Send us your standard merchant terms and we will confirm we can
+work to them — but this is a blocker for launching COD at any volume, and it
+is not one we can unblock from our side.
+
+**§6.1 webhook retry — accepted, with a note.** We understand the job-queue
+constraint. We have built the §7a sweep as our real source of truth and we are
+not blocked. The note: until retries exist, please treat §7a as
+launch-critical infrastructure rather than a convenience endpoint — if it goes
+away or gets rate-limited, we silently stop learning about deliveries.
+
+## 16. Confirmed on our side
+
+- **§11.6 timezone** — noted, all timestamps UTC. We convert to Asia/Colombo
+  at the display layer only.
+- **§9 address** — we send the structured fields plus a folded 255-char
+  `recipient_address`.
+- **§11.1** — collapsed to one identifier.
+- **§11.3** — we branch on `error.code` throughout, including distinguishing
+  `quote_expired` from `quote_already_used` (they share a 409 and need
+  opposite handling).
+- **§4 / §7** — we send `requested_delivery_date`/`_window` and `handling`
+  understanding they are captured but not enforced. We will not promise a
+  customer a guaranteed window on that basis. We would still like a real
+  same-day/express tier when you have one; it is a product we want to sell.
+
+## 17. Response requested
+
+Just §14 and §15, in the same format. §14 is a one-line validation change on
+your side and a one-boolean change on ours, and it is the last thing standing
+between us and shipping COD.

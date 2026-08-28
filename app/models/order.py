@@ -5,6 +5,7 @@ import enum
 import uuid
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -89,14 +90,22 @@ class Order(Base):
     # Guards deferred cashback crediting (gateway orders) against double-credit.
     cashback_credited_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Delivery handover verification code (non-COD orders only). See
-    # app/services/delivery_verification_service.py and docs/COURIER_API.md §15.
-    delivery_verification_code = Column(String(3), nullable=True)
+    # Delivery handover verification code. We generate it, show it to the
+    # customer in the app, and hand it to SribeesExpress at booking time; the
+    # rider must enter it before the parcel is released. SribeesExpress
+    # currently accepts a code on PREPAID shipments only -- see
+    # app/services/delivery_verification_service.py and
+    # docs/SRIBEESEXPRESS_ECOMMERCE_API.md §7.
+    delivery_verification_code = Column(String(6), nullable=True)
     delivery_verification_status = Column(String(20), default="not_required")
     delivery_verification_attempts = Column(Integer, default=0)
     delivery_verification_confirmed_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Courier integration (see docs/COURIER_API.md, app/services/courier_service.py).
+    # Courier integration -- SribeesExpress (see
+    # docs/SRIBEESEXPRESS_ECOMMERCE_API.md, app/services/courier_service.py).
+    # courier_waybill_number holds the same value as courier_shipment_id: the
+    # contract confirms there is only ever one identifier (§11.1). It is kept
+    # because GET /orders already returns it and the mobile app reads it.
     courier_quote_id = Column(String(64), nullable=True)
     courier_quote_expires_at = Column(DateTime(timezone=True), nullable=True)
     courier_shipment_id = Column(String(64), nullable=True)
@@ -104,6 +113,22 @@ class Order(Base):
     courier_tracking_status = Column(String(20), nullable=True)
     courier_tracking_updated_at = Column(DateTime(timezone=True), nullable=True)
     courier_booking_status = Column(String(20), default="pending")
+    courier_tracking_url = Column(String(500), nullable=True)
+    courier_pickup_location_name = Column(String(255), nullable=True)
+
+    # Delivery outcome as reported by SribeesExpress. This is the ONLY
+    # proof-of-delivery we ever receive, so all of it is persisted rather than
+    # collapsed into the status. For a COD order, `delivered` on its own does
+    # NOT mean the cash was collected -- courier_cod_collected does (§8).
+    courier_handover_required = Column(Boolean, nullable=False, default=False)
+    courier_handover_verified = Column(Boolean, nullable=True)
+    courier_handover_attempts = Column(Integer, nullable=True)
+    courier_cod_collected = Column(Boolean, nullable=False, default=False)
+    courier_cod_collected_amount = Column(Numeric(12, 2), nullable=True)
+    courier_cod_collected_at = Column(DateTime(timezone=True), nullable=True)
+    # Rider free text on a failed/returned shipment. Free text by design
+    # (§8) -- never branch business logic on its exact wording.
+    courier_failure_note = Column(Text, nullable=True)
 
     # Delivery
     delivery_address_id = Column(UUID(as_uuid=True), ForeignKey("addresses.address_id"), nullable=True)

@@ -38,8 +38,11 @@ from app.schemas.order import (
 )
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
+from app.services import courier_location_service, delivery_verification_service
 from app.services.coupon_service import CouponService
 from app.services.courier_service import (
+    CourierError,
+    CourierQuoteAlreadyUsedError,
     CourierQuoteExpiredError,
     CourierService,
     CourierUnavailableError,
@@ -238,17 +241,13 @@ class OrderService:
         )
         priced_items = await OrderService._attach_weights(db, priced_items)
 
-        origin = branch_service.to_courier_origin(branch) if branch is not None else None
-        destination = {
-            "recipient_name": address.recipient_name,
-            "phone": address.phone,
-            "address_line1": address.address_line1,
-            "address_line2": address.address_line2,
-            "post_office": address.post_office,
-            "district": address.district,
-            "province": address.province,
-            "postal_code": address.postal_code,
-        }
+        # Backfill the address's SribeesExpress city_id if it was saved before
+        # this integration shipped, or last resolved to a reason ops can flip.
+        city_id = address.courier_city_id
+        if city_id is None and courier_location_service.needs_resolution(
+            address, post_office_changed=False
+        ):
+            city_id = await courier_location_service.resolve_address(db, address)
 
         breakdown = await PricingService.quote(
             items=priced_items,
@@ -257,8 +256,7 @@ class OrderService:
             wallet_balance=wallet_balance,
             delivery_fee=pricing_config["delivery_fee"],
             tax_rate=pricing_config["tax_rate"],
-            origin=origin,
-            destination=destination,
+            city_id=city_id,
             payment_method=to_courier_payment_method(data.payment_method),
             wallet_amount=data.wallet_amount,
         )
@@ -519,124 +517,164 @@ class OrderService:
     @staticmethod
     async def _book_courier_shipment(db: AsyncSession, order: Order) -> None:
         """
-        Book the courier shipment for a confirmed order (docs/COURIER_API.md
-        section 5). Idempotent no-op if already booked. Best-effort: a courier
-        outage must never roll back a paid/placed order, so failures are
-        logged and recorded on the order rather than raised.
+        Book the SribeesExpress shipment for a confirmed order (contract
+        section 7). Idempotent no-op if already booked.
+
+        Best-effort by design: a courier outage must never roll back a
+        paid/placed order, so every failure is recorded on
+        ``courier_booking_status`` and logged rather than raised. A "failed"
+        booking is an ops queue, not a lost order -- the parcel still exists
+        and can be booked by hand.
         """
         if order.courier_shipment_id:
             return
-        if not order.branch_id or not order.delivery_address_id:
+        if not order.delivery_address_id:
             logger.warning(
-                f"Order {order.order_number}: no branch/address resolved, "
-                f"skipping courier booking"
+                f"Order {order.order_number}: no delivery address, skipping courier booking"
             )
             return
 
-        from app.services import branch_service
-
-        branch = await db.get(Branch, order.branch_id)
         address = await db.get(Address, order.delivery_address_id)
-        if branch is None or address is None:
+        if address is None:
             logger.warning(
-                f"Order {order.order_number}: branch/address row missing, "
-                f"skipping courier booking"
+                f"Order {order.order_number}: address row missing, skipping courier booking"
             )
             return
 
-        origin = branch_service.to_courier_origin(branch)
-        destination = {
-            "recipient_name": address.recipient_name,
-            "phone": address.phone,
-            "address_line1": address.address_line1,
-            "address_line2": address.address_line2,
-            "post_office": address.post_office,
-            "district": address.district,
-            "province": address.province,
-            "postal_code": address.postal_code,
-        }
-        # Query order items directly rather than via order.items -- that
-        # relationship is not always eagerly loaded on the Order instance this
-        # is called with (e.g. straight out of create_from_cart), and a lazy
-        # load would fail under the async session.
-        item_rows = (
-            await db.execute(
-                select(OrderItem.product_id, OrderItem.quantity).where(
-                    OrderItem.order_id == order.order_id
-                )
-            )
-        ).all()
-        priced_items = await OrderService._attach_weights(
-            db,
-            [{"product_id": str(product_id), "quantity": quantity} for product_id, quantity in item_rows],
-        )
-        weight_kg = sum(
-            Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"]))
-            for i in priced_items
-        )
-        item_count = sum(i["quantity"] for i in priced_items)
+        # The fulfilling branch decides where the rider collects. Unregistered
+        # branches fall back to whatever default origin SribeesExpress holds
+        # for our account (contract section 12) -- wrong for a multi-branch
+        # merchant, so it is worth a loud log rather than a silent default.
+        pickup_location_id = None
+        if order.branch_id:
+            branch = await db.get(Branch, order.branch_id)
+            if branch is not None:
+                pickup_location_id = branch.courier_pickup_location_id
+                if pickup_location_id is None:
+                    logger.warning(
+                        f"Branch {branch.code} has no registered courier pickup location -- "
+                        f"order {order.order_number} will book against the account default"
+                    )
+
         is_cod = order.payment_method == PaymentMethodEnum.COD.value
-        courier_payment_method = to_courier_payment_method(order.payment_method)
+        cod_amount = order.total_amount if is_cod else Decimal("0")
+
+        # Only send a code SribeesExpress will accept. Today that is prepaid
+        # orders only (contract section 7); a code on a COD shipment is a
+        # documented 400, which would fail the whole booking.
+        handover_code = (
+            order.delivery_verification_code
+            if delivery_verification_service.is_code_eligible(order)
+            else None
+        )
+
+        booking_kwargs = dict(
+            merchant_order_ref=order.order_number,
+            recipient_name=address.recipient_name or "Customer",
+            recipient_phone=address.phone or "",
+            address_line1=address.address_line1,
+            address_line2=address.address_line2,
+            post_office=address.post_office,
+            district=address.district,
+            province=address.province,
+            postal_code=address.postal_code,
+            cod_amount=cod_amount,
+            handover_code=handover_code,
+            pickup_location_id=pickup_location_id,
+            requested_delivery_date=(
+                order.delivery_slot_date.date().isoformat() if order.delivery_slot_date else None
+            ),
+            requested_delivery_window=order.delivery_slot_time,
+        )
 
         try:
             result = await CourierService.book_shipment(
-                order_number=order.order_number,
-                quote_id=order.courier_quote_id,
-                origin=origin,
-                destination=destination,
-                weight_kg=weight_kg,
-                item_count=item_count,
-                payment_method=courier_payment_method,
-                cod_amount_lkr=order.total_amount if is_cod else Decimal("0"),
+                quote_id=order.courier_quote_id, **booking_kwargs
             )
-        except CourierQuoteExpiredError:
-            # The customer already paid/agreed the OLD shipping_amount; we
-            # cannot re-bill them for a higher courier quote now. Re-quote and
-            # book at the new price, absorbing any positive delta -- this is a
-            # deliberate default that needs product/finance sign-off, not
-            # silently assumed (see the plan's Open Risks).
+        except (CourierQuoteExpiredError, CourierQuoteAlreadyUsedError) as exc:
+            # The customer already paid the OLD shipping_amount; we cannot
+            # re-bill them for a higher quote now. Re-quote and book at the new
+            # price, absorbing any positive delta -- a deliberate default that
+            # needs product/finance sign-off, not silently assumed.
+            #
+            # quote_already_used lands here too: it shares a 409 with
+            # quote_expired but means the opposite (the quote was consumed,
+            # not aged out). Both recover the same way -- a fresh quote -- and
+            # retrying the original id could never succeed.
             logger.warning(
-                f"Courier quote expired for order {order.order_number}, re-quoting at booking time"
+                f"Courier quote unusable for order {order.order_number} ({exc.code}), re-quoting"
             )
+            if address.courier_city_id is None:
+                order.courier_booking_status = "failed"
+                await db.commit()
+                logger.error(
+                    f"Cannot re-quote order {order.order_number}: address has no courier city_id"
+                )
+                return
             try:
+                # Queried directly rather than via order.items -- that
+                # relationship is not always eagerly loaded on the Order
+                # instance this is called with (e.g. straight out of
+                # create_from_cart), and a lazy load would fail under the
+                # async session.
+                item_rows = (
+                    await db.execute(
+                        select(OrderItem.product_id, OrderItem.quantity).where(
+                            OrderItem.order_id == order.order_id
+                        )
+                    )
+                ).all()
+                priced_items = await OrderService._attach_weights(
+                    db,
+                    [
+                        {"product_id": str(product_id), "quantity": quantity}
+                        for product_id, quantity in item_rows
+                    ],
+                )
+                weight_kg = sum(
+                    Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"]))
+                    for i in priced_items
+                )
                 fresh = await CourierService.get_rate(
-                    origin=origin,
-                    destination=destination,
+                    city_id=address.courier_city_id,
                     weight_kg=weight_kg,
-                    item_count=item_count,
-                    order_value_lkr=order.subtotal,
-                    payment_method=courier_payment_method,
+                    payment_method=to_courier_payment_method(order.payment_method),
+                    cod_amount=cod_amount,
                 )
+                if not fresh.serviceable:
+                    order.courier_booking_status = "failed"
+                    await db.commit()
+                    logger.error(
+                        f"Order {order.order_number}: courier no longer serves this city "
+                        f"({fresh.reason})"
+                    )
+                    return
                 result = await CourierService.book_shipment(
-                    order_number=order.order_number,
-                    quote_id=fresh.quote_id,
-                    origin=origin,
-                    destination=destination,
-                    weight_kg=weight_kg,
-                    item_count=item_count,
-                    payment_method=courier_payment_method,
-                    cod_amount_lkr=order.total_amount if is_cod else Decimal("0"),
+                    quote_id=fresh.quote_id, **booking_kwargs
                 )
-            except (CourierQuoteExpiredError, CourierUnavailableError) as exc:
+            except (CourierUnavailableError, CourierError) as exc:
                 order.courier_booking_status = "failed"
                 await db.commit()
                 logger.error(f"Courier re-booking failed for order {order.order_number}: {exc}")
                 return
-        except CourierUnavailableError as exc:
+        except (CourierUnavailableError, CourierError) as exc:
             order.courier_booking_status = "failed"
             await db.commit()
             logger.error(f"Courier booking failed for order {order.order_number}: {exc}")
             return
 
-        order.courier_shipment_id = result.get("shipment_id")
-        order.courier_waybill_number = result.get("waybill_number")
+        shipment_id = result.get("shipment_id")
+        order.courier_shipment_id = shipment_id
+        # One identifier under this contract (section 11.1) -- the waybill
+        # column stays populated because GET /orders still returns it.
+        order.courier_waybill_number = shipment_id
         order.courier_tracking_status = result.get("status", "booked")
+        order.courier_tracking_url = result.get("tracking_url")
+        order.courier_pickup_location_name = result.get("pickup_location_name")
+        order.courier_handover_required = bool((result.get("handover") or {}).get("required"))
         order.courier_booking_status = "booked"
         await db.commit()
-        logger.info(
-            f"Courier shipment booked for order {order.order_number}: "
-            f"{order.courier_shipment_id} ({order.courier_waybill_number})"
-        )
+        logger.info(f"Courier shipment booked for order {order.order_number}: {shipment_id}")
 
     @staticmethod
     async def get_by_courier_shipment_id(db: AsyncSession, shipment_id: str) -> Optional[Order]:
@@ -1012,7 +1050,7 @@ class OrderService:
         try:
             await CourierService.cancel_shipment(order.courier_shipment_id)
             logger.info(f"Courier shipment cancelled for order {order.order_number}")
-        except CourierUnavailableError as exc:
+        except (CourierUnavailableError, CourierError) as exc:
             logger.warning(
                 f"Could not cancel courier shipment for order {order.order_number}: {exc}"
             )

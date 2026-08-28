@@ -1,8 +1,53 @@
 # Ecommerce Integration API — Integration Contract
 
-**Status:** implemented and tested (`app/ecommerce_api/`, 27 passing integration
-tests as of 2026-08-25). This document describes what actually exists, not a
-spec to be built later.
+**Status:** implemented and tested (`app/ecommerce_api/`, 79 passing
+integration tests as of 2026-08-28). This document describes what actually
+exists, not a spec to be built later.
+
+## Response to your integration review (2026-08-28)
+
+Read `SRIBEESEXPRESS_INTEGRATION_GAPS.md` end to end. Per section, in your
+own requested format:
+
+| # | Gap | Verdict | Where |
+|---|---|---|---|
+| §1 Handover code | **Built — prepaid orders only, not COD** (see correction below) | §7, §7a |
+| §2 Pickup location | **Built** — Option A, the merchant-managed registry | §12 |
+| §3 Remittance/settlement | **Won't build yet — need your payout policy first** | see note below |
+| §4 Delivery slot | **Partially built** — date/window *capture* only, no same-day/express *pricing* tier | §7 |
+| §5 Failure reason | **Partially built** — free text (`failure_note`), not a stable enum | §8 |
+| §6.1 Webhook retry | **Won't build** — needs a background job queue this backend doesn't have anywhere yet | §10.4 |
+| §6.2 Reconciliation list | **Built** | §7a |
+| §7 Perishable/cold-chain | **Built** — capture only, no surcharge, no rider-app visibility | §7 |
+| §8 Correcting a booking | **Built** | §8a |
+| §9 Structured address | **Built** (folded into `recipient_address`, no new stored field) + max length confirmed (255, already true) | §7 |
+| §10 Rate limit | Already per-key, adjustable at issuance — ask for a higher ceiling on your production key | §3 |
+| §11.1 shipment_id/waybill | Confirmed — always one identifier | §8 |
+| §11.2 Quote lifetime | Confirmed — quote → pay → book → re-quote on `quote_expired` is correct | §6 |
+| §11.3 `error.code` stability | Confirmed — every response in this domain, including `401`/`429`, uses the envelope | §4 |
+| §11.4 Coverage export | **Built** | §5c |
+| §11.5 COD pricing | Commit: advance notice before `cod_amount` ever affects `amount_lkr` | §6 |
+| §11.6 Timezone | **Correction, not confirmation** — see below | — |
+| §11.7 Sandbox clearing | **Won't build** — no self-service bulk-delete; ask SribeesExpress ops | §11 |
+
+**Correction on §1 — the handover code is for prepaid orders, not COD.** A
+COD rider collecting cash in hand is its own proof; they mark `delivered`
+directly, no code involved. The code applies to **prepaid** orders as
+proof-of-correct-recipient, matching what our own earlier `client-portal`-era
+contract already had. Built to Option A (you hand us the code at booking) —
+see §7.
+
+**§3 remittance/settlement is a real gap, genuinely not built.** This needs
+an actual payout policy from you before anything ships against it — cadence
+(daily/weekly/T+n), what's deducted, what "paid" means operationally. Send
+that and we'll scope it; a minimal read-only balance view is the likely
+first cut once the policy exists.
+
+**§11.6 timezone — correction:** all timestamps are **UTC** (`+00:00`), not
+Asia/Colombo. The doc's examples already showed `+00:00`; if you read that as
+"just an example format," it's not — convert client-side.
+
+---
 
 **Audience:** any 3rd-party e-commerce platform integrating with
 SribeesExpress for delivery — quote a price, book a shipment, track it,
@@ -158,6 +203,24 @@ Mostly useful for support/debugging, or a merchant who was handed a
 specific `city_id` list by SribeesExpress directly. Most integrations
 should use §5a instead.
 
+### 5c. `GET /ecommerce/coverage` — bulk export of serviceable post offices
+
+For nightly-sync use cases (gap §11.4): you resolve a fulfilment branch from
+a post office using your own coverage table, we resolve a `city_id` using
+ours — they can disagree at the edges. Sync this list to pre-empt that
+rather than discovering it only when `/locations/resolve` rejects an
+already-saved address.
+
+- **Response `200`:**
+```json
+[ { "post_office": "Welipenna", "district": "Kalutara", "province": "Western", "city_id": 42 } ]
+```
+Only post offices that would resolve `serviceable: true` right now — a post
+office known but not yet assigned to a delivery area, or assigned to an area
+with no active pricing zone, is excluded. This can change day to day as
+SribeesExpress ops configures new areas; a nightly sync is reasonable, more
+than that is unlikely to be worth it.
+
 ---
 
 ## 6. `POST /ecommerce/rates` — quote a delivery charge
@@ -231,7 +294,13 @@ Called once, after payment is accepted. **Idempotent** on
   "recipient_name": "A. Perera",
   "recipient_phone": "+94771234567",
   "recipient_address": "12 Galle Road, Colombo 03",
-  "cod_amount": 4820.00
+  "cod_amount": 4820.00,
+  "handover_code": "4821",
+  "handover_code_required": true,
+  "pickup_location_id": 7,
+  "requested_delivery_date": "2026-08-29",
+  "requested_delivery_window": "09:00-12:00",
+  "handling": ["perishable"]
 }
 ```
 
@@ -240,6 +309,12 @@ Called once, after payment is accepted. **Idempotent** on
 | `merchant_order_ref` | **Your** stable, unique order identifier (max 150 chars). Retry a failed/timed-out request with the *same* ref — you'll get your existing booking back, never a duplicate. A different ref always books a new shipment. |
 | `quote_id` | From §6. `city_id`/`weight_kg`/`latitude`/`longitude` are **not** sent here — they're taken from the quote server-side, so the price (and pin) you were shown is what you're charged/booked, by construction. |
 | `cod_amount` | What the rider collects on delivery. Omit or send `0` for prepaid. |
+| `address_line1`/`address_line2`/`post_office`/`district`/`province`/`postal_code` | Optional structured alternative to `recipient_address` — send these instead of pre-concatenating and we'll format them for you (comma-joined). `recipient_address` itself has a **255-char max**; if both are sent, the structured fields win. |
+| `handover_code` | **Prepaid orders only — never send this for a `cod` order.** 4-6 digits, generated by you once payment is confirmed. Required together with `handover_code_required: true`; sending one without the other is a `400`. |
+| `handover_code_required` | Default `false`. When `true`, the rider **cannot** mark the shipment `delivered` without a matching code — see §7a for the verified/attempts fields this unlocks on tracking reads. |
+| `pickup_location_id` | From §12 — omit to use whatever default origin SribeesExpress has on file for your account. The pickup address is **snapshotted onto the shipment at booking time**; editing the pickup location afterward never changes an already-booked shipment. |
+| `requested_delivery_date` / `requested_delivery_window` | Captured and returned on reads — **not scheduled or enforced**, no rider job-card visibility yet. Best-effort informational only; don't promise the customer a guaranteed window based on SribeesExpress acknowledging this field. |
+| `handling` | Free-form tags (`"perishable"`, `"fragile"`, etc.) — captured and returned on reads only. No surcharge, no cold-chain service, no rider-app visibility yet. If you need an actual temperature-controlled service, ask — none exists today, so cap what you ship through this API accordingly in the meantime. |
 
 ### Response — `201` (new booking) or `200` (idempotent replay)
 
@@ -255,12 +330,26 @@ Called once, after payment is accepted. **Idempotent** on
   "recipient_address": "12 Galle Road, Colombo 03",
   "latitude": 6.5854,
   "longitude": 79.9607,
+  "pickup_location_name": "Colombo 07 Grocery Branch",
+  "pickup_contact_phone": "0112223344",
+  "pickup_address": "12 Ward Place, Colombo 07",
+  "handover": { "required": true, "code_verified": false, "attempts": 0 },
+  "cod": { "collected": false, "amount": 4820.00 },
+  "failure_note": null,
+  "requested_delivery_date": "2026-08-29",
+  "requested_delivery_window": "09:00-12:00",
+  "handling": ["perishable"],
   "created_at": "2026-08-25T12:35:00+00:00",
   "tracking_url": "https://<web-app-origin>/track?waybill=SXP0000012345"
 }
 ```
 
-`latitude`/`longitude` are `null` if you didn't send them on `/rates`.
+`latitude`/`longitude`/`pickup_*`/`requested_delivery_*`/`handling` are
+`null` (or `[]`) if you didn't send them. `handover.required: false` with
+`code_verified`/`attempts` both `null` for every COD/no-code shipment — see
+§7a for the field meanings. `cod.amount` is what you sent as `cod_amount`
+(the *asked* amount); `cod.collected` flips to `true` once a rider actually
+records collecting it — see §8's `delivered`-event note.
 
 A `200` (not `201`) means this was a replay of an existing booking — you'll
 get the exact same `shipment_id` back, not a new one.
@@ -274,6 +363,30 @@ get the exact same `shipment_id` back, not a new one.
 | `quote_already_used` | 409 | Already booked once — book with a fresh `/rates` call instead. |
 | `quote_expired` | 409 | Past `expires_at` — re-quote (price may have changed; re-confirm with the customer before charging). |
 | `quote_not_serviceable` | 422 | You tried to book a quote that came back `serviceable: false`. |
+| `handover_code_required_without_code` | 400 | Sent `handover_code_required: true` without a `handover_code`. |
+| `pickup_location_not_found` | 404 | Unknown `pickup_location_id`. |
+| `pickup_location_not_owned` | 403 | That pickup location belongs to a different API key. |
+
+### 7a. `GET /ecommerce/shipments` — reconciliation-poll list (gap §6.2)
+
+The practical fallback for §10.4's "no automatic webhook retry" — poll this
+instead of hammering `GET /shipments/{id}` per parcel.
+
+- **Query:** `updated_since` (ISO-8601 datetime, optional), `status_filter`
+  (one of the §8 external values, optional), `limit` (default 50), `offset`.
+- **Response `200`:** a list of the **same per-shipment shape as §7's
+  response** (`ShipmentOut`) — deliberately **without** the `history` array
+  §8 includes; a history join on every row isn't worth paying for at
+  merchant scale. Call §8 for a specific shipment's full history.
+
+```http
+GET /ecommerce/shipments?updated_since=2026-08-28T09:00:00Z&status_filter=out_for_delivery&limit=100
+```
+
+`status_filter=in_transit` matches every internal status that collapses
+onto that external value (§8's note on granularity) — you don't need to
+know or care about the internal states, filtering is always in terms of
+the 8-value vocabulary.
 
 ---
 
@@ -296,6 +409,15 @@ get the exact same `shipment_id` back, not a new one.
   "recipient_address": "12 Galle Road, Colombo 03",
   "latitude": 6.5854,
   "longitude": 79.9607,
+  "pickup_location_name": "Colombo 07 Grocery Branch",
+  "pickup_contact_phone": "0112223344",
+  "pickup_address": "12 Ward Place, Colombo 07",
+  "handover": { "required": true, "code_verified": true, "attempts": 1 },
+  "cod": { "collected": false, "amount": 4820.00 },
+  "failure_note": null,
+  "requested_delivery_date": "2026-08-29",
+  "requested_delivery_window": "09:00-12:00",
+  "handling": ["perishable"],
   "created_at": "2026-08-25T12:35:00+00:00",
   "tracking_url": "https://.../track?waybill=SXP0000012345",
   "history": [
@@ -316,7 +438,62 @@ here (e.g. everything between pickup and out-for-delivery reads as
 `in_transit`), so consecutive `history` entries can repeat a status. This is
 intentional simplification, not a bug.
 
+**`handover`** (gap §1, prepaid orders only): `required` mirrors what you
+sent at booking; `code_verified`/`attempts` are `null` unless `required` is
+`true`. The rider cannot move a `handover.required: true` shipment to
+`delivered` until `code_verified` is `true` — a status transition attempt
+without it is rejected on our side, so `delivered` genuinely means the code
+matched (or the order never required one).
+
+**`cod`**: `amount` is what you sent as `cod_amount`; `collected` flips to
+`true` once a rider records actually collecting it — usually, but not
+strictly always, at the same moment as the `delivered` status (a rider can
+mark delivered and record collection as two close-together actions on their
+side). Check both fields together if you need to know "cash in hand,
+confirmed."
+
+**`failure_note`** (gap §5): the rider's free-text reason, present only when
+`status` is `failed` or `returned`, `null` otherwise. **This is free text,
+not a stable enum** — the rider app itself only ever collects free text
+today (no Reason-ID dropdown), so a controlled vocabulary here would
+misrepresent what's actually collected. Parse for keywords if you need
+rough bucketing, but don't build hard business logic against exact strings.
+
 `404` unknown shipment, `403` belongs to a different API key.
+
+---
+
+## 8a. `PATCH /ecommerce/shipments/{shipment_id}` — correct a booking (gap §8)
+
+Fixes a typo'd phone number or incomplete address before the parcel is
+actually out for delivery — `cancel` (§9) is too blunt an instrument for
+this, and is illegal past pickup anyway.
+
+### Request — all fields optional, only supplied ones change
+
+```json
+{
+  "recipient_phone": "+94771234567",
+  "recipient_address": "12 Galle Road, Colombo 03",
+  "latitude": 6.5854,
+  "longitude": 79.9607,
+  "requested_delivery_date": "2026-08-30",
+  "requested_delivery_window": "13:00-17:00"
+}
+```
+
+Accepts the same structured `address_line1`/`.../postal_code` fields as §7
+instead of a flat `recipient_address`, with the same fold-into-one-string
+behavior.
+
+### Response — `200`, the updated shipment (§7's response shape)
+
+### Errors
+
+| `code` | Status | Meaning |
+|---|---|---|
+| `shipment_not_correctable` | 409 | The shipment is `out_for_delivery` or beyond — too late to correct via the API. |
+| `shipment_not_found` / `shipment_not_owned` | 404 / 403 | Same as every other shipment endpoint. |
 
 ---
 
@@ -378,7 +555,26 @@ X-Sribees-Signature: t=1756123200,v1=5257a869e7ecebeda32affa62cdca3fa51cad7e77a0
 ```
 
 `event_id` is a stable dedupe key — store it and ignore repeats if you ever
-see one.
+see one. Two extra blocks appear conditionally:
+
+- On the transition **to `delivered`**: `handover` and `cod` (same shapes as
+  §8's read response) — this is how you learn a COD collection actually
+  happened, or that a prepaid handover code was verified, without a
+  separate poll.
+- On the transition **to `failed` or `returned`**: `failure_note` (§8's free
+  text, `null` otherwise never sent as a key on other transitions).
+
+```json
+{
+  "event": "shipment.status_changed",
+  "event_id": "c8a2e5f1-...-uuid4",
+  "shipment_id": "SXP0000012345",
+  "status": "delivered",
+  "at": "2026-08-28T15:02:00+00:00",
+  "handover": { "required": true, "code_verified": true, "attempts": 1 },
+  "cod": { "collected": true, "amount": 4820.00 }
+}
+```
 
 ### 10.3 Verifying the signature
 
@@ -400,10 +596,14 @@ Each push attempt has a 5-second timeout and is logged (success or failure)
 to your delivery log (§10.1). **There is currently no automatic retry on
 failure.** If your endpoint is briefly down, that one push is lost — the
 next status change will push again, but a status that changes only once
-(e.g. straight to `delivered`) will not be resent. **Recommendation:**
-treat webhooks as a low-latency notification, not your only source of
-truth — poll `GET /ecommerce/shipments/{id}` periodically (or at least on
-app startup / reconciliation jobs) as a fallback.
+(e.g. straight to `delivered`) will not be resent. **This isn't scheduled
+to change soon** — automatic retry needs a background job queue this
+backend doesn't have wired up anywhere yet (not specific to webhooks; a
+repo-wide gap). **Recommendation:** treat webhooks as a low-latency
+notification, not your only source of truth — poll **§7a's `GET
+/ecommerce/shipments` list** (not one-at-a-time `GET /shipments/{id}` calls,
+which won't scale within your rate limit) periodically, or at least on app
+startup / reconciliation jobs, as the real source of truth.
 
 ---
 
@@ -420,15 +620,58 @@ unserviceable-area handling without needing a real unserved city.
 
 ---
 
-## 12. Checklist for your integration
+## 12. Pickup locations (gap §2 — multi-branch merchants)
+
+Every shipment needs a pickup point. If you fulfil from a **single**
+address, ignore this section — omit `pickup_location_id` on `/shipments`
+and SribeesExpress uses the default on file for your account. If you fulfil
+from **multiple** branches (resolved per-order, e.g. from the customer's
+post office at checkout), register each one here once and reference it by
+id at booking time.
+
+### Register — `POST /ecommerce/pickup-locations`
+```json
+{
+  "name": "Colombo 07 Grocery Branch",
+  "phone": "0112223344",
+  "address": "12 Ward Place, Colombo 07",
+  "post_office": "Colombo",
+  "district": "Colombo",
+  "province": "Western",
+  "latitude": 6.9061,
+  "longitude": 79.8678
+}
+```
+→ **`201`**, the created location including its `id` — use that as
+`pickup_location_id` on §7.
+
+### Manage
+- `GET /ecommerce/pickup-locations[/{id}]` — list/inspect.
+- `PATCH /ecommerce/pickup-locations/{id}` — update any field.
+- `DELETE /ecommerce/pickup-locations/{id}` — deactivates (`204`), doesn't
+  hard-delete (a soft `is_active: false`, same convention as webhook
+  endpoints in §10.1).
+
+**Editing or deactivating a pickup location never changes an
+already-booked shipment** — its `pickup_location_name`/`_contact_phone`/
+`_address` (§7's response) are a snapshot taken at booking time, not a live
+reference. If a branch's address changes, update it here for *future*
+bookings; nothing retroactively changes on parcels already in transit.
+
+---
+
+## 13. Checklist for your integration
 
 - [ ] Get a sandbox key from SribeesExpress; test end-to-end before asking for a production key
 - [ ] `POST /ecommerce/locations/resolve` (§5a) when an address is saved/changed — resolve post_office/district/province to a `city_id` once, cache it
 - [ ] `POST /ecommerce/rates` at checkout — handle `serviceable: false` as a normal UI state, not an error
 - [ ] `POST /ecommerce/shipments` with a **stable `merchant_order_ref`** (your own order id) so retries are safe
-- [ ] Handle `quote_expired`/`quote_already_used`/`quote_not_serviceable` explicitly — don't just show a generic error
+- [ ] Handle `quote_expired`/`quote_already_used`/`quote_not_serviceable`/`handover_code_required_without_code`/`pickup_location_not_found`/`pickup_location_not_owned` explicitly — don't just show a generic error
 - [ ] Register a webhook endpoint and verify signatures (§10.3) — don't trust an unverified payload
-- [ ] Still poll `GET /ecommerce/shipments/{id}` periodically as a fallback (§10.4)
+- [ ] Poll **§7a's `GET /ecommerce/shipments` list** periodically as the real fallback/source of truth (§10.4) — not one-at-a-time reads
 - [ ] Handle `429` by backing off for `Retry-After` seconds
 - [ ] Map the 8-value status vocabulary (§8) onto your own order-status display
 - [ ] Handle `resolved: false` (§5a) by `reason` — `ambiguous_post_office` means resend with `district`, the others mean "can't deliver here yet"
+- [ ] If you fulfil from more than one branch, register each as a pickup location (§12) and send `pickup_location_id` per order
+- [ ] Send `handover_code`/`handover_code_required` **only for prepaid orders**, never COD (§7)
+- [ ] Read `handover`/`cod`/`failure_note` on the `delivered`/`failed`/`returned` webhook events and §8 reads (§8, §10.2) — don't assume `delivered` alone means "cash confirmed" for COD

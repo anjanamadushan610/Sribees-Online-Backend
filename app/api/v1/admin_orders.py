@@ -631,8 +631,8 @@ async def reject_order_return(
 )
 async def reconcile_marx_payments(db: AsyncSession = Depends(get_db)):
     """
-    Manually trigger the Marx IPG reconciliation sweep (docs/COURIER_API.md's
-    sibling recommendation in the Marx doc's own section 7): resolves gateway
+    Manually trigger the Marx IPG reconciliation sweep (the Marx doc's own
+    section 7 recommendation): resolves gateway
     orders stuck PENDING against Marx's GET .../summary. Cross-branch, so
     restricted to super_admin regardless of the router's default roles. Shares
     the exact same logic as ``scripts/reconcile_marx_payments.py`` (the

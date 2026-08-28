@@ -42,8 +42,12 @@ MARX_PAYMENT_METHOD_MAP = {
 def to_courier_payment_method(payment_method: Optional[str]) -> str:
     """
     Map our payment_method to the courier contract's own vocabulary
-    (docs/COURIER_API.md section 4: ``"cod"`` or ``"prepaid"`` — COD usually
-    carries a collection fee that must be priced into the quote).
+    (docs/SRIBEESEXPRESS_ECOMMERCE_API.md section 6: ``"cod"`` or ``"prepaid"``).
+
+    Sent on every quote and booking, but currently inert for pricing —
+    SribeesExpress has no COD collection fee today and has committed to
+    advance notice before one starts affecting ``amount_lkr``. Sending it now
+    means that change lands without a code change here.
     """
     normalized = (payment_method or "").strip().upper()
     return "cod" if normalized == PaymentMethodEnum.COD.value else "prepaid"
