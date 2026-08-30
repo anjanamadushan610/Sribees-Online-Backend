@@ -49,6 +49,7 @@ Environment variables this process reads (all optional, sensible defaults):
 | 9 | `POST /api/v1/ecommerce/shipments/{id}/cancel` |
 | 10.1 | `POST /api/v1/ecommerce/webhook-endpoints` |
 | 12 | `POST`/`GET`/`PATCH`/`DELETE /api/v1/ecommerce/pickup-locations` |
+| 14 | `GET /api/v1/ecommerce/cod-balance`, `GET /api/v1/ecommerce/remittances`, `GET /api/v1/ecommerce/remittances/{id}/shipments` |
 
 ## Deterministic pricing
 
@@ -94,6 +95,8 @@ All via magic values in the request body — no separate config needed.
 | `handover_code_required: true` with no code | `400 handover_code_required_without_code` |
 | `PATCH /shipments/{id}` once `out_for_delivery` | `409 shipment_not_correctable` |
 | `POST /shipments/{id}/cancel` after pickup | `409 conflict` |
+| `POST /pickup-locations` with a name already registered | `409 pickup_location_name_already_registered` — recover the id via `GET /pickup-locations`, which is what the backend's registration sync does |
+| Booking against a deactivated `pickup_location_id` | `409 pickup_location_deactivated` |
 
 ## Test-harness-only endpoint
 
@@ -101,6 +104,13 @@ All via magic values in the request body — no separate config needed.
 
 ```json
 { "status": "delivered", "handover_code": "4821", "cod_collected": true }
+```
+
+For a failure, `will_retry` is the field that matters — it is what the backend
+branches on to decide refund-now versus tell-the-customer-tomorrow:
+
+```json
+{ "status": "failed", "will_retry": true, "failure_note": "Called 3 times, no answer" }
 ```
 
 **Not part of the real contract** — hence the leading underscore. Drives a
@@ -122,6 +132,21 @@ Note that `cod_collected` is a separate field from `status`, on purpose: the
 real contract flips `cod.collected` independently of `delivered`, so the mock
 lets you produce the awkward case — delivered, cash *not* collected — that the
 backend has to handle.
+
+## Settlement harness
+
+`POST /api/v1/ecommerce/_remit` — also mock-only. On the real service,
+generating a remittance run and marking it paid are staff actions we can never
+call; this stands in for an ops person doing that, so the merchant half of the
+settlement flow is testable.
+
+It sweeps every collected-but-unremitted COD shipment into one run, stamps
+`remittance_id` on each, and bumps their `updated_at` (so a reconciliation
+sweep picks the settlement up). `GET /cod-balance` drops to zero afterwards.
+
+```json
+{ "status": "paid", "bank_reference": "CEFT-MOCK-0001" }
+```
 
 ## Resetting state
 

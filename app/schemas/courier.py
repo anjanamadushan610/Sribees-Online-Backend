@@ -25,7 +25,13 @@ class PickupLocationSyncResult(BaseModel):
     branch_code: str
     branch_name: str
     pickup_location_id: Optional[int] = None
-    action: str = Field(description="created | updated | skipped | failed")
+    action: str = Field(
+        description=(
+            "created | updated | recovered | skipped | failed. `recovered` means "
+            "SribeesExpress already had a location under this branch's name and we "
+            "re-linked its id -- creating a duplicate is refused by design."
+        )
+    )
     detail: Optional[str] = None
 
 

@@ -20,6 +20,7 @@ them belong on a checkout path:
 Prefix "/admin/courier" is applied by app/api/v1/router.py.
 """
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
@@ -29,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.core.dependencies import get_current_admin
 from app.models.branch import Branch
+from app.models.order import Order
 from app.schemas.courier import (
     CourierSweepResponse,
     PickupLocationSyncResponse,
@@ -38,6 +40,20 @@ from app.services import courier_sync_service
 from app.services.courier_service import CourierError, CourierService, CourierUnavailableError
 
 router = APIRouter(tags=["Admin - Courier"])
+
+
+async def _recover_pickup_location_by_name(name: str) -> Optional[dict]:
+    """
+    Find an already-registered pickup location by name (case-insensitive).
+
+    Only used to recover from ``pickup_location_name_already_registered``:
+    SribeesExpress refuses a duplicate name rather than silently returning the
+    existing row, so a merchant that lost its stored ids has to look it up.
+    """
+    for location in await CourierService.list_pickup_locations():
+        if (location.get("name") or "").strip().lower() == name.strip().lower():
+            return location
+    return None
 
 
 @router.post("/pickup-locations/sync", response_model=PickupLocationSyncResponse)
@@ -95,8 +111,21 @@ async def sync_pickup_locations(
                 )
                 action = "updated"
             else:
-                result = await CourierService.create_pickup_location(**payload)
-                action = "created"
+                try:
+                    result = await CourierService.create_pickup_location(**payload)
+                    action = "created"
+                except CourierError as exc:
+                    if exc.code != "pickup_location_name_already_registered":
+                        raise
+                    # We lost the id (restored from a backup, or a previous
+                    # sync stored nothing) but SribeesExpress still holds the
+                    # location. Recover the id by name rather than leaving the
+                    # branch permanently unregistered -- creating a second one
+                    # is refused, by design, so this is the only way back.
+                    result = await _recover_pickup_location_by_name(branch.name)
+                    if result is None:
+                        raise
+                    action = "recovered"
         except (CourierUnavailableError, CourierError) as exc:
             failed += 1
             logger.error(f"Pickup location sync failed for branch {branch.code}: {exc}")
@@ -144,6 +173,87 @@ async def run_reconciliation_sweep(
     """
     seen, applied = await courier_sync_service.sweep(db)
     return CourierSweepResponse(seen=seen, applied=applied)
+
+
+@router.get("/cod-balance", response_model=dict)
+async def get_cod_balance(current_admin=Depends(get_current_admin)) -> dict:
+    """
+    Cash SribeesExpress has collected from our customers and not yet paid out
+    (contract section 14).
+
+    This is the number to watch, because their remittance runs are triggered
+    by their ops team rather than a scheduler — nothing else would tell us a
+    payout is overdue. Cross-check it against our own ledger of
+    ``courier_cod_collected`` orders with no ``courier_remittance_id``; a
+    persistent gap between the two is a reconciliation problem worth raising
+    with them.
+    """
+    try:
+        data = await CourierService.get_cod_balance()
+    except (CourierUnavailableError, CourierError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    return {"success": True, "data": data}
+
+
+@router.get("/remittances", response_model=dict)
+async def list_remittances(
+    limit: int = 50,
+    offset: int = 0,
+    current_admin=Depends(get_current_admin),
+) -> dict:
+    """
+    Our COD payout history (contract section 14). Read-only — generating a run
+    and marking it paid are staff actions on SribeesExpress's side.
+
+    ``status`` is ``pending`` until their ops confirms the bank transfer
+    landed, then ``paid`` with a ``bank_reference`` to match against our
+    statement.
+    """
+    try:
+        data = await CourierService.list_remittances(limit=limit, offset=offset)
+    except (CourierUnavailableError, CourierError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    return {"success": True, "data": data}
+
+
+@router.get("/remittances/{remittance_id}/shipments", response_model=dict)
+async def get_remittance_shipments(
+    remittance_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin=Depends(get_current_admin),
+) -> dict:
+    """
+    Which shipments a given payout covered, joined back to our own order
+    numbers so finance can tie a bank credit to real orders.
+
+    Also backfills ``courier_remittance_id`` on the matching orders: a
+    settlement usually reaches us through this read rather than a status
+    webhook, since being remitted is not a shipment status change.
+    """
+    try:
+        rows = await CourierService.get_remittance_shipments(remittance_id)
+    except (CourierUnavailableError, CourierError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    matched = 0
+    for row in rows:
+        shipment_id = row.get("shipment_id")
+        if not shipment_id:
+            continue
+        order = (
+            await db.execute(select(Order).where(Order.courier_shipment_id == shipment_id))
+        ).scalar_one_or_none()
+        if order is None:
+            continue
+        row["merchant_order_ref"] = row.get("merchant_order_ref") or order.order_number
+        if order.courier_remittance_id != remittance_id:
+            order.courier_remittance_id = remittance_id
+            matched += 1
+    if matched:
+        await db.commit()
+        logger.info(f"Remittance {remittance_id}: marked {matched} order(s) settled")
+
+    return {"success": True, "data": rows, "orders_updated": matched}
 
 
 @router.post("/webhook-endpoint", response_model=dict)

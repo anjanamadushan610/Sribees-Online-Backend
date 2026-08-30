@@ -45,6 +45,10 @@ STATUS_MAP = {
     "delivered": OrderStatusEnum.DELIVERED,
 }
 
+# How far back the next sweep re-reads. Covers a row stamped before our query
+# ran but committed after it -- see sweep()'s docstring.
+CURSOR_REWIND = timedelta(minutes=1)
+
 
 def _parse_dt(value) -> Optional[datetime]:
     if not value:
@@ -134,6 +138,26 @@ async def apply_shipment_payload(
         order.courier_failure_note = payload["failure_note"]
         changed = True
 
+    # The machine-readable half of a failure: True means SribeesExpress can
+    # still redispatch, False means it is heading for `returned`. That is the
+    # refund-now vs tell-them-tomorrow decision, and it is the only part of a
+    # failure we are willing to branch on -- `failure_note` is free text.
+    if "will_retry" in payload and payload["will_retry"] != order.courier_will_retry:
+        order.courier_will_retry = payload["will_retry"]
+        changed = True
+
+    # NULL until this shipment's collected COD has actually been paid out to
+    # us. Only ever set, never cleared: a payload that omits it means "not
+    # reported here", and clearing a settled remittance would make money look
+    # unreceived.
+    remittance_id = payload.get("remittance_id")
+    if remittance_id is not None and remittance_id != order.courier_remittance_id:
+        order.courier_remittance_id = remittance_id
+        logger.info(
+            f"Order {order.order_number}: COD remitted in run {remittance_id}"
+        )
+        changed = True
+
     # Mirror onto our own order status last, so the courier fields are already
     # written when update_status fires its side effects (notifications,
     # cashback crediting).
@@ -198,27 +222,35 @@ async def sweep(db: AsyncSession) -> Tuple[int, int]:
     applying a payload is idempotent, and is much better than skipping a
     ``delivered`` we never saw.
 
-    **The cursor is our own start-of-run timestamp, not a value read from the
-    rows.** It has to be: ``updated_since`` filters on a field SribeesExpress
-    never actually serializes — no ``updated_at`` appears anywhere in a
-    shipment response (see docs/SRIBEESEXPRESS_OPEN_ITEMS.md section 2, which
-    asks them to add it). ``created_at`` is not a substitute; a shipment booked
-    Monday and delivered Friday would drag the cursor back to Monday on every
-    sweep, so it would never advance at all.
+    **The cursor is the newest ``updated_at`` we actually saw**, which
+    SribeesExpress now serializes on every shipment row (they fixed the
+    missing field in round 2). That is deliberately *their* clock, not ours:
+    a row they update after this sweep is stamped later than anything we just
+    read, so it cannot slip through the boundary, and no assumption about two
+    machines agreeing on the time is involved.
 
-    Taking the time *before* the first request, rather than after the last, is
-    what makes this safe: anything SribeesExpress updates while the sweep is
-    running is stamped at or after that instant, so the next run still sees it.
-    The extra minute of rewind covers clock skew between their host and ours.
-    Both are mitigations for the missing field, not a fix — a shipment updated
-    inside the skew window is still re-read rather than missed, which is the
-    direction we want to fail in.
+    ``updated_since`` is inclusive (``>=``), so replaying the cursor re-reads
+    exactly the boundary rows — cheap, and applying a payload twice is a
+    no-op.
+
+    Two guards remain:
+
+    * A short rewind on the next read. A row can be *stamped* before our query
+      runs but only become *visible* after it commits, and that row would
+      otherwise sit forever just behind the cursor. Re-reading a minute of
+      history each sweep is a trivial price for closing that.
+    * A fallback to our own start-of-run clock when a page carries no
+      ``updated_at`` at all. That should not happen any more, but if the field
+      ever disappears again the sweep degrades to the old clock-based
+      behaviour instead of freezing its cursor and re-reading the entire
+      account forever.
     """
-    # Captured BEFORE the first request -- see the docstring. Using the time
-    # the sweep *finished* would silently skip anything updated mid-run.
+    # Captured BEFORE the first request, for the fallback path only: using the
+    # time the sweep *finished* would silently skip anything updated mid-run.
     started_at = datetime.now(timezone.utc)
     cursor = await _get_cursor(db)
-    since = (cursor - timedelta(minutes=1)) if cursor else None
+    since = (cursor - CURSOR_REWIND) if cursor else None
+    high_water: Optional[datetime] = None
 
     seen = 0
     applied = 0
@@ -235,6 +267,12 @@ async def sweep(db: AsyncSession) -> Tuple[int, int]:
 
             for row in rows:
                 seen += 1
+                # Tracked over every row, including ones we do not own: an
+                # unmatched shipment still proves the cursor can move past it.
+                row_at = _parse_dt(row.get("updated_at"))
+                if row_at and (high_water is None or row_at > high_water):
+                    high_water = row_at
+
                 shipment_id = row.get("shipment_id")
                 if not shipment_id:
                     continue
@@ -262,6 +300,6 @@ async def sweep(db: AsyncSession) -> Tuple[int, int]:
         await _set_cursor(db, synced_at=None, error=str(exc)[:500])
         return seen, applied
 
-    await _set_cursor(db, synced_at=started_at, error=None)
+    await _set_cursor(db, synced_at=high_water or started_at, error=None)
     logger.info(f"Courier reconciliation sweep: {seen} shipment(s) seen, {applied} applied")
     return seen, applied

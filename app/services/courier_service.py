@@ -27,7 +27,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import httpx
 from loguru import logger
@@ -39,8 +39,16 @@ from app.config.settings import settings
 # having to know the API's internal layout.
 API_PREFIX = "/api/v1/ecommerce"
 
-# Max length of the flat recipient_address string (contract section 7).
+# Documented field maxima (contract section 15, the round-2 field answers).
+# Enforced client-side: exceeding them is a 422 at booking time, and a booking
+# that fails on a long name is an order that silently never ships.
 RECIPIENT_ADDRESS_MAX = 255
+RECIPIENT_NAME_MAX = 150
+RECIPIENT_PHONE_MAX = 30
+
+# Section 7a caps `limit` at 200. Asking for more is rejected outright, so the
+# client clamps rather than letting a misconfigured setting break every sweep.
+SHIPMENT_LIST_LIMIT_MAX = 200
 
 
 class CourierUnavailableError(Exception):
@@ -376,12 +384,16 @@ class CourierService:
         ``handover_code`` is passed straight through: the caller decides
         whether an order is eligible for one, since SribeesExpress accepts a
         code on prepaid shipments only (section 7).
+
+        Name and phone are truncated to their documented maxima. Phone is NOT
+        normalized -- SribeesExpress neither validates nor reformats it, so
+        whatever our address book holds is what the rider sees.
         """
         payload: Dict[str, Any] = {
             "merchant_order_ref": merchant_order_ref,
             "quote_id": quote_id,
-            "recipient_name": recipient_name,
-            "recipient_phone": recipient_phone,
+            "recipient_name": (recipient_name or "")[:RECIPIENT_NAME_MAX],
+            "recipient_phone": (recipient_phone or "")[:RECIPIENT_PHONE_MAX],
             "recipient_address": format_recipient_address(
                 address_line1, address_line2, post_office, district, postal_code
             ),
@@ -424,23 +436,36 @@ class CourierService:
     async def list_shipments(
         *,
         updated_since: Optional[datetime] = None,
-        status_filter: Optional[str] = None,
+        status_filter: Optional[Union[str, Sequence[str]]] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[dict]:
         """
-        ``GET /ecommerce/shipments`` (section 7a) — the reconciliation poll.
+        ``GET /ecommerce/shipments`` (section 7a) -- the reconciliation poll.
 
         This, not per-shipment reads, is the fallback for SribeesExpress
         having no webhook retry (section 10.4): 500 open parcels would be 500
         requests against a 60/min limit, which does not fit. Same per-shipment
-        shape as section 7, minus ``history``.
+        shape as section 7 -- ``handover``, ``cod`` and ``remittance_id``
+        included -- minus ``history``.
+
+        ``updated_since`` is **inclusive** (``>=``), so passing back the newest
+        ``updated_at`` seen re-reads exactly the boundary rows rather than
+        risking a skip. ``status_filter`` takes one value or several; several
+        are sent comma-separated, which is how "everything not yet terminal"
+        becomes one request instead of a full-table sweep.
         """
-        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        params: Dict[str, Any] = {
+            "limit": min(limit, SHIPMENT_LIST_LIMIT_MAX),
+            "offset": offset,
+        }
         if updated_since is not None:
             params["updated_since"] = updated_since.isoformat()
         if status_filter:
-            params["status_filter"] = status_filter
+            if isinstance(status_filter, str):
+                params["status_filter"] = status_filter
+            else:
+                params["status_filter"] = ",".join(status_filter)
 
         data = await CourierService._request("GET", "/shipments", params=params)
         return data if isinstance(data, list) else []
@@ -462,6 +487,48 @@ class CourierService:
         before pickup; past that it is a ``409`` and a support conversation.
         """
         return await CourierService._request("POST", f"/shipments/{shipment_id}/cancel")
+
+    # ------------------------------------------------------------------
+    # Section 14 -- COD remittances (read-only)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def get_cod_balance() -> dict:
+        """
+        ``GET /ecommerce/cod-balance`` (section 14) -- cash collected from our
+        customers that has not yet been paid out to us.
+
+        The one number that does not depend on SribeesExpress's payout policy:
+        it is arithmetic over collections they already hold. Safe to poll
+        often, and it is what tells us whether a remittance is overdue --
+        their runs are triggered by ops rather than a scheduler, so nothing
+        else would.
+        """
+        return await CourierService._request("GET", "/cod-balance")
+
+    @staticmethod
+    async def list_remittances(*, limit: int = 50, offset: int = 0) -> List[dict]:
+        """
+        ``GET /ecommerce/remittances`` (section 14).
+
+        ``status`` is ``pending`` until their ops confirms the bank transfer
+        landed, then ``paid`` with ``bank_reference``/``paid_at`` set. Read
+        only -- generating a run and marking it paid are staff actions on
+        their side and are not exposed to us.
+        """
+        data = await CourierService._request(
+            "GET", "/remittances", params={"limit": limit, "offset": offset}
+        )
+        return data if isinstance(data, list) else []
+
+    @staticmethod
+    async def get_remittance_shipments(remittance_id: int) -> List[dict]:
+        """
+        ``GET /ecommerce/remittances/{id}/shipments`` (section 14) -- which
+        shipments a given payout covered, in section 7's shape.
+        """
+        data = await CourierService._request("GET", f"/remittances/{remittance_id}/shipments")
+        return data if isinstance(data, list) else []
 
     # ------------------------------------------------------------------
     # Section 12 — pickup locations

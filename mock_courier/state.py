@@ -16,6 +16,7 @@ class _Store:
         self.shipments_by_id: Dict[str, dict] = {}
         self.pickup_locations: Dict[int, dict] = {}
         self.webhook_endpoints: Dict[int, dict] = {}
+        self.remittances: Dict[int, dict] = {}
         self._next_id = 1
 
     def next_id(self) -> int:

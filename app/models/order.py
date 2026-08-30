@@ -127,8 +127,19 @@ class Order(Base):
     courier_cod_collected_amount = Column(Numeric(12, 2), nullable=True)
     courier_cod_collected_at = Column(DateTime(timezone=True), nullable=True)
     # Rider free text on a failed/returned shipment. Free text by design
-    # (§8) -- never branch business logic on its exact wording.
+    # (§8) -- never branch business logic on its exact wording. Branch on
+    # courier_will_retry instead, which is the machine-readable half.
     courier_failure_note = Column(Text, nullable=True)
+    # Only meaningful while courier_tracking_status is `failed`: True means
+    # SribeesExpress can still redispatch, False means it is heading for
+    # `returned`. This is the refund-now vs tell-them-tomorrow signal. There is
+    # no next_attempt_at to go with it -- nothing on their side schedules a
+    # redispatch on a clock, a human decides (§3 of their round-2 response).
+    courier_will_retry = Column(Boolean, nullable=True)
+    # The remittance run that paid this shipment's collected COD out to us.
+    # NULL until settled -- and their runs are triggered by ops rather than a
+    # scheduler, so NULL for days is normal, not a fault.
+    courier_remittance_id = Column(Integer, nullable=True)
 
     # Delivery
     delivery_address_id = Column(UUID(as_uuid=True), ForeignKey("addresses.address_id"), nullable=True)

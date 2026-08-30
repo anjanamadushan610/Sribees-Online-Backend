@@ -243,6 +243,8 @@ class _FakeOrder:
     courier_cod_collected_amount = None
     courier_cod_collected_at = None
     courier_failure_note = None
+    courier_will_retry = None
+    courier_remittance_id = None
     delivery_verification_status = "pending"
     delivery_verification_confirmed_at = None
 
@@ -381,3 +383,167 @@ async def test_courier_cancelled_never_cancels_our_order():
     )
     assert order.courier_tracking_status == "cancelled"
     assert order.status == "shipped"
+
+# ---------------------------------------------------------------------------
+# Round-2 fields: will_retry and remittance_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_will_retry_is_recorded_on_a_failed_shipment():
+    """
+    The machine-readable half of a failure. `failure_note` is free text by
+    design, so this is the only part of a failure we branch on: it decides
+    refund-now versus tell-the-customer-tomorrow.
+    """
+    from app.services import courier_sync_service
+
+    order = _FakeOrder()
+    await courier_sync_service.apply_shipment_payload(
+        _FakeDB(),
+        order,
+        {
+            "status": "failed",
+            "at": "2026-08-28T16:00:00+00:00",
+            "will_retry": True,
+            "failure_note": "Called 3 times, no answer",
+        },
+        commit=True,
+    )
+    assert order.courier_will_retry is True
+    assert order.courier_failure_note == "Called 3 times, no answer"
+
+
+@pytest.mark.asyncio
+async def test_will_retry_false_is_recorded_not_treated_as_absent():
+    """False and None mean different things -- False is 'heading for returned'."""
+    from app.services import courier_sync_service
+
+    order = _FakeOrder()
+    order.courier_will_retry = True
+    await courier_sync_service.apply_shipment_payload(
+        _FakeDB(),
+        order,
+        {"status": "failed", "at": "2026-08-28T17:00:00+00:00", "will_retry": False},
+        commit=True,
+    )
+    assert order.courier_will_retry is False
+
+
+@pytest.mark.asyncio
+async def test_remittance_id_is_recorded_when_the_cod_is_paid_out(stub_status_transition):
+    from app.services import courier_sync_service
+
+    order = _FakeOrder()
+    await courier_sync_service.apply_shipment_payload(
+        _FakeDB(),
+        order,
+        {"status": "delivered", "at": "2026-08-28T16:00:00+00:00", "remittance_id": 12},
+        commit=True,
+    )
+    assert order.courier_remittance_id == 12
+
+
+@pytest.mark.asyncio
+async def test_a_null_remittance_id_never_clears_a_settled_one(stub_status_transition):
+    """
+    Most payloads carry `remittance_id: null` because most shipments are not
+    settled yet. Letting that overwrite a real id would make money we have
+    already received look unreceived.
+    """
+    from app.services import courier_sync_service
+
+    order = _FakeOrder()
+    order.courier_remittance_id = 12
+    await courier_sync_service.apply_shipment_payload(
+        _FakeDB(),
+        order,
+        {"status": "delivered", "at": "2026-08-29T09:00:00+00:00", "remittance_id": None},
+        commit=True,
+    )
+    assert order.courier_remittance_id == 12
+
+
+# ---------------------------------------------------------------------------
+# Section 7a request shaping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_status_filter_accepts_a_list_and_is_sent_comma_separated(monkeypatch):
+    from app.services import courier_service
+    from app.services.courier_service import CourierService as CS
+
+    captured = {}
+
+    async def _fake_request(method, path, *, json=None, params=None):
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(CS, "_request", staticmethod(_fake_request))
+    await CS.list_shipments(status_filter=["in_transit", "out_for_delivery"])
+    assert captured["params"]["status_filter"] == "in_transit,out_for_delivery"
+
+
+@pytest.mark.asyncio
+async def test_status_filter_still_accepts_a_bare_string(monkeypatch):
+    from app.services.courier_service import CourierService as CS
+
+    captured = {}
+
+    async def _fake_request(method, path, *, json=None, params=None):
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(CS, "_request", staticmethod(_fake_request))
+    await CS.list_shipments(status_filter="delivered")
+    assert captured["params"]["status_filter"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_list_limit_is_clamped_to_the_documented_maximum(monkeypatch):
+    """Over 200 is rejected outright, which would break every sweep."""
+    from app.services.courier_service import SHIPMENT_LIST_LIMIT_MAX
+    from app.services.courier_service import CourierService as CS
+
+    captured = {}
+
+    async def _fake_request(method, path, *, json=None, params=None):
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(CS, "_request", staticmethod(_fake_request))
+    await CS.list_shipments(limit=1000)
+    assert captured["params"]["limit"] == SHIPMENT_LIST_LIMIT_MAX
+
+
+# ---------------------------------------------------------------------------
+# Booking field maxima (round-2 field answers)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recipient_name_and_phone_are_truncated_to_their_maxima(monkeypatch):
+    """
+    Exceeding these is a 422 at booking time, and a booking that fails on an
+    over-long name is an order that silently never ships.
+    """
+    from app.services.courier_service import RECIPIENT_NAME_MAX, RECIPIENT_PHONE_MAX
+    from app.services.courier_service import CourierService as CS
+
+    captured = {}
+
+    async def _fake_request(method, path, *, json=None, params=None):
+        captured["json"] = json
+        return {}
+
+    monkeypatch.setattr(CS, "_request", staticmethod(_fake_request))
+    await CS.book_shipment(
+        merchant_order_ref="FC-TEST",
+        quote_id="qt_x",
+        recipient_name="N" * 400,
+        recipient_phone="0" * 90,
+        address_line1="1 Main St",
+    )
+    assert len(captured["json"]["recipient_name"]) == RECIPIENT_NAME_MAX
+    assert len(captured["json"]["recipient_phone"]) == RECIPIENT_PHONE_MAX

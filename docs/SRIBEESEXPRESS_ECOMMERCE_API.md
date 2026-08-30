@@ -1,51 +1,234 @@
 # Ecommerce Integration API — Integration Contract
 
-**Status:** implemented and tested (`app/ecommerce_api/`, 79 passing
-integration tests as of 2026-08-28). This document describes what actually
-exists, not a spec to be built later.
+**Status:** implemented and tested (`app/ecommerce_api/`, 208 passing tests
+across the whole backend as of 2026-08-28, including everything this domain
+touches). This document describes what actually exists, not a spec to be
+built later.
 
-## Response to your integration review (2026-08-28)
+## Response to your open items (2026-08-28, round 2 — `SRIBEESEXPRESS_OPEN_ITEMS.md`)
 
-Read `SRIBEESEXPRESS_INTEGRATION_GAPS.md` end to end. Per section, in your
-own requested format:
+Round 1 (`SRIBEESEXPRESS_INTEGRATION_GAPS.md`) is closed — every item in it
+shipped, was answered, or was explicitly declined with a reason, as you
+confirmed in §0 of your open-items doc. This section responds to round 2.
 
-| # | Gap | Verdict | Where |
+| # | Item | Verdict | Where |
 |---|---|---|---|
-| §1 Handover code | **Built — prepaid orders only, not COD** (see correction below) | §7, §7a |
-| §2 Pickup location | **Built** — Option A, the merchant-managed registry | §12 |
-| §3 Remittance/settlement | **Won't build yet — need your payout policy first** | see note below |
-| §4 Delivery slot | **Partially built** — date/window *capture* only, no same-day/express *pricing* tier | §7 |
-| §5 Failure reason | **Partially built** — free text (`failure_note`), not a stable enum | §8 |
-| §6.1 Webhook retry | **Won't build** — needs a background job queue this backend doesn't have anywhere yet | §10.4 |
-| §6.2 Reconciliation list | **Built** | §7a |
-| §7 Perishable/cold-chain | **Built** — capture only, no surcharge, no rider-app visibility | §7 |
-| §8 Correcting a booking | **Built** | §8a |
-| §9 Structured address | **Built** (folded into `recipient_address`, no new stored field) + max length confirmed (255, already true) | §7 |
-| §10 Rate limit | Already per-key, adjustable at issuance — ask for a higher ceiling on your production key | §3 |
-| §11.1 shipment_id/waybill | Confirmed — always one identifier | §8 |
-| §11.2 Quote lifetime | Confirmed — quote → pay → book → re-quote on `quote_expired` is correct | §6 |
-| §11.3 `error.code` stability | Confirmed — every response in this domain, including `401`/`429`, uses the envelope | §4 |
-| §11.4 Coverage export | **Built** | §5c |
-| §11.5 COD pricing | Commit: advance notice before `cod_amount` ever affects `amount_lkr` | §6 |
-| §11.6 Timezone | **Correction, not confirmation** — see below | — |
-| §11.7 Sandbox clearing | **Won't build** — no self-service bulk-delete; ask SribeesExpress ops | §11 |
+| §1 COD remittance | **Built** — full ledger + a `cod-balance` read; payout policy below (not invented, given to you straight) | §14 |
+| §2 `updated_at` missing | **Confirmed bug, fixed** | §7, §7a, §8 |
+| §3 Failure reason | **Built `will_retry`** (the cheaper option, taken) — no `next_attempt_at`, see why below | §8 |
+| §4 Same-day/express tier | **Roadmap: yes, ~3–6 months out** (targeting Q4 2026 / Q1 2027) — pricing not built yet | — |
+| §5 §7a load-bearing | **Acknowledged** — two commitments below | §7a |
+| §6 Cold chain | **No capability today, none planned** — cap your categories accordingly | — |
+| §7 Sandbox & keys | **Sandbox key issued** — see the note below before you try to call it | §11 |
+| §8 Field-level questions | **Answered inline**, item by item | §15 |
 
-**Correction on §1 — the handover code is for prepaid orders, not COD.** A
-COD rider collecting cash in hand is its own proof; they mark `delivered`
-directly, no code involved. The code applies to **prepaid** orders as
-proof-of-correct-recipient, matching what our own earlier `client-portal`-era
-contract already had. Built to Option A (you hand us the code at booking) —
-see §7.
+### §1 — COD remittance/settlement
 
-**§3 remittance/settlement is a real gap, genuinely not built.** This needs
-an actual payout policy from you before anything ships against it — cadence
-(daily/weekly/T+n), what's deducted, what "paid" means operationally. Send
-that and we'll scope it; a minimal read-only balance view is the likely
-first cut once the policy exists.
+You were right and we were wrong to put this back on you first — the cash
+sits with us, so the payout terms are ours to state, not yours to author.
+Built:
 
-**§11.6 timezone — correction:** all timestamps are **UTC** (`+00:00`), not
-Asia/Colombo. The doc's examples already showed `+00:00`; if you read that as
-"just an example format," it's not — convert client-side.
+- `GET /ecommerce/remittances` — every remittance run for your account.
+- `GET /ecommerce/remittances/{remittance_id}/shipments` — which shipments
+  a given run covers (§7's shape, `remittance_id` filled in).
+- `GET /ecommerce/cod-balance` — collected-but-not-yet-remitted right now,
+  no policy needed to compute it (pure arithmetic over data we already hold).
+- `remittance_id` on every shipment read (§7/§7a/§8) — `null` until settled.
+
+**The policy, in prose, as asked:**
+
+- **Cadence:** weekly. There is no scheduler in this backend yet (the same
+  gap already flagged for webhook retry) — a run is triggered by our ops
+  team per client, not on an automatic clock. If a week is ever missed,
+  nothing is lost: every unremitted collection just carries forward into
+  the next run.
+- **Deductions:** delivery charge only, today. Nothing else comes off the
+  top in this cut.
+- **A shipment that had COD collected but ends up `returned`:** the cash
+  simply stays uncredited to any remittance — it keeps showing up in
+  `cod-balance` and in the eligible pool for whichever run picks it up
+  next. There's no automatic reversal; if you need it resolved sooner than
+  the next scheduled run, ask ops directly.
+
+Generating a run and marking one paid (with a bank reference) are
+staff-only actions on our side — never exposed on this public API — so you
+won't see write endpoints for them here, only the read side above.
+
+### §2 — `updated_at`
+
+Confirmed as a real bug, not a decision. `updated_at` now appears on §7's
+booking response, every row of §7a's list, and §8's read. Two follow-ups
+you asked for:
+
+- `updated_since` is **inclusive** (`>=`) — re-reading one row at the
+  boundary is free, so we'd rather that than risk skipping one.
+- `updated_at` bumps on **every** field write to the order, not just a
+  status transition — a §8a `PATCH` correcting a phone number bumps it too,
+  so your sweep will see it.
+
+### §3 — Failure reason
+
+We built the cheaper of your two options: **`will_retry: boolean | null`**,
+present on every shipment read.
+
+```json
+{ "status": "failed", "will_retry": true, "failure_note": "Called 3 times, no answer" }
+```
+
+- `true` while the shipment is sitting in the internal `failed_to_deliver`
+  state — our own state machine still allows either a redispatch or a move
+  into the return branch from there, so a retry is genuinely still possible.
+- `false` once ops has moved it into the return branch (on its way to
+  `returned`).
+- `null` for anything else (this field only means something once `status`
+  is `failed`).
+
+**Deliberately no `next_attempt_at`.** Nothing in this backend schedules a
+redispatch on a clock — a human decides when to re-dispatch. Shipping a
+timestamp would claim a capability we don't have; `will_retry` is the
+honest version of the same signal.
+
+Your two no-build questions:
+
+- **How many attempts before `returned`?** No fixed number — ops decides
+  case by case today. There's no automatic cutoff.
+- **Can you request one-attempt-only for a perishable order?** Not today.
+  That needs a new per-order flag our dispatch/rider side actually
+  respects — a real ask, not built this round given everything else in it;
+  tell us if it's worth prioritizing next.
+
+### §4 — Same-day/express tier
+
+Roadmap: **yes**, targeting roughly 3–6 months out from today (so
+Q4 2026 into Q1 2027). Not committing to a firmer date yet. The
+`service_level` request/pricing shape you sketched is the right one when we
+get there — nothing to build on your side now beyond what you're already
+sending (`requested_delivery_date`/`_window`, captured only).
+
+### §5 — §7a as load-bearing infrastructure
+
+Both commitments, taken:
+
+1. We will tell you before §7a's shape or availability changes.
+2. Confirmed — §7a shares your account's normal per-key rate limit (the
+   same dependency every route in this domain runs through). It is not
+   separately throttled.
+
+The webhook-delivery replay endpoint you floated (`POST
+/ecommerce/webhook-endpoints/{id}/deliveries/{delivery_id}/replay`) is
+noted, not built this round — flagged as real future work, not forgotten.
+
+### §6 — Cold chain
+
+**No temperature-controlled or expedited handling exists today, and none is
+planned right now.** Cap frozen/chilled/ice-cream categories out of what
+ships through this API and say so on your storefront — better that than a
+melted delivery and a refund. `handling` tags remain capture-only this
+round (not yet printed on a rider job card) — a real, cheap follow-up, just
+not this pass.
+
+### §7 — Sandbox & keys
+
+A **sandbox client and key were issued** using the real issuance code path
+(`POST /identity/clients/{id}/api-keys`) against a fully-migrated database —
+proving the mechanism end-to-end. **Important caveat, told straight rather
+than left for you to discover:** this backend has not yet been deployed to
+any host reachable from outside this dev machine. The key that was
+generated during this verification only exists against a throwaway local
+database that no longer exists — **it is not usable by you today.** A real,
+callable sandbox key (and the base URL to call it at) will follow once
+SribeesExpress actually deploys this backend somewhere you can reach; that
+is a real, separate, outstanding step on our side, not yet done.
+
+Answers to the rest of §7:
+
+- **Rate-limit ceiling:** mechanism is per-key
+  (`ApiClientKey.rate_limit_per_minute`, default 60/min), not per-account —
+  your sandbox and production keys can carry different limits without
+  sharing a budget. Tell us your expected volume and we'll set your
+  production key's ceiling accordingly at issuance.
+- **`/locations/resolve` shares the limit:** confirmed — every route in
+  this domain runs through the same per-key check, no exceptions.
+- **`429` always carries `Retry-After`:** confirmed — the same shared
+  dependency computes and attaches it on every rate-limited response here,
+  burst or sustained.
+- **Sandbox isolation in remittances/cod-balance:** **not yet isolated** —
+  told straight, this is the same shallow-sandbox-isolation limitation
+  already flagged in this doc's design notes (sandbox rows are tagged, but
+  nothing downstream filters on `environment` yet). A sandbox booking's
+  collected COD would currently show up in `cod-balance`/a remittance run
+  the same as a live one. Don't run sandbox-key COD tests expecting them to
+  stay invisible to billing until this is tightened.
+- **`merchant_order_ref` namespace — fixed.** This was a real gap: your
+  sandbox and live keys no longer share the same idempotency scope for a
+  given ref. A test booking with `FC-20260828-A7K2M9` on your sandbox key
+  can never collide with (or be mistaken for a retry of) a live order using
+  the same ref.
+- **Webhook secret rotation invalidates the old one immediately:**
+  confirmed — the stored secret is overwritten in place, no dual-secret
+  grace window.
+
+### §8 — Field-level questions
+
+**Lengths and formats**
+
+1. `recipient_name` max **150**, `recipient_phone` max **30**,
+   `recipient_address` max **255** (unchanged, now written down explicitly).
+2. **Phone format is not validated or normalized** — send whatever string
+   fits in 30 chars. If you need E.164 consistency, normalize before
+   sending; nothing here will do it for you.
+3. `handling` is genuinely **free-form** — no recognized vocabulary,
+   nothing is dropped. Whatever list you send is stored and echoed back
+   as-is.
+4. `requested_delivery_window` is an **opaque string** — not parsed, no
+   assumed separator or timezone. `"09:00-12:00"` is a convention between
+   us, not a contract.
+
+**Idempotency and identifiers**
+
+5. `merchant_order_ref` idempotency **never expires** — the uniqueness is a
+   permanent DB constraint, not a time-windowed cache. Retry after any
+   outage length, safely.
+6. `quote_id` is **permanently single-use** — once booked (or attempted),
+   it can never be reused; stop retrying it and re-quote instead, exactly
+   as you're already doing.
+7. **`pickup_location_id` uniqueness — fixed, and answered differently than
+   either option you proposed.** A second `POST` with a `name` already
+   registered for your account now returns `409
+   pickup_location_name_already_registered` — it neither silently
+   duplicates nor silently returns the existing row. Same precedent as this
+   domain's webhook-endpoint-URL uniqueness. A restore-from-backup that
+   re-runs your registration sync will surface a clear, actionable error
+   instead of silently forking your branch registry.
+8. **Deactivated pickup locations — fixed.** Booking against a deactivated
+   `pickup_location_id` now `409`s (`pickup_location_deactivated`) instead
+   of silently succeeding.
+
+**§7a specifics**
+
+9. **Maximum `limit` — now capped at 200** (was uncapped). Your `limit=100`
+   still works unchanged.
+10. **`status_filter` now accepts a comma-separated list** —
+    `status_filter=in_transit,out_for_delivery` fetches both in one call.
+11. **Terminal-shipment retention:** no separate retention window exists or
+    is planned — `updated_since` is the intended guard, confirmed. A
+    year-old `delivered` shipment stays in an unfiltered sweep forever;
+    filter by `updated_since` to bound your pagination cost.
+12. **`handover`/`cod` on §7a rows — confirmed yes, always present**, same
+    as §8's single read. Both endpoints build the response the same way
+    internally; there's no divergence to worry about.
+
+**Behaviour**
+
+13. **`cod.collected` can flip independently of `delivered` — confirmed.**
+    A COD collection is recorded as its own action on our side, with no
+    check against the shipment's current status. Your assumption matches
+    reality.
+14. **`cod` on a `returned` shipment that had already been collected:**
+    `collected` **stays `true`**, the amount is unchanged — nothing
+    reverts it automatically. See §1 above: that cash simply sits
+    unremitted until ops resolves it, rather than a refund happening out
+    of band automatically.
 
 ---
 
@@ -336,10 +519,13 @@ Called once, after payment is accepted. **Idempotent** on
   "handover": { "required": true, "code_verified": false, "attempts": 0 },
   "cod": { "collected": false, "amount": 4820.00 },
   "failure_note": null,
+  "will_retry": null,
+  "remittance_id": null,
   "requested_delivery_date": "2026-08-29",
   "requested_delivery_window": "09:00-12:00",
   "handling": ["perishable"],
   "created_at": "2026-08-25T12:35:00+00:00",
+  "updated_at": "2026-08-25T12:35:00+00:00",
   "tracking_url": "https://<web-app-origin>/track?waybill=SXP0000012345"
 }
 ```
@@ -349,7 +535,10 @@ Called once, after payment is accepted. **Idempotent** on
 `code_verified`/`attempts` both `null` for every COD/no-code shipment — see
 §7a for the field meanings. `cod.amount` is what you sent as `cod_amount`
 (the *asked* amount); `cod.collected` flips to `true` once a rider actually
-records collecting it — see §8's `delivered`-event note.
+records collecting it — see §8's `delivered`-event note. `will_retry` is
+`null` until `status` is `failed` (see §8). `remittance_id` is `null` until
+this shipment's COD has been paid out to you (see §14) — always `null` at
+booking time.
 
 A `200` (not `201`) means this was a replay of an existing booking — you'll
 get the exact same `shipment_id` back, not a new one.
@@ -366,27 +555,32 @@ get the exact same `shipment_id` back, not a new one.
 | `handover_code_required_without_code` | 400 | Sent `handover_code_required: true` without a `handover_code`. |
 | `pickup_location_not_found` | 404 | Unknown `pickup_location_id`. |
 | `pickup_location_not_owned` | 403 | That pickup location belongs to a different API key. |
+| `pickup_location_deactivated` | 409 | That pickup location was deactivated — register a new one or omit `pickup_location_id`. |
 
 ### 7a. `GET /ecommerce/shipments` — reconciliation-poll list (gap §6.2)
 
 The practical fallback for §10.4's "no automatic webhook retry" — poll this
 instead of hammering `GET /shipments/{id}` per parcel.
 
-- **Query:** `updated_since` (ISO-8601 datetime, optional), `status_filter`
-  (one of the §8 external values, optional), `limit` (default 50), `offset`.
+- **Query:** `updated_since` (ISO-8601 datetime, optional, **inclusive**),
+  `status_filter` (one or more of the §8 external values,
+  **comma-separated**, optional), `limit` (default 50, **max 200**),
+  `offset`.
 - **Response `200`:** a list of the **same per-shipment shape as §7's
-  response** (`ShipmentOut`) — deliberately **without** the `history` array
-  §8 includes; a history join on every row isn't worth paying for at
-  merchant scale. Call §8 for a specific shipment's full history.
+  response** (`ShipmentOut`, `handover`/`cod`/`remittance_id` included) —
+  deliberately **without** the `history` array §8 includes; a history join
+  on every row isn't worth paying for at merchant scale. Call §8 for a
+  specific shipment's full history.
 
 ```http
-GET /ecommerce/shipments?updated_since=2026-08-28T09:00:00Z&status_filter=out_for_delivery&limit=100
+GET /ecommerce/shipments?updated_since=2026-08-28T09:00:00Z&status_filter=out_for_delivery,failed&limit=100
 ```
 
 `status_filter=in_transit` matches every internal status that collapses
 onto that external value (§8's note on granularity) — you don't need to
 know or care about the internal states, filtering is always in terms of
-the 8-value vocabulary.
+the 8-value vocabulary. No server-side retention window on terminal
+shipments — `updated_since` is the guard against unbounded pagination cost.
 
 ---
 
@@ -415,10 +609,13 @@ the 8-value vocabulary.
   "handover": { "required": true, "code_verified": true, "attempts": 1 },
   "cod": { "collected": false, "amount": 4820.00 },
   "failure_note": null,
+  "will_retry": null,
+  "remittance_id": null,
   "requested_delivery_date": "2026-08-29",
   "requested_delivery_window": "09:00-12:00",
   "handling": ["perishable"],
   "created_at": "2026-08-25T12:35:00+00:00",
+  "updated_at": "2026-08-25T15:02:00+00:00",
   "tracking_url": "https://.../track?waybill=SXP0000012345",
   "history": [
     { "status": "booked", "at": "2026-08-25T12:35:00+00:00" },
@@ -458,6 +655,16 @@ not a stable enum** — the rider app itself only ever collects free text
 today (no Reason-ID dropdown), so a controlled vocabulary here would
 misrepresent what's actually collected. Parse for keywords if you need
 rough bucketing, but don't build hard business logic against exact strings.
+
+**`will_retry`** (open item §3): `true`/`false` only when `status` is
+`failed`, `null` otherwise. `true` means our state machine still allows a
+redispatch from here; `false` means ops has moved it into the return
+branch. No `next_attempt_at` — nothing here schedules a retry on a clock.
+
+**`remittance_id`** (§14): `null` until this shipment's collected COD has
+been included in a paid-out remittance run. Use `GET
+/ecommerce/remittances/{remittance_id}/shipments` once it's set to see the
+full run it belongs to.
 
 `404` unknown shipment, `403` belongs to a different API key.
 
@@ -643,7 +850,12 @@ id at booking time.
 }
 ```
 → **`201`**, the created location including its `id` — use that as
-`pickup_location_id` on §7.
+`pickup_location_id` on §7. A `name` you've already registered for your
+account returns `409 pickup_location_name_already_registered` instead of a
+silent duplicate or a silent return-the-existing-row — the same applies to
+`PATCH` if it would rename one location onto another's name. If you lost
+your stored `id` and are re-running a registration sync, treat this `409`
+as "already exists" and fetch the list (below) to recover the id.
 
 ### Manage
 - `GET /ecommerce/pickup-locations[/{id}]` — list/inspect.
@@ -660,7 +872,58 @@ bookings; nothing retroactively changes on parcels already in transit.
 
 ---
 
-## 13. Checklist for your integration
+## 14. COD remittances (open item §1) — read-only
+
+Generating a remittance run and marking one paid are staff-only actions on
+our side (real money, a human confirming a bank transfer landed) — this
+API only ever lets you **read your own remittances back**. See the policy
+prose in the response section above (weekly, delivery-charge-only
+deduction, no automatic scheduler) before relying on cadence assumptions.
+
+### `GET /ecommerce/cod-balance` — right now, no remittance needed
+
+```json
+{
+  "currency": "LKR",
+  "collected_not_remitted": 184300.00,
+  "shipment_count": 41,
+  "oldest_collection_at": "2026-08-21T11:04:00+00:00"
+}
+```
+
+Pure arithmetic over COD already collected and not yet tied to a
+remittance run — safe to poll any time, no payout policy dependency.
+
+### `GET /ecommerce/remittances?limit=&offset=`
+
+```json
+[
+  {
+    "id": 12,
+    "gross_cod_amount": 184300.00,
+    "deductions_amount": 6125.00,
+    "net_amount": 178175.00,
+    "shipment_count": 41,
+    "status": "pending",
+    "bank_reference": null,
+    "created_at": "2026-08-28T09:00:00+00:00",
+    "paid_at": null
+  }
+]
+```
+
+`status` is `pending` until ops confirms the bank transfer landed, then
+`paid` with `bank_reference`/`paid_at` filled in.
+
+### `GET /ecommerce/remittances/{remittance_id}/shipments`
+
+Returns the shipments (§7's shape) that this specific run covers —
+`remittance_id` on each one matches. `403` if the remittance belongs to a
+different account, `404` if unknown.
+
+---
+
+## 15. Checklist for your integration
 
 - [ ] Get a sandbox key from SribeesExpress; test end-to-end before asking for a production key
 - [ ] `POST /ecommerce/locations/resolve` (§5a) when an address is saved/changed — resolve post_office/district/province to a `city_id` once, cache it
@@ -675,3 +938,6 @@ bookings; nothing retroactively changes on parcels already in transit.
 - [ ] If you fulfil from more than one branch, register each as a pickup location (§12) and send `pickup_location_id` per order
 - [ ] Send `handover_code`/`handover_code_required` **only for prepaid orders**, never COD (§7)
 - [ ] Read `handover`/`cod`/`failure_note` on the `delivered`/`failed`/`returned` webhook events and §8 reads (§8, §10.2) — don't assume `delivered` alone means "cash confirmed" for COD
+- [ ] Advance your §7a `updated_since` cursor from your own clock at the *start* of each sweep, not the end — see §5's commitment above for why that matters with no webhook retry
+- [ ] Poll `GET /ecommerce/cod-balance` (§14) to reconcile "cash collected but not yet remitted" independently of the weekly remittance cadence
+- [ ] Handle `pickup_location_name_already_registered` (§8 field answers) on a re-run registration sync — it means the location already exists, not that creation failed

@@ -36,6 +36,8 @@ WEBHOOK_SECRET = os.environ.get("MOCK_COURIER_WEBHOOK_SECRET", "sribees-mock-web
 
 # Statuses past which a shipment can no longer be corrected (section 8a) or
 # cancelled (section 9).
+LIST_LIMIT_MAX = 200
+
 UNCORRECTABLE = {"out_for_delivery", "delivered", "failed", "returned", "cancelled"}
 UNCANCELLABLE = {"picked_up", "in_transit", "out_for_delivery", "delivered", "failed", "returned"}
 
@@ -91,14 +93,10 @@ def _shipment_response(s: dict) -> dict:
         "requested_delivery_date": s.get("requested_delivery_date"),
         "requested_delivery_window": s.get("requested_delivery_window"),
         "handling": s.get("handling") or [],
+        "will_retry": s.get("will_retry"),
+        "remittance_id": s.get("remittance_id"),
         "created_at": s["created_at"],
-        # NOTE: `updated_at` is deliberately NOT serialized, because the real
-        # contract does not serialize it either -- `updated_since` (section
-        # 7a) filters on a field that never appears in any response. It is
-        # tracked internally here purely so that filter can work. A mock more
-        # generous than production would hide the exact bug we have reported
-        # (SRIBEESEXPRESS_OPEN_ITEMS.md section 2); when they add the field,
-        # add it here too.
+        "updated_at": s["updated_at"],
         "tracking_url": f"https://mock-courier.local/track?waybill={s['shipment_id']}",
     }
 
@@ -132,6 +130,12 @@ async def book_shipment(data: ShipmentRequest):
         pickup = STORE.pickup_locations.get(data.pickup_location_id)
         if pickup is None:
             return _error(404, "pickup_location_not_found", "Unknown pickup_location_id.")
+        if not pickup.get("is_active", True):
+            return _error(
+                409,
+                "pickup_location_deactivated",
+                "That pickup location was deactivated -- register a new one or omit it.",
+            )
 
     latitude = longitude = None
     if data.quote_id is not None:
@@ -178,6 +182,10 @@ async def book_shipment(data: ShipmentRequest):
         "handover_code": data.handover_code,
         "cod": {"collected": False, "amount": data.cod_amount},
         "failure_note": None,
+        # Only meaningful once status is `failed` (section 8).
+        "will_retry": None,
+        # Set by _remit (below) once a remittance run covers this shipment.
+        "remittance_id": None,
         "requested_delivery_date": data.requested_delivery_date,
         "requested_delivery_window": data.requested_delivery_window,
         "handling": data.handling,
@@ -200,12 +208,15 @@ async def list_shipments(
     """Section 7a -- the reconciliation poll. Same shape as section 7, no history."""
     rows = list(STORE.shipments_by_id.values())
     if updated_since:
+        # Inclusive (>=), matching the contract: re-reading a boundary row is
+        # free, skipping one is not.
         cutoff = datetime.fromisoformat(updated_since.replace("Z", "+00:00"))
         rows = [s for s in rows if datetime.fromisoformat(s["updated_at"]) >= cutoff]
     if status_filter:
-        rows = [s for s in rows if s["status"] == status_filter]
+        wanted = {v.strip() for v in status_filter.split(",") if v.strip()}
+        rows = [s for s in rows if s["status"] in wanted]
     rows.sort(key=lambda s: s["updated_at"])
-    return [_shipment_response(s) for s in rows[offset : offset + limit]]
+    return [_shipment_response(s) for s in rows[offset : offset + min(limit, LIST_LIMIT_MAX)]]
 
 
 @router.get(f"{PREFIX}/shipments/{{shipment_id}}")
@@ -294,6 +305,19 @@ class PickupLocationRequest(BaseModel):
 
 @router.post(f"{PREFIX}/pickup-locations", status_code=201)
 async def create_pickup_location(data: PickupLocationRequest):
+    # A name already registered is a 409, not a silent duplicate and not a
+    # silent return-the-existing-row. A merchant re-running a registration
+    # sync after losing its stored ids gets a clear error to recover from
+    # rather than a forked branch registry.
+    if any(
+        loc["name"].lower() == data.name.lower() and loc.get("is_active", True)
+        for loc in STORE.pickup_locations.values()
+    ):
+        return _error(
+            409,
+            "pickup_location_name_already_registered",
+            f"A pickup location named {data.name!r} is already registered.",
+        )
     location = data.model_dump()
     location["id"] = STORE.next_id()
     location["is_active"] = True
@@ -386,6 +410,7 @@ class AdvanceRequest(BaseModel):
     handover_code: Optional[str] = None
     cod_collected: Optional[bool] = None
     failure_note: Optional[str] = None
+    will_retry: Optional[bool] = None
 
 
 @router.post(f"{PREFIX}/shipments/{{shipment_id}}/_advance")
@@ -422,6 +447,8 @@ async def advance_shipment(shipment_id: str, data: AdvanceRequest):
         shipment["cod"] = {"collected": True, "amount": shipment["cod_amount"]}
     if data.failure_note is not None:
         shipment["failure_note"] = data.failure_note
+    # will_retry only means anything on a `failed` shipment (section 8).
+    shipment["will_retry"] = data.will_retry if data.status == "failed" else None
 
     payload = {
         "event": "shipment.status_changed",
@@ -435,5 +462,86 @@ async def advance_shipment(shipment_id: str, data: AdvanceRequest):
         payload["cod"] = shipment["cod"]
     if data.status in ("failed", "returned"):
         payload["failure_note"] = shipment["failure_note"]
+        payload["will_retry"] = shipment["will_retry"]
 
     return {"shipment": _shipment_response(shipment), "webhook_push": await _push(payload)}
+
+# ---------------------------------------------------------------------------
+# Section 14 -- COD remittances (read-only on the real API)
+# ---------------------------------------------------------------------------
+
+
+def _unremitted() -> list:
+    """Shipments whose COD was collected but not yet tied to a remittance."""
+    return [
+        s
+        for s in STORE.shipments_by_id.values()
+        if s["cod"].get("collected") and s.get("remittance_id") is None
+    ]
+
+
+@router.get(f"{PREFIX}/cod-balance")
+async def cod_balance():
+    rows = _unremitted()
+    collected = sum(float(s["cod"].get("amount") or 0) for s in rows)
+    return {
+        "currency": "LKR",
+        "collected_not_remitted": round(collected, 2),
+        "shipment_count": len(rows),
+        "oldest_collection_at": min((s["updated_at"] for s in rows), default=None),
+    }
+
+
+@router.get(f"{PREFIX}/remittances")
+async def list_remittances(limit: int = 50, offset: int = 0):
+    rows = sorted(STORE.remittances.values(), key=lambda r: r["created_at"], reverse=True)
+    return rows[offset : offset + limit]
+
+
+@router.get(f"{PREFIX}/remittances/{{remittance_id}}/shipments")
+async def remittance_shipments(remittance_id: int):
+    if remittance_id not in STORE.remittances:
+        return _error(404, "remittance_not_found", "Unknown remittance.")
+    return [
+        _shipment_response(s)
+        for s in STORE.shipments_by_id.values()
+        if s.get("remittance_id") == remittance_id
+    ]
+
+
+class RemitRequest(BaseModel):
+    status: str = "paid"
+    bank_reference: Optional[str] = "CEFT-MOCK-0001"
+
+
+@router.post(f"{PREFIX}/_remit")
+async def remit(data: RemitRequest):
+    """
+    TEST-HARNESS CONVENIENCE ONLY -- not part of the real contract (hence the
+    underscore). On the real service, generating a run and marking it paid are
+    staff actions we can never call; this stands in for an ops person doing
+    that, so the merchant side of the settlement flow can be tested.
+    """
+    rows = _unremitted()
+    if not rows:
+        return _error(409, "nothing_to_remit", "No collected-but-unremitted COD.")
+
+    remittance_id = STORE.next_id()
+    gross = sum(float(s["cod"].get("amount") or 0) for s in rows)
+    deductions = sum(float(s["amount_lkr"] or 0) for s in rows)
+    run = {
+        "id": remittance_id,
+        "gross_cod_amount": round(gross, 2),
+        "deductions_amount": round(deductions, 2),
+        "net_amount": round(gross - deductions, 2),
+        "shipment_count": len(rows),
+        "status": data.status,
+        "bank_reference": data.bank_reference if data.status == "paid" else None,
+        "created_at": _now(),
+        "paid_at": _now() if data.status == "paid" else None,
+    }
+    STORE.remittances[remittance_id] = run
+    for s in rows:
+        s["remittance_id"] = remittance_id
+        s["updated_at"] = _now()
+    return run
