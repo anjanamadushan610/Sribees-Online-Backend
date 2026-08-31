@@ -32,6 +32,7 @@ from app.api.v1 import (
     categories,
     chat,
     courier_webhooks,
+    coupons,
     locations,
     marketing,
     notifications,
@@ -93,6 +94,12 @@ router.include_router(
     wishlist.router,
     prefix="/wishlist",
     tags=["Wishlist"],
+)
+
+router.include_router(
+    coupons.router,
+    prefix="/coupons",
+    tags=["Coupons"],
 )
 
 # AI Shopping Chat (/chat) — Gemini-backed assistant over the real,
