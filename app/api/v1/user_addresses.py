@@ -28,7 +28,7 @@ from app.schemas.address import (
     AddressResponse,
     AddressUpdateRequest,
 )
-from app.services import branch_service, courier_location_service
+from app.services import branch_service
 
 router = APIRouter(tags=["User Addresses"])
 
@@ -146,11 +146,6 @@ async def create_address(
         await db.commit()
         await db.refresh(address)
 
-        # Resolve the SribeesExpress city_id once, here, rather than on every
-        # checkout (contract section 5a). Best-effort -- an unresolved address
-        # still saves and simply quotes at the flat delivery fee.
-        await courier_location_service.resolve_address(db, address)
-
         return AddressDetailResponse(
             data=await _build_response(db, address),
             message="Address created",
@@ -173,13 +168,6 @@ async def update_address(
 ) -> AddressDetailResponse:
     """Update one of the authenticated user's addresses (partial)."""
     address = await _get_owned_address(db, address_id, current_user.user_id)
-
-    # Captured before the fields are overwritten -- a changed post office or
-    # district invalidates the cached courier city_id.
-    location_changed = (
-        (data.post_office is not None and data.post_office != address.post_office)
-        or (data.district is not None and data.district != address.district)
-    )
 
     try:
         if data.is_default:
@@ -208,14 +196,6 @@ async def update_address(
 
         await db.commit()
         await db.refresh(address)
-
-        # Only re-resolve when the location itself moved (or the last answer
-        # was one SribeesExpress ops can flip). Renaming an address or fixing
-        # a phone number must not spend a courier call.
-        if courier_location_service.needs_resolution(
-            address, post_office_changed=location_changed
-        ):
-            await courier_location_service.resolve_address(db, address)
 
         return AddressDetailResponse(
             data=await _build_response(db, address),

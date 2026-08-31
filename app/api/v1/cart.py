@@ -204,11 +204,6 @@ async def apply_coupon(
 
         # Enforce is_active, validity window, usage limit and min order value.
         CouponService.validate(coupon, subtotal, datetime.now(timezone.utc))
-        # Per-customer layer: public coupons must be collected first, and
-        # coupons.per_user_limit is enforced here too.
-        from app.services.user_coupon_service import UserCouponService
-
-        await UserCouponService.assert_can_redeem(db, current_user.user_id, coupon)
 
         # Apply using the DATABASE discount values (client input ignored).
         updated_cart = await CartService.apply_coupon(

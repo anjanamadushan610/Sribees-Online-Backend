@@ -98,23 +98,19 @@ async def send_chat_message(
             lang=resolve_language(request.headers.get("accept-language")),
         )
     except GeminiAPIError as exc:
-        # ChatService now degrades to a keyword search for every recoverable
-        # Gemini failure (quota, outage) and only re-raises for a missing key —
-        # a deploy misconfiguration that should stay loud.
         logger.error(f"Chat Gemini error: {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI chat isn't configured yet — add GEMINI_API_KEY to the backend .env.",
+        detail = (
+            "AI chat isn't configured yet — add GEMINI_API_KEY to the backend .env."
+            if "GEMINI_API_KEY not configured" in str(exc)
+            else "The assistant is unavailable right now. Please try again."
         )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
     return {
         "success": True,
         "data": {
             "reply": result["reply"],
             "products": result["products"],
-            # True when Gemini was unreachable and this reply came from a plain
-            # keyword search — the client can show a subtle "limited mode" hint.
-            "degraded": result.get("degraded", False),
         },
     }
 

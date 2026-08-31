@@ -79,10 +79,6 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
         "branch_id": str(order.branch_id) if order.branch_id else None,
         "branch_name": branch_name,
         "created_at": order.created_at.isoformat() if order.created_at else None,
-        "packed_at": order.packed_at.isoformat() if order.packed_at else None,
-        "handed_to_courier_at": (
-            order.handed_to_courier_at.isoformat() if order.handed_to_courier_at else None
-        ),
         "shipped_at": order.shipped_at.isoformat() if order.shipped_at else None,
         "delivered_at": order.delivered_at.isoformat() if order.delivered_at else None,
         "delivery_slot_date": order.delivery_slot_date.isoformat() if order.delivery_slot_date else None,
@@ -542,31 +538,6 @@ async def download_order_invoice(
     )
 
 
-def _actor_role(admin) -> str:
-    return admin.role.value if hasattr(admin.role, "value") else str(admin.role)
-
-
-@router.get("/{order_id}/next-statuses", response_model=dict)
-async def get_order_next_statuses(
-    order_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    scope: BranchScope = Depends(inject_branch_filter),
-    admin=Depends(require_permission("orders", "read")),
-):
-    """The fulfilment-workflow status changes this admin may make to this order
-    from its current state (Super Admin gets the full override list)."""
-    from app.services import order_workflow
-
-    order = await _load_scoped_order(db, order_id, scope)
-    return {
-        "success": True,
-        "data": {
-            "status": order.status,
-            "next_statuses": order_workflow.next_statuses(order.status, _actor_role(admin)),
-        },
-    }
-
-
 @router.patch("/{order_id}/status", response_model=dict)
 async def update_order_status(
     order_id: UUID,
@@ -576,26 +547,13 @@ async def update_order_status(
     admin=Depends(require_permission("orders", "update")),
 ):
     """
-    Advance an order's status through the fulfilment workflow
-    (app/services/order_workflow.py). Branch Managers, Customer Support and
-    delegated fulfilment staff are held to the state machine; Super Admin may
-    override to any state. On transition to SHIPPED or DELIVERED the customer
-    is notified via NotificationService (best-effort — never blocks the update).
+    Update an order's status. On transition to SHIPPED or DELIVERED, notify the
+    customer via NotificationService (best-effort — never blocks the update).
     """
     order = await _load_scoped_order(db, order_id, scope)
 
     admin_name = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
-    try:
-        await OrderService.update_status(
-            db,
-            order,
-            body.status,
-            changed_by=f"Admin ({admin_name})",
-            enforce=True,
-            actor_role=_actor_role(admin),
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    await OrderService.update_status(db, order, body.status, changed_by=f"Admin ({admin_name})")
 
     if body.status in _NOTIFY_STATUSES:
         try:
@@ -673,8 +631,8 @@ async def reject_order_return(
 )
 async def reconcile_marx_payments(db: AsyncSession = Depends(get_db)):
     """
-    Manually trigger the Marx IPG reconciliation sweep (the Marx doc's own
-    section 7 recommendation): resolves gateway
+    Manually trigger the Marx IPG reconciliation sweep (docs/COURIER_API.md's
+    sibling recommendation in the Marx doc's own section 7): resolves gateway
     orders stuck PENDING against Marx's GET .../summary. Cross-branch, so
     restricted to super_admin regardless of the router's default roles. Shares
     the exact same logic as ``scripts/reconcile_marx_payments.py`` (the

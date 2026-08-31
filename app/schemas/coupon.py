@@ -29,9 +29,7 @@ class CouponCreate(BaseModel):
     discount_value: Decimal = Field(..., gt=0)
     min_order_value: Decimal = Field(default=Decimal("0"), ge=0)
     max_discount_amount: Optional[Decimal] = Field(default=None, ge=0)
-    usage_limit: Optional[int] = Field(default=None, ge=1, description="NULL = unlimited (all customers)")
-    per_user_limit: Optional[int] = Field(default=1, ge=1, description="NULL = unlimited per customer")
-    is_public: bool = Field(default=False, description="List in the mobile Available Offers feed (must be collected)")
+    usage_limit: Optional[int] = Field(default=None, ge=1, description="NULL = unlimited")
     valid_from: datetime
     valid_until: datetime
     is_active: bool = True
@@ -60,8 +58,6 @@ class CouponUpdate(BaseModel):
     min_order_value: Optional[Decimal] = Field(None, ge=0)
     max_discount_amount: Optional[Decimal] = Field(None, ge=0)
     usage_limit: Optional[int] = Field(None, ge=1)
-    per_user_limit: Optional[int] = Field(None, ge=1)
-    is_public: Optional[bool] = None
     valid_from: Optional[datetime] = None
     valid_until: Optional[datetime] = None
     is_active: Optional[bool] = None

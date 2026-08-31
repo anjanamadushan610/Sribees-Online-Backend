@@ -325,6 +325,25 @@ async def clear_branch_context(
     return bool(deleted)
 
 
+def to_courier_origin(branch: Branch) -> dict:
+    """
+    Format a Branch as the ``origin`` object the courier's ``/v1/rates`` and
+    ``/v1/shipments`` calls expect (docs/COURIER_API.md section 4).
+
+    ``Branch.address`` is a single free-text field (no structured
+    address_line1/2 breakdown today), so it is reused as-is for
+    ``address_line1`` rather than adding new branch-model fields for this.
+    """
+    return {
+        "name": branch.name,
+        "address_line1": branch.address or branch.name,
+        "post_office": branch.post_office,
+        "district": branch.district,
+        "province": branch.province,
+        "phone": branch.phone,
+    }
+
+
 # ============================================================================
 # High-level orchestration — address-based
 # ============================================================================

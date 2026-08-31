@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,14 +44,6 @@ class Branch(Base):
     # New branches start inactive: a Super Admin creates the branch, but only
     # its Branch Manager can bring it live (PATCH /admin/branches/{id}/status).
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
-    # SribeesExpress pickup location registered for this branch (contract
-    # section 12). We are a multi-branch merchant, so the rider must collect
-    # from the fulfilling branch, not from one account-wide default address.
-    # NULL = not registered yet; booking then falls back to that default.
-    courier_pickup_location_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    courier_pickup_synced_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

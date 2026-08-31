@@ -48,21 +48,9 @@ class Coupon(Base):
     # Optional cap for percentage discounts.
     max_discount_amount = Column(Numeric(10, 2), nullable=True)
 
-    # NULL usage_limit = unlimited redemptions (across all customers).
+    # NULL usage_limit = unlimited redemptions.
     usage_limit = Column(Integer, nullable=True)
     used_count = Column(Integer, nullable=False, default=0)
-
-    # NULL per_user_limit = unlimited per customer; otherwise the max number of
-    # times one customer may redeem this code (tracked in `user_coupons`).
-    # New coupons default to 1 (Python-side); pre-existing rows stay NULL so
-    # migration 048 doesn't silently cap live promos.
-    per_user_limit = Column(Integer, nullable=True, default=1)
-
-    # True → the code is listed in the mobile app's "Available Offers" and a
-    # customer must *collect* it (a `user_coupons` row) before it can be
-    # applied. False → a private code shared out-of-band, applied by typing it,
-    # exactly as before.
-    is_public = Column(Boolean, nullable=False, default=False, server_default="false")
 
     valid_from = Column(DateTime(timezone=True), nullable=False)
     valid_until = Column(DateTime(timezone=True), nullable=False)

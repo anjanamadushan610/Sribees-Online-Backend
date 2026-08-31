@@ -20,7 +20,6 @@ from app.api.v1 import (
     admin_orders,
     admin_partners,
     admin_roles,
-    admin_courier,
     admin_settings,
     admin_staff,
     admin_transfers,
@@ -32,7 +31,6 @@ from app.api.v1 import (
     cart,
     categories,
     chat,
-    coupons,
     courier_webhooks,
     locations,
     marketing,
@@ -118,14 +116,6 @@ router.include_router(
     tags=["Wallet"],
 )
 
-# Customer-facing coupon collection (/coupons) — the "Available Offers" feed
-# and per-customer coupon wallet. Applying a coupon stays on POST /cart/coupon.
-router.include_router(
-    coupons.router,
-    prefix="/coupons",
-    tags=["Coupons"],
-)
-
 router.include_router(
     payments.methods_router,
     prefix="/payment-methods",
@@ -138,19 +128,9 @@ router.include_router(
     tags=["Payments"],
 )
 
-# Admin courier ops (/admin/courier) -- pickup-location registration, the
-# reconciliation sweep an external cron drives (there is no scheduler in this
-# backend), and one-time webhook-endpoint registration.
-router.include_router(
-    admin_courier.router,
-    prefix="/admin/courier",
-    tags=["Admin - Courier"],
-)
-
-# Courier webhooks (/courier/webhooks) -- inbound-only, SribeesExpress calls
-# us. Authenticated by HMAC over the raw body (X-Sribees-Signature) using
-# courier_webhook_secret, NOT by a shared api key -- see
-# docs/SRIBEESEXPRESS_ECOMMERCE_API.md section 10.3.
+# Courier webhooks (/courier/webhooks) -- inbound-only, the courier calls us.
+# Authenticated with courier_inbound_api_key, a separate secret from the key
+# we send when calling OUT to the courier (see app/services/courier_service.py).
 router.include_router(
     courier_webhooks.router,
     prefix="/courier/webhooks",

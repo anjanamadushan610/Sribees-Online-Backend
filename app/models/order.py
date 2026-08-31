@@ -5,7 +5,6 @@ import enum
 import uuid
 
 from sqlalchemy import (
-    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -23,23 +22,10 @@ from app.config.database import Base
 
 
 class OrderStatus(str, enum.Enum):
-    """Order status enum.
-
-    `status` is a plain VARCHAR column (not a Postgres enum), so new members
-    here need no `ALTER TYPE` migration — only the app-side guards in
-    app/services/order_workflow.py.
-
-    PACKING / PACKED / HANDED_TO_COURIER are the branch-fulfilment steps a
-    Branch Manager (or their delegated fulfilment staff) drives between
-    CONFIRMED and SHIPPED. PROCESSING is the legacy pre-workflow equivalent of
-    PACKING and is still accepted for orders placed before this shipped.
-    """
+    """Order status enum."""
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"
-    PACKING = "packing"
-    PACKED = "packed"
-    HANDED_TO_COURIER = "handed_to_courier"
     SHIPPED = "shipped"
     OUT_FOR_DELIVERY = "out_for_delivery"
     DELIVERED = "delivered"
@@ -103,22 +89,14 @@ class Order(Base):
     # Guards deferred cashback crediting (gateway orders) against double-credit.
     cashback_credited_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Delivery handover verification code. We generate it, show it to the
-    # customer in the app, and hand it to SribeesExpress at booking time; the
-    # rider must enter it before the parcel is released. SribeesExpress
-    # currently accepts a code on PREPAID shipments only -- see
-    # app/services/delivery_verification_service.py and
-    # docs/SRIBEESEXPRESS_ECOMMERCE_API.md §7.
-    delivery_verification_code = Column(String(6), nullable=True)
+    # Delivery handover verification code (non-COD orders only). See
+    # app/services/delivery_verification_service.py and docs/COURIER_API.md §15.
+    delivery_verification_code = Column(String(3), nullable=True)
     delivery_verification_status = Column(String(20), default="not_required")
     delivery_verification_attempts = Column(Integer, default=0)
     delivery_verification_confirmed_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Courier integration -- SribeesExpress (see
-    # docs/SRIBEESEXPRESS_ECOMMERCE_API.md, app/services/courier_service.py).
-    # courier_waybill_number holds the same value as courier_shipment_id: the
-    # contract confirms there is only ever one identifier (§11.1). It is kept
-    # because GET /orders already returns it and the mobile app reads it.
+    # Courier integration (see docs/COURIER_API.md, app/services/courier_service.py).
     courier_quote_id = Column(String(64), nullable=True)
     courier_quote_expires_at = Column(DateTime(timezone=True), nullable=True)
     courier_shipment_id = Column(String(64), nullable=True)
@@ -126,33 +104,6 @@ class Order(Base):
     courier_tracking_status = Column(String(20), nullable=True)
     courier_tracking_updated_at = Column(DateTime(timezone=True), nullable=True)
     courier_booking_status = Column(String(20), default="pending")
-    courier_tracking_url = Column(String(500), nullable=True)
-    courier_pickup_location_name = Column(String(255), nullable=True)
-
-    # Delivery outcome as reported by SribeesExpress. This is the ONLY
-    # proof-of-delivery we ever receive, so all of it is persisted rather than
-    # collapsed into the status. For a COD order, `delivered` on its own does
-    # NOT mean the cash was collected -- courier_cod_collected does (§8).
-    courier_handover_required = Column(Boolean, nullable=False, default=False)
-    courier_handover_verified = Column(Boolean, nullable=True)
-    courier_handover_attempts = Column(Integer, nullable=True)
-    courier_cod_collected = Column(Boolean, nullable=False, default=False)
-    courier_cod_collected_amount = Column(Numeric(12, 2), nullable=True)
-    courier_cod_collected_at = Column(DateTime(timezone=True), nullable=True)
-    # Rider free text on a failed/returned shipment. Free text by design
-    # (§8) -- never branch business logic on its exact wording. Branch on
-    # courier_will_retry instead, which is the machine-readable half.
-    courier_failure_note = Column(Text, nullable=True)
-    # Only meaningful while courier_tracking_status is `failed`: True means
-    # SribeesExpress can still redispatch, False means it is heading for
-    # `returned`. This is the refund-now vs tell-them-tomorrow signal. There is
-    # no next_attempt_at to go with it -- nothing on their side schedules a
-    # redispatch on a clock, a human decides (§3 of their round-2 response).
-    courier_will_retry = Column(Boolean, nullable=True)
-    # The remittance run that paid this shipment's collected COD out to us.
-    # NULL until settled -- and their runs are triggered by ops rather than a
-    # scheduler, so NULL for days is normal, not a fault.
-    courier_remittance_id = Column(Integer, nullable=True)
 
     # Delivery
     delivery_address_id = Column(UUID(as_uuid=True), ForeignKey("addresses.address_id"), nullable=True)
@@ -174,17 +125,6 @@ class Order(Base):
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    # Branch-fulfilment milestones (set by OrderService.update_status on the
-    # transition into each state; mirror the shipped_at/delivered_at pattern).
-    packed_at = Column(DateTime(timezone=True), nullable=True)
-    handed_to_courier_at = Column(DateTime(timezone=True), nullable=True)
-    # Branch-inventory bookkeeping (app/services/inventory_service.py).
-    # stock_reserved_at: units added to branch_inventory.reserved_quantity at
-    # checkout. stock_committed_at: reservation converted to a real
-    # stock_quantity deduction when the parcel is handed to the courier. Both
-    # are idempotency guards — the operation runs only while the column is NULL.
-    stock_reserved_at = Column(DateTime(timezone=True), nullable=True)
-    stock_committed_at = Column(DateTime(timezone=True), nullable=True)
     shipped_at = Column(DateTime(timezone=True), nullable=True)
     delivered_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
