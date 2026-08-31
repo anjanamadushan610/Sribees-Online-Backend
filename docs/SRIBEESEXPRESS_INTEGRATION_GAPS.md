@@ -493,3 +493,25 @@ Please reply, per section, with one of: **will build** (+ rough date) /
 **already exists** (+ where) / **won't build** (+ what we should do instead).
 
 §1, §2 and §3 are the ones that decide our launch date.
+
+---
+
+# Round 2 — closed
+
+You responded on 2026-08-28 and we integrated against everything you built.
+This document is now **historical**: the round-1 asks above are all either
+built, answered, or withdrawn.
+
+**§1 handover code — withdrawn for COD, accepted for prepaid.** You built it
+for prepaid orders and declined it for COD on the grounds that a rider
+collecting cash in hand is its own proof. We are **not** pursuing a COD
+handover code — treat §1 as settled on your terms. Our implementation sends
+`handover_code` on prepaid shipments only and never on a COD booking.
+
+The remaining open items and the questions that came out of actually building
+the client have moved to a separate, current document:
+
+> **[`SRIBEESEXPRESS_OPEN_ITEMS.md`](SRIBEESEXPRESS_OPEN_ITEMS.md)**
+
+Read that one, not this one. This file is kept only as the record of how the
+contract got to where it is.

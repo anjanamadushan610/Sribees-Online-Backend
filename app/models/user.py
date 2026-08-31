@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text, func, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
 
@@ -419,6 +419,16 @@ class Address(Base):
         default=False,
         nullable=False,
     )
+    # Cached SribeesExpress city_id for this address (contract section 5a --
+    # "cache the result ... only when an address is first saved or changed").
+    # Every rate quote and booking is keyed on this, so an unresolved address
+    # cannot be quoted by the courier at all -- checkout falls back to the
+    # flat platform fee. courier_resolve_reason is set only when resolution
+    # came back resolved: false, and says which of the four reasons it was.
+    courier_city_id: Optional[int] = Column(Integer, nullable=True)
+    courier_city_name: Optional[str] = Column(String(120), nullable=True)
+    courier_resolve_reason: Optional[str] = Column(String(40), nullable=True)
+    courier_resolved_at: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
     created_at: datetime = Column(
         DateTime,
         server_default=func.now(),

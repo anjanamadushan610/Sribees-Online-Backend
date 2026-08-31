@@ -231,16 +231,47 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
-    # Courier Integration (see fastapi_backend/docs/COURIER_API.md)
+    # Courier Integration -- SribeesExpress
+    # (see fastapi_backend/docs/SRIBEESEXPRESS_ECOMMERCE_API.md)
     # =========================================================================
-    courier_base_url: str = Field(default="", description="Courier API base URL. Point at mock_courier in dev.")
-    courier_api_key: str = Field(default="", description="X-Api-Key WE send when calling the courier's /v1/* endpoints")
-    courier_inbound_api_key: str = Field(
+    courier_base_url: str = Field(
         default="",
-        description="X-Api-Key the COURIER must send when calling INTO us (webhooks, delivery-code confirm). Must differ from courier_api_key.",
+        description=(
+            "SribeesExpress origin, WITHOUT the /api/v1/ecommerce path "
+            "(e.g. https://api.sribeesexpress.lk). Point at mock_courier in dev."
+        ),
     )
-    courier_request_timeout_seconds: float = Field(default=3.0, description="Per COURIER_API.md section 8")
-    delivery_verification_code_digits: int = Field(default=3, description="Delivery handover code length")
+    courier_api_key: str = Field(
+        default="",
+        description="X-Api-Key we send on every /api/v1/ecommerce/* call (sk_live_... / sk_test_...)",
+    )
+    courier_webhook_secret: str = Field(
+        default="",
+        description=(
+            "HMAC-SHA256 secret from POST /ecommerce/webhook-endpoints, shown once at "
+            "registration. Used to verify X-Sribees-Signature on inbound pushes "
+            "(contract section 10.3). Replaces the old shared courier_inbound_api_key."
+        ),
+    )
+    courier_webhook_tolerance_seconds: int = Field(
+        default=300,
+        description="Reject a signed webhook whose t= timestamp is older than this (replay window).",
+    )
+    courier_request_timeout_seconds: float = Field(
+        default=3.0,
+        description="Per-request timeout. One retry on timeout/5xx, never on 4xx.",
+    )
+    courier_sync_batch_limit: int = Field(
+        default=100,
+        description="Page size for the GET /ecommerce/shipments reconciliation sweep (contract section 7a).",
+    )
+    delivery_verification_code_digits: int = Field(
+        default=4,
+        description=(
+            "Handover code length. SribeesExpress accepts 4-6 digits (contract section 7); "
+            "the old 3-digit default is below their minimum."
+        ),
+    )
     delivery_verification_max_attempts: int = Field(default=5, description="Wrong-code attempts before lockout")
 
     # =========================================================================

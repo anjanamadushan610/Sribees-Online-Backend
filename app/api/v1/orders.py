@@ -1,7 +1,7 @@
 """
 Order API Endpoints
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -25,10 +25,9 @@ from app.schemas.order import (
     UpdatePaymentStatusRequest,
     to_courier_payment_method,
 )
-from app.services import branch_service
+from app.services import branch_service, courier_location_service, courier_sync_service
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
-from app.services.courier_service import CourierService, CourierUnavailableError
 from app.services.invoice_service import InvoiceService
 from app.services.order_service import OrderService
 from app.services.pricing_service import PricingService
@@ -43,11 +42,14 @@ router = APIRouter(tags=["Orders"])
 # Helper Functions
 # ============================================================================
 
-# Normal forward progression of a fulfilled order.
+# Normal forward progression of a fulfilled order. `processing` (the legacy
+# pre-workflow state) is folded onto `packing` — see _effective_status.
 _STATUS_FLOW = [
     ("pending", "Order Placed"),
     ("confirmed", "Confirmed"),
-    ("processing", "Processing"),
+    ("packing", "Preparing Order"),
+    ("packed", "Packed"),
+    ("handed_to_courier", "Handed to Courier"),
     ("shipped", "Shipped"),
     ("out_for_delivery", "Out for Delivery"),
     ("delivered", "Delivered"),
@@ -56,10 +58,20 @@ _STATUS_FLOW = [
 # Known timestamp column per status (others are inferred, timestamp None).
 _STATUS_TIMESTAMPS = {
     "pending": "created_at",
+    "packed": "packed_at",
+    "handed_to_courier": "handed_to_courier_at",
     "shipped": "shipped_at",
     "delivered": "delivered_at",
     "cancelled": "cancelled_at",
 }
+
+# Orders placed before the packing/packed/handed_to_courier states existed sit
+# in `processing`; render them at the `packing` point of the timeline.
+_LEGACY_STATUS_ALIASES = {"processing": "packing"}
+
+
+def _effective_status(status: str) -> str:
+    return _LEGACY_STATUS_ALIASES.get(status, status)
 
 
 def build_status_timeline(order) -> list:
@@ -127,7 +139,8 @@ def build_status_timeline(order) -> list:
         ]
 
     flow_keys = [s for s, _ in _STATUS_FLOW]
-    current_rank = flow_keys.index(order.status) if order.status in flow_keys else 0
+    effective = _effective_status(order.status)
+    current_rank = flow_keys.index(effective) if effective in flow_keys else 0
 
     timeline = []
     for rank, (status_key, label) in enumerate(_STATUS_FLOW):
@@ -379,19 +392,17 @@ async def quote_order(
         )
         items = await OrderService._attach_weights(db, items)
 
-        origin = branch_service.to_courier_origin(branch) if branch is not None else None
-        destination = None
+        # Resolve the address's SribeesExpress city_id lazily: addresses saved
+        # before this integration shipped have no cached id, and a preview is
+        # the natural place to backfill one rather than making the customer
+        # re-save the address.
+        city_id = None
         if address is not None:
-            destination = {
-                "recipient_name": address.recipient_name,
-                "phone": address.phone,
-                "address_line1": address.address_line1,
-                "address_line2": address.address_line2,
-                "post_office": address.post_office,
-                "district": address.district,
-                "province": address.province,
-                "postal_code": address.postal_code,
-            }
+            city_id = address.courier_city_id
+            if city_id is None and courier_location_service.needs_resolution(
+                address, post_office_changed=False
+            ):
+                city_id = await courier_location_service.resolve_address(db, address)
 
         breakdown = await PricingService.quote(
             items=items,
@@ -400,8 +411,7 @@ async def quote_order(
             wallet_balance=wallet_balance,
             delivery_fee=pricing_config["delivery_fee"],
             tax_rate=pricing_config["tax_rate"],
-            origin=origin,
-            destination=destination,
+            city_id=city_id,
             payment_method=to_courier_payment_method(data.payment_method),
             wallet_amount=data.wallet_amount,
         )
@@ -527,7 +537,7 @@ async def get_order_tracking(
     current_user = Depends(get_current_user)
 ):
     """
-    Live courier tracking status (docs/COURIER_API.md section 10).
+    Live courier tracking status (docs/SRIBEESEXPRESS_ECOMMERCE_API.md section 8).
 
     Throttled to at most once per 60s per order — returns the cached
     ``courier_tracking_status`` if it was refreshed within that window instead
@@ -550,22 +560,30 @@ async def get_order_tracking(
 
     stale = (
         order.courier_tracking_updated_at is None
-        or (datetime.utcnow() - order.courier_tracking_updated_at.replace(tzinfo=None)).total_seconds() > 60
+        or (
+            datetime.now(timezone.utc) - order.courier_tracking_updated_at.astimezone(timezone.utc)
+        ).total_seconds()
+        > 60
     )
+    shipment = None
     if stale:
-        try:
-            shipment = await CourierService.get_shipment(order.courier_shipment_id)
-            order.courier_tracking_status = shipment.get("status", order.courier_tracking_status)
-            order.courier_tracking_updated_at = datetime.utcnow()
-            await db.commit()
-        except CourierUnavailableError as e:
-            logger.warning(f"Could not refresh tracking for order {order.order_number}: {e}")
+        # Refresh through courier_sync_service so a tracking read applies the
+        # same handover/cod/failure_note mapping the webhook does -- otherwise
+        # a lost `delivered` push would show the right status here while
+        # leaving courier_cod_collected wrong. Returns None on an outage; we
+        # then serve whatever we already have.
+        shipment = await courier_sync_service.refresh_order_tracking(db, order)
 
     return {
         "success": True,
         "data": {
             "courier_tracking_status": order.courier_tracking_status,
             "courier_waybill_number": order.courier_waybill_number,
+            "courier_tracking_url": order.courier_tracking_url,
+            "cod_collected": order.courier_cod_collected,
+            "handover_verified": order.courier_handover_verified,
+            "failure_note": order.courier_failure_note,
+            "history": (shipment or {}).get("history", []),
         },
     }
 

@@ -407,6 +407,9 @@ class NotificationService:
         status_messages = {
             "confirmed": "Your order has been confirmed",
             "processing": "Your order is being processed",
+            "packing": "Your order is being prepared",
+            "packed": "Your order has been packed and is ready to ship",
+            "handed_to_courier": "Your order has been handed to the courier",
             "shipped": "Your order has been shipped",
             "out_for_delivery": "Your order is out for delivery",
             "delivered": "Your order has been delivered",

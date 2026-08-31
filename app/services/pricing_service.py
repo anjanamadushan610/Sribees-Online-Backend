@@ -15,7 +15,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
 from app.config.settings import settings
-from app.services.courier_service import CourierService, CourierUnavailableError
+from app.services.courier_service import (
+    CourierError,
+    CourierService,
+    CourierUnavailableError,
+)
 
 _CENTS = Decimal("0.01")
 
@@ -61,55 +65,52 @@ class PricingService:
     @staticmethod
     async def _delivery_fee(
         items: List[dict],
-        subtotal: Decimal,
         flat_fee: Decimal,
         *,
-        origin: Optional[dict] = None,
-        destination: Optional[dict] = None,
+        city_id: Optional[int] = None,
         payment_method: str = "cod",
+        cod_amount: Decimal = Decimal("0"),
     ) -> Tuple[Decimal, Optional[str], Optional[datetime]]:
         """
         Resolve the delivery fee: (fee, courier_quote_id, courier_quote_expires_at).
 
-        Calls the courier's ``POST /v1/rates`` (docs/COURIER_API.md section 4)
-        when both an ``origin`` (fulfilling branch) and a ``destination``
-        (delivery address) are resolvable. Falls back to the flat platform fee
-        — with no ``courier_quote_id`` — when: the cart is empty, there is no
-        origin/destination yet (e.g. the very first quote call before an
-        address is chosen), the courier is unreachable
-        (``CourierUnavailableError``, after its own one retry), or the
-        destination reports ``serviceable: false``. This fallback is required
-        by the contract itself (section 8): "we will not block a sale on a
-        courier outage."
+        Calls ``POST /ecommerce/rates`` (contract section 6) when the delivery
+        address has a resolved SribeesExpress ``city_id``. Falls back to the
+        flat platform fee — with no ``courier_quote_id``, so booking knows it
+        has no quote to reference — when: the cart is empty, no address is
+        chosen yet, the address never resolved to a city_id (contract section
+        5a), SribeesExpress is unreachable, or the city comes back
+        ``serviceable: false``.
+
+        That fallback is the contract's own instruction: an unserviceable area
+        is "a normal answer, not an error", and we do not block a sale on a
+        courier outage. It does mean we can quote a fee for a parcel
+        SribeesExpress will later refuse to book — which is why
+        ``OrderService._book_courier_shipment`` records a booking failure on
+        the order rather than failing the order itself.
         """
         if not items:
             return Decimal("0"), None, None
-        if origin is None or destination is None:
+        if city_id is None:
             return _money(flat_fee), None, None
 
         weight_kg = sum(
             Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"])) for i in items
         )
-        item_count = sum(i["quantity"] for i in items)
 
         try:
             quote = await CourierService.get_rate(
-                origin=origin,
-                destination=destination,
+                city_id=city_id,
                 weight_kg=weight_kg,
-                item_count=item_count,
-                order_value_lkr=subtotal,
                 payment_method=payment_method,
+                cod_amount=cod_amount,
             )
-        except CourierUnavailableError as exc:
-            logger.warning(f"Courier /v1/rates unavailable, falling back to flat fee: {exc}")
+        except (CourierUnavailableError, CourierError) as exc:
+            logger.warning(f"Courier /rates unavailable, falling back to flat fee: {exc}")
             return _money(flat_fee), None, None
 
         if not quote.serviceable:
-            # A place the courier does not deliver to is a normal answer, not
-            # an error (section 4) -- we still owe *some* fee today, so fall
-            # back to the flat fee rather than blocking checkout.
-            logger.warning(f"Courier reports destination not serviceable: {quote.reason}")
+            logger.warning(f"Courier reports city_id={city_id} not serviceable: {quote.reason}")
             return _money(flat_fee), None, None
 
         return _money(quote.amount_lkr), quote.quote_id, quote.expires_at
@@ -166,8 +167,7 @@ class PricingService:
         delivery_fee: Optional[Decimal] = None,
         tax_rate: Optional[Decimal] = None,
         *,
-        origin: Optional[dict] = None,
-        destination: Optional[dict] = None,
+        city_id: Optional[int] = None,
         payment_method: str = "cod",
         wallet_amount: Optional[Decimal] = None,
     ) -> PriceBreakdown:
@@ -187,18 +187,18 @@ class PricingService:
                 client sends — a negative or over-balance value never reaches
                 the order, closing the gap a tampered request could exploit.
             delivery_fee: Flat delivery fee override (from platform settings),
-                used as the fallback when the courier is unavailable or no
-                origin/destination is resolvable yet. Falls back to the static
+                used as the fallback when the courier is unavailable or the
+                address has no resolved city_id yet. Falls back to the static
                 config default when None.
             tax_rate: Tax rate as a fraction override (from platform settings).
                 Falls back to the static config default when None.
-            origin: Fulfilling branch, formatted via
-                ``branch_service.to_courier_origin`` (None skips the courier
-                call, e.g. no delivery address chosen yet).
-            destination: Delivery address, formatted per
-                docs/COURIER_API.md section 4 (None skips the courier call).
-            payment_method: ``"cod"`` or ``"prepaid"`` — priced into the
-                courier's COD-collection fee, if any.
+            city_id: The delivery address's cached SribeesExpress city_id
+                (``Address.courier_city_id``). None skips the courier call
+                entirely — no address chosen yet, or the address never
+                resolved (contract section 5a).
+            payment_method: ``"cod"`` or ``"prepaid"``. Sent to SribeesExpress
+                but currently inert for pricing — they have committed to
+                advance notice before it starts affecting the quote.
         """
         # Dynamic platform settings win; otherwise use the static config default.
         effective_fee = (
@@ -215,13 +215,16 @@ class PricingService:
         discount = PricingService._discount(subtotal, coupon)
         taxable = subtotal - discount
         tax = _money(taxable * effective_tax_rate)
+        # COD collects the full order total at the door. The gross is not
+        # known until the delivery fee lands, so the courier is told the
+        # pre-delivery payable -- it is inert for pricing today, and quoting
+        # it any other way would need the fee we are asking them for.
         delivery_fee, courier_quote_id, courier_quote_expires_at = await PricingService._delivery_fee(
             items,
-            subtotal,
             effective_fee,
-            origin=origin,
-            destination=destination,
+            city_id=city_id,
             payment_method=payment_method,
+            cod_amount=(taxable + tax) if payment_method == "cod" else Decimal("0"),
         )
 
         # Gross payable before any wallet balance is applied.

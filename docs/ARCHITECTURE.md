@@ -237,6 +237,81 @@ Support (by the 2026-08-10 fix) — Marketing Manager and Inventory Manager are 
 strictly pinned to one branch despite superficially sounding like network-wide
 functions.
 
+**Customer-list isolation — 2026-08-30 fix**: `GET /admin/customers`,
+`/admin/customers/{id}/profile` and `/admin/customers/{id}/orders` (in
+`admin.py`) were gated only on `get_current_admin` — every admin, including a
+Branch Manager or a delegated staff account, could list and inspect *every*
+customer in the network. Now gated on `customers:read` **and** branch-isolated
+via `inject_branch_filter`: a scoped admin only sees customers with an order in
+their branch, that customer's orders from their branch, and branch-scoped
+lifetime stats. Editing/blocking a customer stays `super_admin` +
+`customer_support`; `customers/{id}/role` and `/status` were also only
+`get_current_admin` and are now locked down. The legacy network-wide
+`admin.py` `/dashboard`, `/analytics/*`, `/recent-orders`, `/inventory/low-stock`
+endpoints (superseded by the branch-scoped `admin_dashboard.py` /
+`admin_analytics.py` / `admin_inventory.py`) are now `super_admin`-only.
+
+### Order fulfilment workflow (branch-floor, 2026-08-30)
+
+A customer's order is packed and dispatched by the **Branch Manager** of the
+branch it was routed to (`orders.branch_id`), who either does it themselves or
+delegates it to **fulfilment staff** — a `staff` account created under them via
+`/admin/staff` holding `orders:read` + `orders:update` (`admin/src/pages/Staff`
+has a one-click "Fulfilment Staff" preset). Inventory Manager has **no** order
+access; it owns catalog + branch stock + transfers only.
+
+Lifecycle (`orders.status`, a plain VARCHAR — no PG enum):
+
+```
+pending → confirmed → packing → packed → handed_to_courier
+        → shipped → out_for_delivery → delivered      (+ cancelled, returns flow)
+```
+
+`packing / packed / handed_to_courier` are the branch-floor steps. They are
+guarded by a state machine in `app/services/order_workflow.py`, enforced **only**
+when an admin drives `PATCH /admin/orders/{id}/status` (`enforce=True`):
+
+- Branch Manager / Customer Support / fulfilment staff are held to
+  `ADMIN_TRANSITIONS` (forward progression + `packed→packing` correction +
+  pre-dispatch `cancelled`). `GET /admin/orders/{id}/next-statuses` returns the
+  legal moves; the admin UI mirrors the same map.
+- `super_admin` bypasses the machine entirely (override to any state).
+- Every **system** caller — the SribeesExpress webhook/sync, payment
+  confirmation, cancellation helpers — passes `enforce=False` and is unaffected
+  (a courier reporting `delivered` straight after `handed_to_courier` is
+  authoritative, not a violation).
+
+`processing` is the legacy pre-workflow state, treated as an alias of `packing`.
+
+### Branch stock bookkeeping (2026-08-30)
+
+`branch_inventory.reserved_quantity` (long dormant) is now wired into the order
+lifecycle by `app/services/inventory_service.py`, all via atomic single-statement
+`UPDATE`s, all best-effort (a missing row / NULL `branch_id` is logged, never
+raised):
+
+| Order event | Effect | Guard |
+|---|---|---|
+| checkout | `reserved_quantity += qty` (unconditional, never blocks) | `orders.stock_reserved_at` |
+| → `handed_to_courier` (or later, if skipped) | `stock_quantity -= qty`, `reserved_quantity -= qty` | `orders.stock_committed_at` |
+| cancel, pre-dispatch | `reserved_quantity -= qty` | — |
+| cancel, post-dispatch (Super-Admin override) | `stock_quantity += qty` | — |
+
+The storefront still filters on `stock_quantity > 0` (not `available`), so a
+reservation is an ops signal (`available = stock − reserved` may go negative),
+not a hard stock lock — the real deduction happens when the parcel ships.
+
+### Collectible coupons (2026-08-30)
+
+`coupons.is_public` opts a code into the mobile **Available Offers** feed
+(`GET /coupons/available` · `POST /coupons/collect` · `GET /coupons/collected`).
+A public code must be **collected** (a `user_coupons` row) before
+`POST /cart/coupon` or checkout will accept it; private codes are unchanged.
+`coupons.per_user_limit` (NULL = unlimited, new coupons default 1) caps
+redemptions per customer via `user_coupons.times_redeemed`, enforced in
+`UserCouponService.assert_can_redeem` alongside `CouponService.validate` and
+reverted on cancellation next to the global `used_count` release.
+
 ---
 
 ## 🗺️ Smart Address-to-Branch Routing (⚠️ Not re-verified this pass)

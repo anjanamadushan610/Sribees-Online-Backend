@@ -191,18 +191,28 @@ class ChatService:
                         try:
                             text = data["candidates"][0]["content"]["parts"][0]["text"]
                         except (KeyError, IndexError):
-                            raise GeminiAPIError("Unexpected Gemini response shape")
+                            # 200 but no usable text — almost always a
+                            # finishReason of MAX_TOKENS / SAFETY / RECITATION,
+                            # or promptFeedback.blockReason. Log the specifics
+                            # so this is diagnosable without re-instrumenting.
+                            candidate = (data.get("candidates") or [{}])[0]
+                            raise GeminiAPIError(
+                                "Unexpected Gemini response shape "
+                                f"(finishReason={candidate.get('finishReason')}, "
+                                f"promptFeedback={data.get('promptFeedback')})"
+                            )
                         return ChatService._parse_reply(text)
 
                     if response.status_code in (429, 500, 502, 503, 504):
+                        body_snippet = response.text[:300]
                         last_error = GeminiAPIError(
-                            f"Gemini returned {response.status_code}",
+                            f"Gemini returned {response.status_code}: {body_snippet}",
                             status_code=response.status_code,
                             retryable=True,
                         )
                         logger.warning(
                             f"Chat Gemini error (attempt {attempt + 1}/{MAX_RETRIES + 1}): "
-                            f"{response.status_code}"
+                            f"{response.status_code} {body_snippet}"
                         )
                     else:
                         raise GeminiAPIError(
@@ -363,6 +373,32 @@ class ChatService:
 
         return strict_matches, broad_matches
 
+    @staticmethod
+    def _fallback_result(message: str) -> Dict[str, Any]:
+        """
+        Stand-in for a Gemini reply when the model is unreachable (quota
+        exhausted, outage). Treats the raw message as a product query so the
+        chat can still return real, DB-grounded product cards from a plain
+        keyword search instead of a hard error. The reply text is a neutral
+        acknowledgement — `_ground_reply` fills in the real "found / not found"
+        wording from the DB results.
+        """
+        cleaned = unicodedata.normalize("NFC", (message or "").strip())
+        # Whole message as one search term — the DB fuzzy/trigram search
+        # tolerates a natural-language phrase, and keeping it as one term
+        # avoids chopping "coconut milk" into two unrelated searches.
+        term = cleaned[:80]
+        return {
+            "reply": "Here's what I found for that:",
+            "search_terms": [term] if term else [],
+            "intent": "buy_product",
+            "brand": None,
+            "variant": None,
+            "max_price": None,
+            "min_price": None,
+            "is_followup": False,
+        }
+
     # ------------------------------------------------------------------
     # Reply grounding
     # ------------------------------------------------------------------
@@ -420,7 +456,23 @@ class ChatService:
     ) -> Dict[str, Any]:
         history = await ChatService.get_history(redis, session_id)
 
-        result = await ChatService._ask_gemini(message, history, image_base64, image_mime_type)
+        # A missing API key is a deploy misconfiguration — surface it loudly
+        # (503) rather than silently degrading. Every other Gemini failure
+        # (quota exhausted, transient outage, bad response) degrades to a
+        # plain keyword search so the chat still returns useful product cards.
+        degraded = False
+        try:
+            result = await ChatService._ask_gemini(
+                message, history, image_base64, image_mime_type
+            )
+        except GeminiAPIError as exc:
+            if "GEMINI_API_KEY not configured" in str(exc):
+                raise
+            logger.warning(
+                f"Chat: Gemini unavailable, falling back to keyword search — {exc}"
+            )
+            degraded = True
+            result = ChatService._fallback_result(message)
 
         intent = result["intent"]
         search_terms = result["search_terms"]
@@ -459,6 +511,14 @@ class ChatService:
         )
         products = strict_matches or broad_matches[:MAX_MATCHES_PER_TERM]
 
+        if degraded and not products:
+            # Nothing to show and no working assistant — be honest and point
+            # the customer at the plain search instead of a dead end.
+            reply = (
+                "I can't reach the shopping assistant right now — please try "
+                "the search bar, or send your message again in a little while."
+            )
+
         search_context = (
             {
                 "search_terms": search_terms,
@@ -472,4 +532,4 @@ class ChatService:
         )
         await ChatService._append_turn(redis, session_id, history, message, reply, search_context)
 
-        return {"reply": reply, "products": products}
+        return {"reply": reply, "products": products, "degraded": degraded}
