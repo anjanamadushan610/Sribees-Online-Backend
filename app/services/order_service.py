@@ -194,6 +194,11 @@ class OrderService:
             )
             # Raises CouponValidationError (a ValueError) → 400 at the endpoint.
             CouponService.validate(coupon_row, cart_subtotal, datetime.now(timezone.utc))
+            # Per-customer layer: a public coupon must have been collected, and
+            # coupons.per_user_limit is enforced here (also a CouponValidationError).
+            from app.services.user_coupon_service import UserCouponService
+
+            await UserCouponService.assert_can_redeem(db, user_id, coupon_row)
             coupon_for_pricing = {
                 "code": coupon_row.code,
                 "discount_type": coupon_row.discount_type,
@@ -364,6 +369,13 @@ class OrderService:
             if not redeemed:
                 await db.rollback()
                 raise ValueError("This coupon has reached its usage limit.")
+            # Per-customer redemption count (creates the user_coupons row for a
+            # private code that was never explicitly collected).
+            from app.services.user_coupon_service import UserCouponService
+
+            await UserCouponService.record_redemption(
+                db, user_id, coupon_row, order.order_id
+            )
 
         # Create order items
         for item in cart["items"]:
@@ -379,6 +391,17 @@ class OrderService:
                 subtotal=Decimal(str(item["price"] * item["quantity"]))
             )
             db.add(order_item)
+
+        # Hold branch stock against this order (best-effort, non-blocking —
+        # never fails checkout). Converted to a real deduction when the parcel
+        # is handed to the courier; released if the order is cancelled first.
+        from app.services.inventory_service import InventoryService
+
+        await InventoryService.reserve_for_order(
+            db,
+            order,
+            [(UUID(i["product_id"]), int(i["quantity"])) for i in cart["items"]],
+        )
 
         # Record wallet movements atomically with the order.
         # Spend first so the earned cashback isn't immediately spendable on the
@@ -913,6 +936,13 @@ class OrderService:
                 f"Coupon {coupon.code} redemption released by cancelled "
                 f"order {order.order_number}"
             )
+        # Give the customer their per-user redemption back too, so a
+        # cancelled order doesn't burn a one-per-customer coupon.
+        from app.services.user_coupon_service import UserCouponService
+
+        await UserCouponService.revert_redemption(
+            db, order.user_id, coupon.coupon_id, order.order_id
+        )
 
     @staticmethod
     async def _reverse_order_financials(db: AsyncSession, order: Order) -> None:
@@ -989,15 +1019,48 @@ class OrderService:
         )
 
     @staticmethod
+    async def _reverse_order_stock(db: AsyncSession, order: Order) -> None:
+        """
+        Undo this order's branch-stock effect on cancellation: release the
+        reservation if the parcel never shipped, or put the units back on the
+        shelf if it did (Super-Admin override cancel of a dispatched order).
+        Staged in the caller's transaction; does not commit. Idempotent.
+        """
+        from app.services.inventory_service import InventoryService
+
+        if order.stock_committed_at is not None:
+            await InventoryService.restock_for_order(db, order)
+        else:
+            await InventoryService.release_reservation_for_order(db, order)
+
+    @staticmethod
     async def update_status(
         db: AsyncSession,
         order: Order,
         status: OrderStatusEnum,
         changed_by: str = "Admin",
         notes: Optional[str] = None,
+        enforce: bool = False,
+        actor_role: Optional[str] = None,
     ) -> Order:
-        """Update order status and log history."""
+        """
+        Update order status and log history.
+
+        ``enforce=True`` (only the admin ``PATCH .../status`` endpoint passes
+        it) runs the change through the fulfilment state machine in
+        app/services/order_workflow.py and raises
+        ``order_workflow.InvalidTransitionError`` (a ValueError) on a forbidden
+        transition. Every system/courier caller leaves ``enforce=False`` — a
+        courier reporting ``delivered`` right after ``handed_to_courier`` is
+        authoritative, not a workflow violation.
+        """
         old_status = order.status
+
+        if enforce:
+            from app.services import order_workflow
+
+            order_workflow.validate_transition(old_status, status.value, actor_role)
+
         was_cancelled = order.status == OrderStatus.CANCELLED.value
         was_delivered = order.status == OrderStatus.DELIVERED.value
 
@@ -1005,7 +1068,11 @@ class OrderService:
 
         colombo_tz = ZoneInfo("Asia/Colombo")
         now = datetime.now(colombo_tz)
-        if status == OrderStatusEnum.SHIPPED:
+        if status == OrderStatusEnum.PACKED:
+            order.packed_at = now
+        elif status == OrderStatusEnum.HANDED_TO_COURIER:
+            order.handed_to_courier_at = now
+        elif status == OrderStatusEnum.SHIPPED:
             order.shipped_at = now
         elif status == OrderStatusEnum.DELIVERED:
             order.delivered_at = now
@@ -1022,6 +1089,20 @@ class OrderService:
             order.cancelled_at = now
             if not was_cancelled:
                 await OrderService._reverse_order_financials(db, order)
+                await OrderService._reverse_order_stock(db, order)
+
+        # Deduct branch stock once the parcel leaves the branch. Idempotent via
+        # order.stock_committed_at, so a later courier-driven SHIPPED/DELIVERED
+        # for the same order is a no-op.
+        if status in (
+            OrderStatusEnum.HANDED_TO_COURIER,
+            OrderStatusEnum.SHIPPED,
+            OrderStatusEnum.OUT_FOR_DELIVERY,
+            OrderStatusEnum.DELIVERED,
+        ):
+            from app.services.inventory_service import InventoryService
+
+            await InventoryService.commit_for_order(db, order)
 
         # Log status transition in audit history
         history = OrderStatusHistory(
@@ -1115,6 +1196,7 @@ class OrderService:
         # clawback) atomically within this transaction. The non-cancellable
         # guard above ensures this runs only on a real cancellation transition.
         await OrderService._reverse_order_financials(db, order)
+        await OrderService._reverse_order_stock(db, order)
 
         await db.commit()
         await db.refresh(order)

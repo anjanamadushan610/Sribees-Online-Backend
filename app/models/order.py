@@ -23,10 +23,23 @@ from app.config.database import Base
 
 
 class OrderStatus(str, enum.Enum):
-    """Order status enum."""
+    """Order status enum.
+
+    `status` is a plain VARCHAR column (not a Postgres enum), so new members
+    here need no `ALTER TYPE` migration — only the app-side guards in
+    app/services/order_workflow.py.
+
+    PACKING / PACKED / HANDED_TO_COURIER are the branch-fulfilment steps a
+    Branch Manager (or their delegated fulfilment staff) drives between
+    CONFIRMED and SHIPPED. PROCESSING is the legacy pre-workflow equivalent of
+    PACKING and is still accepted for orders placed before this shipped.
+    """
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"
+    PACKING = "packing"
+    PACKED = "packed"
+    HANDED_TO_COURIER = "handed_to_courier"
     SHIPPED = "shipped"
     OUT_FOR_DELIVERY = "out_for_delivery"
     DELIVERED = "delivered"
@@ -161,6 +174,17 @@ class Order(Base):
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # Branch-fulfilment milestones (set by OrderService.update_status on the
+    # transition into each state; mirror the shipped_at/delivered_at pattern).
+    packed_at = Column(DateTime(timezone=True), nullable=True)
+    handed_to_courier_at = Column(DateTime(timezone=True), nullable=True)
+    # Branch-inventory bookkeeping (app/services/inventory_service.py).
+    # stock_reserved_at: units added to branch_inventory.reserved_quantity at
+    # checkout. stock_committed_at: reservation converted to a real
+    # stock_quantity deduction when the parcel is handed to the courier. Both
+    # are idempotency guards — the operation runs only while the column is NULL.
+    stock_reserved_at = Column(DateTime(timezone=True), nullable=True)
+    stock_committed_at = Column(DateTime(timezone=True), nullable=True)
     shipped_at = Column(DateTime(timezone=True), nullable=True)
     delivered_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_at = Column(DateTime(timezone=True), nullable=True)

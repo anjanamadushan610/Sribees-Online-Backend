@@ -42,11 +42,14 @@ router = APIRouter(tags=["Orders"])
 # Helper Functions
 # ============================================================================
 
-# Normal forward progression of a fulfilled order.
+# Normal forward progression of a fulfilled order. `processing` (the legacy
+# pre-workflow state) is folded onto `packing` — see _effective_status.
 _STATUS_FLOW = [
     ("pending", "Order Placed"),
     ("confirmed", "Confirmed"),
-    ("processing", "Processing"),
+    ("packing", "Preparing Order"),
+    ("packed", "Packed"),
+    ("handed_to_courier", "Handed to Courier"),
     ("shipped", "Shipped"),
     ("out_for_delivery", "Out for Delivery"),
     ("delivered", "Delivered"),
@@ -55,10 +58,20 @@ _STATUS_FLOW = [
 # Known timestamp column per status (others are inferred, timestamp None).
 _STATUS_TIMESTAMPS = {
     "pending": "created_at",
+    "packed": "packed_at",
+    "handed_to_courier": "handed_to_courier_at",
     "shipped": "shipped_at",
     "delivered": "delivered_at",
     "cancelled": "cancelled_at",
 }
+
+# Orders placed before the packing/packed/handed_to_courier states existed sit
+# in `processing`; render them at the `packing` point of the timeline.
+_LEGACY_STATUS_ALIASES = {"processing": "packing"}
+
+
+def _effective_status(status: str) -> str:
+    return _LEGACY_STATUS_ALIASES.get(status, status)
 
 
 def build_status_timeline(order) -> list:
@@ -126,7 +139,8 @@ def build_status_timeline(order) -> list:
         ]
 
     flow_keys = [s for s, _ in _STATUS_FLOW]
-    current_rank = flow_keys.index(order.status) if order.status in flow_keys else 0
+    effective = _effective_status(order.status)
+    current_rank = flow_keys.index(effective) if effective in flow_keys else 0
 
     timeline = []
     for rank, (status_key, label) in enumerate(_STATUS_FLOW):

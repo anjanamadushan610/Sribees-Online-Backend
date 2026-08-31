@@ -32,6 +32,7 @@ from app.api.v1 import (
     cart,
     categories,
     chat,
+    coupons,
     courier_webhooks,
     locations,
     marketing,
@@ -115,6 +116,14 @@ router.include_router(
     wallet.router,
     prefix="/wallet",
     tags=["Wallet"],
+)
+
+# Customer-facing coupon collection (/coupons) — the "Available Offers" feed
+# and per-customer coupon wallet. Applying a coupon stays on POST /cart/coupon.
+router.include_router(
+    coupons.router,
+    prefix="/coupons",
+    tags=["Coupons"],
 )
 
 router.include_router(
