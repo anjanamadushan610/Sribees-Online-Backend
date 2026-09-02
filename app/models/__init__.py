@@ -9,6 +9,11 @@ from app.models.banner import Banner
 from app.models.branch import Branch, PostOfficeBranchMapping, PostOfficeDirectory
 from app.models.category import Category
 from app.models.coupon import Coupon, CouponDiscountType
+from app.models.escalation import (
+    EscalationCategory,
+    EscalationStatus,
+    OrderEscalation,
+)
 from app.models.notification import Notification, NotificationType, PushToken
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
@@ -52,6 +57,10 @@ __all__ = [
     # Coupon
     "Coupon",
     "CouponDiscountType",
+    # Order escalations (B4)
+    "OrderEscalation",
+    "EscalationCategory",
+    "EscalationStatus",
     # Product models
     "BranchInventory",
     "Product",

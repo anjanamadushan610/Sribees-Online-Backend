@@ -52,9 +52,14 @@ class OrderStatusEnum(str, Enum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"
+    PACKING = "packing"
+    PACKED = "packed"
+    HANDED_TO_COURIER = "handed_to_courier"
     SHIPPED = "shipped"
     OUT_FOR_DELIVERY = "out_for_delivery"
     DELIVERED = "delivered"
+    DELIVERY_FAILED = "delivery_failed"
+    RTO_INITIATED = "rto_initiated"
     CANCELLED = "cancelled"
     RETURN_REQUESTED = "return_requested"
     RETURN_APPROVED = "return_approved"
@@ -200,14 +205,47 @@ class ReturnRequest(BaseModel):
 
 
 class UpdateOrderStatusRequest(BaseModel):
-    """Request to update order status."""
+    """Standard status transition — must be a move the fulfilment state machine
+    (app/services/order_workflow.py) allows for the caller's role."""
     status: OrderStatusEnum
+
+
+class OverrideOrderStatusRequest(BaseModel):
+    """Super-Admin emergency override — bypasses the state machine, mandatory
+    justification, permanently logged to the audit trail (B1 §4)."""
+    status: OrderStatusEnum
+    reason: str = Field(
+        ...,
+        min_length=15,
+        max_length=1000,
+        description="Why an emergency manual status change is required.",
+    )
 
 
 class UpdatePaymentStatusRequest(BaseModel):
     """Request to update payment status."""
     payment_status: PaymentStatusEnum
     payment_id: Optional[str] = None
+
+
+class ReturnResolution(str, Enum):
+    """How a Branch Manager / Super Admin settled a return claim (B4 §2)."""
+    RETURNLESS_REFUND = "returnless_refund"   # spoilage — refund, no pickup
+    REVERSE_PICKUP = "reverse_pickup"         # refund + a rider collects the goods
+
+
+class ResolveReturnRequest(BaseModel):
+    resolution: ReturnResolution = ReturnResolution.RETURNLESS_REFUND
+    note: Optional[str] = Field(None, max_length=1000)
+
+
+class RejectReturnRequest(BaseModel):
+    note: Optional[str] = Field(None, max_length=1000)
+
+
+class ReturnNoteRequest(BaseModel):
+    """Customer Support appends a proof/context note to an open return claim."""
+    note: str = Field(..., min_length=3, max_length=1000)
 
 
 # ============================================================================

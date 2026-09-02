@@ -957,9 +957,27 @@ class OrderService:
         status: OrderStatusEnum,
         changed_by: str = "Admin",
         notes: Optional[str] = None,
+        enforce: bool = False,
+        actor_role: Optional[str] = None,
+        is_override: bool = False,
     ) -> Order:
-        """Update order status and log history."""
+        """
+        Update order status and log history.
+
+        ``enforce=True`` (the admin ``PATCH .../status`` endpoint) runs the
+        change through the fulfilment state machine in
+        ``app/services/order_workflow.py`` and raises
+        ``order_workflow.InvalidTransitionError`` (a ValueError) on a forbidden
+        move. Every system/courier caller leaves ``enforce=False``.
+        ``is_override`` marks a Super-Admin emergency change in the audit trail.
+        """
         old_status = order.status
+
+        if enforce and not is_override:
+            from app.services import order_workflow
+
+            order_workflow.validate_transition(old_status, status.value, actor_role)
+
         was_cancelled = order.status == OrderStatus.CANCELLED.value
         was_delivered = order.status == OrderStatus.DELIVERED.value
 
@@ -967,7 +985,13 @@ class OrderService:
 
         colombo_tz = ZoneInfo("Asia/Colombo")
         now = datetime.now(colombo_tz)
-        if status == OrderStatusEnum.SHIPPED:
+        if status == OrderStatusEnum.PACKED:
+            order.packed_at = now
+        elif status == OrderStatusEnum.HANDED_TO_COURIER:
+            order.handed_to_courier_at = now
+        elif status == OrderStatusEnum.DELIVERY_FAILED:
+            order.delivery_failed_at = now
+        elif status == OrderStatusEnum.SHIPPED:
             order.shipped_at = now
         elif status == OrderStatusEnum.DELIVERED:
             order.delivered_at = now
@@ -985,13 +1009,18 @@ class OrderService:
             if not was_cancelled:
                 await OrderService._reverse_order_financials(db, order)
 
-        # Log status transition in audit history
+        # Log status transition in audit history. An override is prefixed so it
+        # stands out permanently in the trail (B1 §4).
+        default_note = f"Status updated to {status.value.replace('_', ' ').title()}"
+        history_note = notes or default_note
+        if is_override:
+            history_note = f"[EMERGENCY OVERRIDE] {notes or default_note}"
         history = OrderStatusHistory(
             order_id=order.order_id,
             old_status=old_status,
             new_status=status.value,
             changed_by=changed_by,
-            notes=notes or f"Status updated to {status.value.replace('_', ' ').title()}",
+            notes=history_note,
             created_at=now,
         )
         db.add(history)
@@ -1056,12 +1085,16 @@ class OrderService:
         reason: Optional[str] = None
     ) -> Order:
         """Cancel an order."""
-        # Check if order can be cancelled
+        # Check if order can be cancelled. Once it is with the courier a cancel
+        # is a Super-Admin override, not a normal action.
         non_cancellable = [
+            OrderStatus.HANDED_TO_COURIER.value,
             OrderStatus.SHIPPED.value,
             OrderStatus.OUT_FOR_DELIVERY.value,
             OrderStatus.DELIVERED.value,
-            OrderStatus.CANCELLED.value
+            OrderStatus.DELIVERY_FAILED.value,
+            OrderStatus.RTO_INITIATED.value,
+            OrderStatus.CANCELLED.value,
         ]
 
         if order.status in non_cancellable:
@@ -1150,13 +1183,23 @@ class OrderService:
         return order
 
     @staticmethod
-    async def approve_return(db: AsyncSession, order: Order) -> Order:
+    async def approve_return(
+        db: AsyncSession,
+        order: Order,
+        resolution: str = "returnless_refund",
+        note: Optional[str] = None,
+    ) -> Order:
         """
         Approve a pending return: credit the returned value to the customer's
         wallet (REFUND) and move the order to REFUNDED — all in one transaction.
+        ``resolution`` records returnless_refund vs reverse_pickup (B4 §2).
         """
         if order.status != OrderStatus.RETURN_REQUESTED.value:
             raise ValueError("This order has no pending return request.")
+
+        order.return_resolution = resolution
+        if note:
+            order.return_resolution_note = note.strip()
 
         refund = OrderService._compute_return_refund(order)
 
@@ -1190,12 +1233,16 @@ class OrderService:
         return order
 
     @staticmethod
-    async def reject_return(db: AsyncSession, order: Order) -> Order:
+    async def reject_return(
+        db: AsyncSession, order: Order, note: Optional[str] = None
+    ) -> Order:
         """Reject a pending return: revert the order back to DELIVERED."""
         if order.status != OrderStatus.RETURN_REQUESTED.value:
             raise ValueError("This order has no pending return request.")
 
         order.status = OrderStatus.DELIVERED.value
+        if note:
+            order.return_resolution_note = note.strip()
         await db.commit()
         await db.refresh(order)
         logger.info(f"Return rejected for order {order.order_number}")

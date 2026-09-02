@@ -44,8 +44,12 @@ _OPEN_STATUSES = {
     OrderStatus.PENDING.value,
     OrderStatus.CONFIRMED.value,
     OrderStatus.PROCESSING.value,
+    OrderStatus.PACKING.value,
+    OrderStatus.PACKED.value,
+    OrderStatus.HANDED_TO_COURIER.value,
     OrderStatus.SHIPPED.value,
     OrderStatus.OUT_FOR_DELIVERY.value,
+    OrderStatus.DELIVERY_FAILED.value,
     OrderStatus.RETURN_REQUESTED.value,
     OrderStatus.RETURN_APPROVED.value,
 }
@@ -66,6 +70,10 @@ async def dashboard_stats(
     can_orders = ("orders", "read") in permissions
     can_customers = ("customers", "read") in permissions
     can_products = ("products", "read") in permissions
+    # Revenue / financial figures are gated on analytics:read, NOT orders:read
+    # (QA spec B6): an order-support account legitimately holds orders:read to
+    # do its job and must never see business revenue as a side effect.
+    can_revenue = ("analytics", "read") in permissions
     effective_branch = scope.resolve(None)
 
     data: dict = {
@@ -73,6 +81,7 @@ async def dashboard_stats(
             "orders": can_orders,
             "customers": can_customers,
             "products": can_products,
+            "revenue": can_revenue,
         }
     }
 
@@ -172,18 +181,30 @@ async def dashboard_stats(
             for o in recent
         ]
 
+        # Operational figures — visible to anyone with orders:read.
         data.update(
             {
-                "total_revenue": float(lifetime.revenue or 0),
                 "total_orders": int(lifetime.orders or 0),
                 "pending_orders": int(pending_orders),
-                "revenue_growth": _pct_change(current["revenue"], previous["revenue"]) or 0,
                 "orders_growth": _pct_change(current["orders"], previous["orders"]) or 0,
-                "revenue_trend": revenue_trend,
                 "order_status_distribution": order_status_distribution,
                 "recent_orders": recent_orders,
+                # Order volume per day (no money) — the operational trend.
+                "orders_trend": [
+                    {"date": e["date"], "orders": e["orders"]} for e in revenue_trend
+                ],
             }
         )
+
+        # Financial figures — analytics:read only (B6).
+        if can_revenue:
+            data.update(
+                {
+                    "total_revenue": float(lifetime.revenue or 0),
+                    "revenue_growth": _pct_change(current["revenue"], previous["revenue"]) or 0,
+                    "revenue_trend": revenue_trend,
+                }
+            )
 
     if can_customers:
         total_customers = (
@@ -219,7 +240,8 @@ async def dashboard_stats(
                 "product_id": str(r.product_id),
                 "name": r.name,
                 "units_sold": int(r.units or 0),
-                "revenue": float(r.revenue or 0),
+                # Per-product revenue is a financial figure — analytics:read only.
+                **({"revenue": float(r.revenue or 0)} if can_revenue else {}),
             }
             for r in (await db.execute(top_stmt)).all()
         ]

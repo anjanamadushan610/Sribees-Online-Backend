@@ -22,13 +22,30 @@ from app.config.database import Base
 
 
 class OrderStatus(str, enum.Enum):
-    """Order status enum."""
+    """
+    Order status enum.
+
+    ``orders.status`` is a plain VARCHAR(30) (not a Postgres enum), so adding
+    members here needs no ``ALTER TYPE`` migration — only the app-side guards
+    in ``app/services/order_workflow.py``.
+
+    PACKING / PACKED / HANDED_TO_COURIER are the branch-floor fulfilment steps
+    driven from the admin Order Details panel (Branch Manager or Super Admin).
+    PROCESSING is the legacy pre-workflow equivalent of PACKING, still accepted
+    for orders placed before this shipped. DELIVERY_FAILED / RTO_INITIATED are
+    the last-mile exception path.
+    """
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"
+    PACKING = "packing"
+    PACKED = "packed"
+    HANDED_TO_COURIER = "handed_to_courier"
     SHIPPED = "shipped"
     OUT_FOR_DELIVERY = "out_for_delivery"
     DELIVERED = "delivered"
+    DELIVERY_FAILED = "delivery_failed"
+    RTO_INITIATED = "rto_initiated"
     CANCELLED = "cancelled"
     # Post-delivery returns flow (Module 5.5)
     RETURN_REQUESTED = "return_requested"
@@ -121,12 +138,21 @@ class Order(Base):
     return_items = Column(JSONB, nullable=True)
     return_requested_at = Column(DateTime(timezone=True), nullable=True)
     refund_amount = Column(Numeric(10, 2), nullable=True)
+    # B4 §2: how a Branch Manager / Super Admin settled the claim.
+    # 'returnless_refund' (spoilage, no pickup) | 'reverse_pickup' (rider collects).
+    return_resolution = Column(String(30), nullable=True)
+    return_resolution_note = Column(Text, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # Fulfilment milestones — set by OrderService.update_status on the transition
+    # into each state (mirror the shipped_at / delivered_at pattern).
+    packed_at = Column(DateTime(timezone=True), nullable=True)
+    handed_to_courier_at = Column(DateTime(timezone=True), nullable=True)
     shipped_at = Column(DateTime(timezone=True), nullable=True)
     delivered_at = Column(DateTime(timezone=True), nullable=True)
+    delivery_failed_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships

@@ -406,11 +406,15 @@ class NotificationService:
         """Send order status notification."""
         status_messages = {
             "confirmed": "Your order has been confirmed",
-            "processing": "Your order is being processed",
+            "processing": "Your order is being prepared",
+            "packing": "Your order is being prepared",
+            "packed": "Your order is packed and ready to ship",
+            "handed_to_courier": "Your order has been handed to the courier",
             "shipped": "Your order has been shipped",
             "out_for_delivery": "Your order is out for delivery",
             "delivered": "Your order has been delivered",
-            "cancelled": "Your order has been cancelled"
+            "delivery_failed": "We couldn't deliver your order — our team will be in touch",
+            "cancelled": "Your order has been cancelled",
         }
 
         message = status_messages.get(status, f"Order status updated to {status}")
