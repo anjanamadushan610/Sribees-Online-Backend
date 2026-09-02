@@ -1183,13 +1183,23 @@ class OrderService:
         return order
 
     @staticmethod
-    async def approve_return(db: AsyncSession, order: Order) -> Order:
+    async def approve_return(
+        db: AsyncSession,
+        order: Order,
+        resolution: str = "returnless_refund",
+        note: Optional[str] = None,
+    ) -> Order:
         """
         Approve a pending return: credit the returned value to the customer's
         wallet (REFUND) and move the order to REFUNDED — all in one transaction.
+        ``resolution`` records returnless_refund vs reverse_pickup (B4 §2).
         """
         if order.status != OrderStatus.RETURN_REQUESTED.value:
             raise ValueError("This order has no pending return request.")
+
+        order.return_resolution = resolution
+        if note:
+            order.return_resolution_note = note.strip()
 
         refund = OrderService._compute_return_refund(order)
 
@@ -1223,12 +1233,16 @@ class OrderService:
         return order
 
     @staticmethod
-    async def reject_return(db: AsyncSession, order: Order) -> Order:
+    async def reject_return(
+        db: AsyncSession, order: Order, note: Optional[str] = None
+    ) -> Order:
         """Reject a pending return: revert the order back to DELIVERED."""
         if order.status != OrderStatus.RETURN_REQUESTED.value:
             raise ValueError("This order has no pending return request.")
 
         order.status = OrderStatus.DELIVERED.value
+        if note:
+            order.return_resolution_note = note.strip()
         await db.commit()
         await db.refresh(order)
         logger.info(f"Return rejected for order {order.order_number}")

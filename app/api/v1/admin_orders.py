@@ -31,12 +31,18 @@ from app.core.dependencies import (
     require_permission,
     require_roles,
 )
+from app.models.admin import Admin
 from app.models.branch import Branch
+from app.models.escalation import EscalationStatus, OrderEscalation
 from app.models.order import Order
 from app.models.user import User
+from app.schemas.escalation import EscalationCreate, EscalationUpdate
 from app.schemas.order import (
     OrderStatusEnum,
     OverrideOrderStatusRequest,
+    RejectReturnRequest,
+    ResolveReturnRequest,
+    ReturnNoteRequest,
     UpdateOrderStatusRequest,
 )
 from app.services import order_workflow
@@ -108,12 +114,14 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
         "delivery_slot_date": order.delivery_slot_date.isoformat() if order.delivery_slot_date else None,
         "delivery_slot_time": order.delivery_slot_time,
         "notes": order.notes,
-        # Returns & refunds (Module 5.5)
+        # Returns & refunds (Module 5.5 / B4)
         "return_reason": order.return_reason,
         "return_comments": order.return_comments,
         "return_items": order.return_items,
         "return_requested_at": order.return_requested_at.isoformat() if order.return_requested_at else None,
         "refund_amount": float(order.refund_amount) if order.refund_amount is not None else None,
+        "return_resolution": getattr(order, "return_resolution", None),
+        "return_resolution_note": getattr(order, "return_resolution_note", None),
         "customer": {
             "user_id": str(customer.user_id),
             "full_name": customer.full_name,
@@ -211,6 +219,54 @@ async def _branch_name(db: AsyncSession, branch_id: Optional[UUID]) -> Optional[
     return (
         await db.execute(select(Branch.name).where(Branch.branch_id == branch_id))
     ).scalar_one_or_none()
+
+
+# Order states before the parcel is picked (no rider yet) — QA spec B4 Module A.
+_RIDER_PENDING_STATES = {
+    "pending", "confirmed", "processing", "packing",
+}
+
+
+async def _fulfilment_contacts(db: AsyncSession, order: Order) -> dict:
+    """Branch + rider contact card for the Order Details drawer (B4 Module A)."""
+    branch_block = None
+    if order.branch_id is not None:
+        branch = (
+            await db.execute(select(Branch).where(Branch.branch_id == order.branch_id))
+        ).scalar_one_or_none()
+        if branch is not None:
+            manager_name = manager_email = None
+            if branch.manager_id is not None:
+                mgr = (
+                    await db.execute(
+                        select(Admin.full_name, Admin.email).where(
+                            Admin.admin_id == branch.manager_id
+                        )
+                    )
+                ).first()
+                if mgr is not None:
+                    manager_name, manager_email = mgr
+            branch_block = {
+                "name": branch.name,
+                "code": branch.code,
+                "phone": branch.phone,
+                "manager_name": manager_name,
+                "manager_email": manager_email,
+            }
+
+    dispatched = order.status not in _RIDER_PENDING_STATES
+    rider_block = {
+        "state": "assigned" if dispatched else "pending",
+        # Rider name / phone / vehicle come from the courier payload, which the
+        # current schema does not carry — surface what we have.
+        "name": None,
+        "phone": None,
+        "vehicle": None,
+        "waybill": order.courier_waybill_number,
+        "tracking_status": order.courier_tracking_status,
+        "courier_booking_status": order.courier_booking_status,
+    }
+    return {"branch": branch_block, "rider": rider_block}
 
 
 @router.get("", response_model=dict)
@@ -557,10 +613,14 @@ async def get_order(
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
 ):
-    """Full order details (items, pricing, customer, delivery address)."""
+    """Full order details (items, pricing, customer, delivery address,
+    fulfilment contacts and escalation tickets — B4)."""
     order = await _load_scoped_order(db, order_id, scope)
     branch_name = await _branch_name(db, order.branch_id)
-    return {"success": True, "data": _format_order_detail(order, branch_name)}
+    data = _format_order_detail(order, branch_name)
+    data["fulfilment_contacts"] = await _fulfilment_contacts(db, order)
+    data["escalations"] = await _list_escalations(db, order_id)
+    return {"success": True, "data": data}
 
 
 @router.get("/{order_id}/invoice")
@@ -704,25 +764,38 @@ async def override_order_status(
     }
 
 
-@router.post("/{order_id}/return/approve", response_model=dict,
-             dependencies=[Depends(require_permission("orders", "update"))])
+# Return/refund resolution is a Branch-Manager / Super-Admin decision (B4 §2).
+# Customer Support captures the customer's proofs but cannot authorise a
+# refund, dispatch a reverse pickup, or reject a claim.
+_RETURN_DECIDER = Depends(require_roles("super_admin", "branch_manager"))
+
+
+@router.post("/{order_id}/return/approve", response_model=dict)
 async def approve_order_return(
     order_id: UUID,
+    body: ResolveReturnRequest = ResolveReturnRequest(),
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
+    _decider = _RETURN_DECIDER,
 ):
     """
-    Approve a pending return: credit the returned value to the customer's wallet
-    and move the order to REFUNDED (atomic; branch-scoped).
+    Approve a pending return (Branch Manager / Super Admin): refund the returned
+    value to the customer's wallet and move the order to REFUNDED.
+    ``resolution`` records whether this is a returnless refund (spoilage — no
+    pickup) or a reverse pickup (a rider will collect the goods).
     """
     order = await _load_scoped_order(db, order_id, scope)
     try:
-        await OrderService.approve_return(db, order)
+        await OrderService.approve_return(
+            db, order, resolution=body.resolution.value, note=body.note
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     branch_name = await _branch_name(db, order.branch_id)
-    logger.info(f"[admin] Return approved for order {order.order_number}")
+    logger.info(
+        f"[admin] Return approved ({body.resolution.value}) for order {order.order_number}"
+    )
     return {
         "success": True,
         "data": _format_order_detail(order, branch_name),
@@ -730,17 +803,18 @@ async def approve_order_return(
     }
 
 
-@router.post("/{order_id}/return/reject", response_model=dict,
-             dependencies=[Depends(require_permission("orders", "update"))])
+@router.post("/{order_id}/return/reject", response_model=dict)
 async def reject_order_return(
     order_id: UUID,
+    body: RejectReturnRequest = RejectReturnRequest(),
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
+    _decider = _RETURN_DECIDER,
 ):
-    """Reject a pending return: revert the order to DELIVERED (branch-scoped)."""
+    """Reject a pending return (Branch Manager / Super Admin): revert to DELIVERED."""
     order = await _load_scoped_order(db, order_id, scope)
     try:
-        await OrderService.reject_return(db, order)
+        await OrderService.reject_return(db, order, note=body.note)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -751,6 +825,146 @@ async def reject_order_return(
         "data": _format_order_detail(order, branch_name),
         "message": "Return rejected",
     }
+
+
+@router.post("/{order_id}/return/note", response_model=dict,
+             dependencies=[Depends(require_permission("orders", "update"))])
+async def add_return_note(
+    order_id: UUID,
+    body: ReturnNoteRequest,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(get_current_admin),
+):
+    """Customer Support / anyone with orders:update appends a proof note to a
+    pending return claim (B4 §2 'Submit Quality Claim — upload proofs')."""
+    order = await _load_scoped_order(db, order_id, scope)
+    if order.status not in (
+        OrderStatusEnum.RETURN_REQUESTED.value,
+        OrderStatusEnum.RETURN_APPROVED.value,
+    ):
+        raise HTTPException(status_code=400, detail="This order has no open return claim.")
+    who = getattr(admin, "full_name", None) or getattr(admin, "email", "Support")
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    line = f"[{stamp} · {who}] {body.note.strip()}"
+    order.return_comments = f"{order.return_comments}\n{line}" if order.return_comments else line
+    await db.commit()
+    await db.refresh(order)
+    branch_name = await _branch_name(db, order.branch_id)
+    return {
+        "success": True,
+        "data": _format_order_detail(order, branch_name),
+        "message": "Note added to the return claim",
+    }
+
+
+# ============================================================================
+# Internal escalation tickets (B4 Module B)
+# ============================================================================
+
+def _esc_out(e: OrderEscalation) -> dict:
+    return {
+        "escalation_id": str(e.escalation_id),
+        "order_id": str(e.order_id),
+        "category": e.category,
+        "message": e.message,
+        "status": e.status,
+        "resolution_note": e.resolution_note,
+        "raised_by_name": e.raised_by_name,
+        "handled_by_name": e.handled_by_name,
+        "created_at": e.created_at.isoformat() if e.created_at else None,
+        "acknowledged_at": e.acknowledged_at.isoformat() if e.acknowledged_at else None,
+        "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
+    }
+
+
+async def _list_escalations(db: AsyncSession, order_id: UUID) -> list[dict]:
+    rows = (
+        await db.execute(
+            select(OrderEscalation)
+            .where(OrderEscalation.order_id == order_id)
+            .order_by(OrderEscalation.created_at.desc())
+        )
+    ).scalars().all()
+    return [_esc_out(e) for e in rows]
+
+
+@router.get("/{order_id}/escalations", response_model=dict)
+async def list_order_escalations(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """Escalation tickets on this order (branch-scoped via the order load)."""
+    await _load_scoped_order(db, order_id, scope)
+    return {"success": True, "data": {"escalations": await _list_escalations(db, order_id)}}
+
+
+@router.post("/{order_id}/escalations", response_model=dict,
+             dependencies=[Depends(require_permission("orders", "update"))])
+async def raise_order_escalation(
+    order_id: UUID,
+    body: EscalationCreate,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(get_current_admin),
+):
+    """Raise an internal support -> branch ticket (Support / BM / SA)."""
+    order = await _load_scoped_order(db, order_id, scope)
+    who = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
+    esc = OrderEscalation(
+        order_id=order.order_id,
+        branch_id=order.branch_id,
+        raised_by_admin_id=getattr(admin, "admin_id", None),
+        raised_by_name=who,
+        category=body.category.value,
+        message=body.message.strip(),
+        status=EscalationStatus.OPEN.value,
+    )
+    db.add(esc)
+    await db.commit()
+    await db.refresh(esc)
+    logger.info(f"[admin] Escalation raised on order {order.order_number} by {who}: {body.category.value}")
+    return {"success": True, "data": _esc_out(esc), "message": "Escalation raised"}
+
+
+@router.patch("/{order_id}/escalations/{escalation_id}", response_model=dict)
+async def update_order_escalation(
+    order_id: UUID,
+    escalation_id: UUID,
+    body: EscalationUpdate,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(require_roles("super_admin", "branch_manager")),
+):
+    """Acknowledge or resolve a ticket — Branch Manager (own branch) / Super Admin."""
+    await _load_scoped_order(db, order_id, scope)
+    esc = (
+        await db.execute(
+            select(OrderEscalation).where(
+                OrderEscalation.escalation_id == escalation_id,
+                OrderEscalation.order_id == order_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if esc is None:
+        raise HTTPException(status_code=404, detail="Escalation not found")
+
+    who = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
+    now = datetime.now(timezone.utc)
+    esc.status = body.status.value
+    esc.handled_by_name = who
+    if body.resolution_note:
+        esc.resolution_note = body.resolution_note.strip()
+    if body.status == EscalationStatus.ACKNOWLEDGED and esc.acknowledged_at is None:
+        esc.acknowledged_at = now
+    if body.status == EscalationStatus.RESOLVED:
+        esc.resolved_at = now
+        if esc.acknowledged_at is None:
+            esc.acknowledged_at = now
+    await db.commit()
+    await db.refresh(esc)
+    return {"success": True, "data": _esc_out(esc), "message": f"Escalation {body.status.value}"}
 
 
 @router.post(

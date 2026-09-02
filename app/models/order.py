@@ -138,6 +138,10 @@ class Order(Base):
     return_items = Column(JSONB, nullable=True)
     return_requested_at = Column(DateTime(timezone=True), nullable=True)
     refund_amount = Column(Numeric(10, 2), nullable=True)
+    # B4 §2: how a Branch Manager / Super Admin settled the claim.
+    # 'returnless_refund' (spoilage, no pickup) | 'reverse_pickup' (rider collects).
+    return_resolution = Column(String(30), nullable=True)
+    return_resolution_note = Column(Text, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())

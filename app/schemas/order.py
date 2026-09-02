@@ -228,6 +228,26 @@ class UpdatePaymentStatusRequest(BaseModel):
     payment_id: Optional[str] = None
 
 
+class ReturnResolution(str, Enum):
+    """How a Branch Manager / Super Admin settled a return claim (B4 §2)."""
+    RETURNLESS_REFUND = "returnless_refund"   # spoilage — refund, no pickup
+    REVERSE_PICKUP = "reverse_pickup"         # refund + a rider collects the goods
+
+
+class ResolveReturnRequest(BaseModel):
+    resolution: ReturnResolution = ReturnResolution.RETURNLESS_REFUND
+    note: Optional[str] = Field(None, max_length=1000)
+
+
+class RejectReturnRequest(BaseModel):
+    note: Optional[str] = Field(None, max_length=1000)
+
+
+class ReturnNoteRequest(BaseModel):
+    """Customer Support appends a proof/context note to an open return claim."""
+    note: str = Field(..., min_length=3, max_length=1000)
+
+
 # ============================================================================
 # Order Response Schemas
 # ============================================================================

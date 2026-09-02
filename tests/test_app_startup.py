@@ -31,11 +31,19 @@ def test_metadata_create_all_ddl_compiles():
         str(CreateTable(table).compile(dialect=postgresql.dialect()))
 
 
-@pytest.mark.parametrize("table", ["orders", "order_status_history"])
+@pytest.mark.parametrize(
+    "table", ["orders", "order_status_history", "order_escalations"]
+)
 def test_order_tables_have_expected_columns(table):
     import app.models  # noqa: F401
     from app.config.database import Base
 
+    assert table in Base.metadata.tables
     cols = set(Base.metadata.tables[table].columns.keys())
     if table == "orders":
-        assert {"packed_at", "handed_to_courier_at", "delivery_failed_at"} <= cols
+        assert {
+            "packed_at", "handed_to_courier_at", "delivery_failed_at",
+            "return_resolution", "return_resolution_note",
+        } <= cols
+    if table == "order_escalations":
+        assert {"order_id", "category", "status", "raised_by_name"} <= cols
