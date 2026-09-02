@@ -44,8 +44,12 @@ _OPEN_STATUSES = {
     OrderStatus.PENDING.value,
     OrderStatus.CONFIRMED.value,
     OrderStatus.PROCESSING.value,
+    OrderStatus.PACKING.value,
+    OrderStatus.PACKED.value,
+    OrderStatus.HANDED_TO_COURIER.value,
     OrderStatus.SHIPPED.value,
     OrderStatus.OUT_FOR_DELIVERY.value,
+    OrderStatus.DELIVERY_FAILED.value,
     OrderStatus.RETURN_REQUESTED.value,
     OrderStatus.RETURN_APPROVED.value,
 }

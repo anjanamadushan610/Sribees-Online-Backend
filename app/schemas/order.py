@@ -52,9 +52,14 @@ class OrderStatusEnum(str, Enum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"
+    PACKING = "packing"
+    PACKED = "packed"
+    HANDED_TO_COURIER = "handed_to_courier"
     SHIPPED = "shipped"
     OUT_FOR_DELIVERY = "out_for_delivery"
     DELIVERED = "delivered"
+    DELIVERY_FAILED = "delivery_failed"
+    RTO_INITIATED = "rto_initiated"
     CANCELLED = "cancelled"
     RETURN_REQUESTED = "return_requested"
     RETURN_APPROVED = "return_approved"
@@ -200,8 +205,21 @@ class ReturnRequest(BaseModel):
 
 
 class UpdateOrderStatusRequest(BaseModel):
-    """Request to update order status."""
+    """Standard status transition — must be a move the fulfilment state machine
+    (app/services/order_workflow.py) allows for the caller's role."""
     status: OrderStatusEnum
+
+
+class OverrideOrderStatusRequest(BaseModel):
+    """Super-Admin emergency override — bypasses the state machine, mandatory
+    justification, permanently logged to the audit trail (B1 §4)."""
+    status: OrderStatusEnum
+    reason: str = Field(
+        ...,
+        min_length=15,
+        max_length=1000,
+        description="Why an emergency manual status change is required.",
+    )
 
 
 class UpdatePaymentStatusRequest(BaseModel):

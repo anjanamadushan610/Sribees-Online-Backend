@@ -43,11 +43,14 @@ router = APIRouter(tags=["Orders"])
 # Helper Functions
 # ============================================================================
 
-# Normal forward progression of a fulfilled order.
+# Normal forward progression of a fulfilled order. `processing` (the legacy
+# pre-workflow state) is folded onto `packing` via _EFFECTIVE_STATUS.
 _STATUS_FLOW = [
     ("pending", "Order Placed"),
     ("confirmed", "Confirmed"),
-    ("processing", "Processing"),
+    ("packing", "Preparing Order"),
+    ("packed", "Packed"),
+    ("handed_to_courier", "Handed to Courier"),
     ("shipped", "Shipped"),
     ("out_for_delivery", "Out for Delivery"),
     ("delivered", "Delivered"),
@@ -56,10 +59,17 @@ _STATUS_FLOW = [
 # Known timestamp column per status (others are inferred, timestamp None).
 _STATUS_TIMESTAMPS = {
     "pending": "created_at",
+    "packed": "packed_at",
+    "handed_to_courier": "handed_to_courier_at",
     "shipped": "shipped_at",
     "delivered": "delivered_at",
+    "delivery_failed": "delivery_failed_at",
     "cancelled": "cancelled_at",
 }
+
+# Orders placed before the packing/packed states existed sit in `processing`;
+# render them at the `packing` point of the timeline.
+_EFFECTIVE_STATUS = {"processing": "packing"}
 
 
 def build_status_timeline(order) -> list:
@@ -75,9 +85,15 @@ def build_status_timeline(order) -> list:
         value = getattr(order, field, None)
         return value.isoformat() if value else None
 
-    # Terminal states short-circuit the normal flow.
-    if order.status in ("cancelled", "refunded"):
-        label = "Cancelled" if order.status == "cancelled" else "Refunded"
+    # Terminal / exception states short-circuit the normal flow.
+    _TERMINAL_LABELS = {
+        "cancelled": "Cancelled",
+        "refunded": "Refunded",
+        "delivery_failed": "Delivery Failed",
+        "rto_initiated": "Returning to Store",
+    }
+    if order.status in _TERMINAL_LABELS:
+        label = _TERMINAL_LABELS[order.status]
         return [
             {
                 "status": "pending",
@@ -127,7 +143,8 @@ def build_status_timeline(order) -> list:
         ]
 
     flow_keys = [s for s, _ in _STATUS_FLOW]
-    current_rank = flow_keys.index(order.status) if order.status in flow_keys else 0
+    effective = _EFFECTIVE_STATUS.get(order.status, order.status)
+    current_rank = flow_keys.index(effective) if effective in flow_keys else 0
 
     timeline = []
     for rank, (status_key, label) in enumerate(_STATUS_FLOW):

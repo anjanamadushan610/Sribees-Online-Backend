@@ -26,13 +26,20 @@ from sqlalchemy.orm import selectinload
 from app.config.database import get_db
 from app.core.dependencies import (
     BranchScope,
+    get_current_admin,
     inject_branch_filter,
     require_permission,
+    require_roles,
 )
 from app.models.branch import Branch
 from app.models.order import Order
 from app.models.user import User
-from app.schemas.order import OrderStatusEnum, UpdateOrderStatusRequest
+from app.schemas.order import (
+    OrderStatusEnum,
+    OverrideOrderStatusRequest,
+    UpdateOrderStatusRequest,
+)
+from app.services import order_workflow
 from app.services.invoice_service import InvoiceService
 from app.services.notification_service import NotificationService
 from app.services.order_service import OrderService
@@ -45,7 +52,17 @@ router = APIRouter(
 )
 
 # Statuses whose transition triggers a customer notification.
-_NOTIFY_STATUSES = {OrderStatusEnum.SHIPPED, OrderStatusEnum.DELIVERED}
+_NOTIFY_STATUSES = {
+    OrderStatusEnum.HANDED_TO_COURIER,
+    OrderStatusEnum.SHIPPED,
+    OrderStatusEnum.OUT_FOR_DELIVERY,
+    OrderStatusEnum.DELIVERED,
+    OrderStatusEnum.DELIVERY_FAILED,
+}
+
+
+def _actor_role(admin) -> str:
+    return admin.role.value if hasattr(admin.role, "value") else str(admin.role)
 
 
 def _format_order_row(order: Order, customer: Optional[User], branch_name: Optional[str]) -> dict:
@@ -79,8 +96,15 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
         "branch_id": str(order.branch_id) if order.branch_id else None,
         "branch_name": branch_name,
         "created_at": order.created_at.isoformat() if order.created_at else None,
+        "packed_at": order.packed_at.isoformat() if order.packed_at else None,
+        "handed_to_courier_at": (
+            order.handed_to_courier_at.isoformat() if order.handed_to_courier_at else None
+        ),
         "shipped_at": order.shipped_at.isoformat() if order.shipped_at else None,
         "delivered_at": order.delivered_at.isoformat() if order.delivered_at else None,
+        "delivery_failed_at": (
+            order.delivery_failed_at.isoformat() if order.delivery_failed_at else None
+        ),
         "delivery_slot_date": order.delivery_slot_date.isoformat() if order.delivery_slot_date else None,
         "delivery_slot_time": order.delivery_slot_time,
         "notes": order.notes,
@@ -538,6 +562,43 @@ async def download_order_invoice(
     )
 
 
+async def _notify_customer(order: Order, new_status: OrderStatusEnum, db: AsyncSession) -> None:
+    if new_status not in _NOTIFY_STATUSES:
+        return
+    try:
+        await NotificationService.notify_order_status(
+            db,
+            user_id=order.user_id,
+            order_number=order.order_number,
+            status=new_status.value,
+        )
+    except Exception as exc:  # pragma: no cover - notification is best-effort
+        logger.warning(f"Order status notification failed for {order.order_number}: {exc}")
+
+
+@router.get("/{order_id}/next-statuses", response_model=dict)
+async def get_order_next_statuses(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(get_current_admin),
+):
+    """Contextual status actions this admin may take on this order from its
+    current state (B1 §3). Empty for read-only roles — the UI then shows a
+    plain status badge. Super Admin additionally gets the override link."""
+    order = await _load_scoped_order(db, order_id, scope)
+    role = _actor_role(admin)
+    return {
+        "success": True,
+        "data": {
+            "status": order.status,
+            "actions": order_workflow.allowed_actions(order.status, role),
+            "can_override": role == "super_admin",
+            "all_statuses": list(order_workflow.ALL_STATUSES),
+        },
+    }
+
+
 @router.patch("/{order_id}/status", response_model=dict)
 async def update_order_status(
     order_id: UUID,
@@ -547,31 +608,69 @@ async def update_order_status(
     admin=Depends(require_permission("orders", "update")),
 ):
     """
-    Update an order's status. On transition to SHIPPED or DELIVERED, notify the
-    customer via NotificationService (best-effort — never blocks the update).
+    Standard status transition, held to the fulfilment state machine
+    (app/services/order_workflow.py). Only ``super_admin`` and ``branch_manager``
+    may drive it (a Branch Manager only within their own branch); every other
+    role gets a 400. Notifies the customer on the milestone transitions.
     """
     order = await _load_scoped_order(db, order_id, scope)
 
     admin_name = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
-    await OrderService.update_status(db, order, body.status, changed_by=f"Admin ({admin_name})")
+    try:
+        await OrderService.update_status(
+            db,
+            order,
+            body.status,
+            changed_by=f"Admin ({admin_name})",
+            enforce=True,
+            actor_role=_actor_role(admin),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    if body.status in _NOTIFY_STATUSES:
-        try:
-            await NotificationService.notify_order_status(
-                db,
-                user_id=order.user_id,
-                order_number=order.order_number,
-                status=body.status.value,
-            )
-        except Exception as exc:  # pragma: no cover - notification is best-effort
-            logger.warning(f"Order status notification failed for {order.order_number}: {exc}")
-
+    await _notify_customer(order, body.status, db)
     branch_name = await _branch_name(db, order.branch_id)
     logger.info(f"[admin] Order {order.order_number} status -> {body.status.value}")
     return {
         "success": True,
         "data": _format_order_detail(order, branch_name),
         "message": f"Order status updated to {body.status.value}",
+    }
+
+
+@router.post("/{order_id}/status/override", response_model=dict)
+async def override_order_status(
+    order_id: UUID,
+    body: OverrideOrderStatusRequest,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(require_roles("super_admin")),
+):
+    """
+    Super-Admin emergency manual override (B1 §4). Bypasses the state machine,
+    requires a >=15-char justification, and is permanently marked
+    ``[EMERGENCY OVERRIDE]`` in the order's audit trail.
+    """
+    order = await _load_scoped_order(db, order_id, scope)
+    admin_name = getattr(admin, "full_name", None) or getattr(admin, "email", "Super Admin")
+    await OrderService.update_status(
+        db,
+        order,
+        body.status,
+        changed_by=f"SUPER ADMIN OVERRIDE ({admin_name})",
+        notes=body.reason.strip(),
+        is_override=True,
+    )
+    await _notify_customer(order, body.status, db)
+    branch_name = await _branch_name(db, order.branch_id)
+    logger.warning(
+        f"[admin] OVERRIDE Order {order.order_number} -> {body.status.value} "
+        f"by {admin_name}: {body.reason.strip()[:120]}"
+    )
+    return {
+        "success": True,
+        "data": _format_order_detail(order, branch_name),
+        "message": f"Order status overridden to {body.status.value}",
     }
 
 
