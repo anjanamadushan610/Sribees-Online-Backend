@@ -115,11 +115,12 @@ class ProductService:
             query = query.where(Product.is_featured == is_featured)
 
         if search:
-            search_pattern = f"%{search}%"
+            search_pattern = f"%{search.strip()}%"
             query = query.where(
                 or_(
                     Product.name.ilike(search_pattern),
-                    Product.description.ilike(search_pattern)
+                    Product.sku.ilike(search_pattern),
+                    Product.description.ilike(search_pattern),
                 )
             )
 

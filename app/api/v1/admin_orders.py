@@ -217,7 +217,10 @@ async def _branch_name(db: AsyncSession, branch_id: Optional[UUID]) -> Optional[
 async def list_orders(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    order_status: Optional[OrderStatusEnum] = Query(None, description="Filter by order status"),
+    order_status: Optional[OrderStatusEnum] = Query(None, description="Filter by a single order status"),
+    order_statuses: Optional[str] = Query(
+        None, description="Filter by any of these statuses (comma-separated) — used by the order tabs (B2)"
+    ),
     search: Optional[str] = Query(None, description="Match order number, customer name or email"),
     branch_id: Optional[UUID] = Query(
         None, description="Super Admin / Customer Support only: narrow to a branch (ignored for scoped admins)"
@@ -231,19 +234,15 @@ async def list_orders(
     effective_branch = scope.resolve(branch_id)
     offset = (page - 1) * limit
 
-    query = (
-        select(Order)
-        .options(selectinload(Order.items), selectinload(Order.user))
-        .join(User, Order.user_id == User.user_id)
-    )
-
+    # Filters other than status — shared by the list and the per-status counts,
+    # so the tab/pill badges (QA spec B2) reflect the same date/branch/search
+    # context the admin is looking at.
+    conds = []
     if effective_branch is not None:
-        query = query.where(Order.branch_id == effective_branch)
-    if order_status is not None:
-        query = query.where(Order.status == order_status.value)
+        conds.append(Order.branch_id == effective_branch)
     if search:
-        pattern = f"%{search}%"
-        query = query.where(
+        pattern = f"%{search.strip()}%"
+        conds.append(
             or_(
                 Order.order_number.ilike(pattern),
                 User.full_name.ilike(pattern),
@@ -256,15 +255,43 @@ async def list_orders(
             # here would silently compare as UTC regardless of what the admin
             # meant (see Window in admin_analytics.py for the same pattern).
             from_dt = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            query = query.where(Order.created_at >= from_dt)
+            conds.append(Order.created_at >= from_dt)
         except ValueError:
             pass
     if to_date:
         try:
             to_dt = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
-            query = query.where(Order.created_at < to_dt)
+            conds.append(Order.created_at < to_dt)
         except ValueError:
             pass
+
+    # Per-status counts for the tab/pill badges (status-agnostic).
+    count_stmt = (
+        select(Order.status, func.count(Order.order_id))
+        .join(User, Order.user_id == User.user_id)
+        .where(*conds)
+        .group_by(Order.status)
+    )
+    status_counts = {
+        row[0]: int(row[1]) for row in (await db.execute(count_stmt)).all()
+    }
+
+    # Resolve the status filter: an explicit multi-select (order_statuses) wins,
+    # else the single order_status, else no status filter.
+    status_values: list[str] = []
+    if order_statuses:
+        status_values = [s.strip() for s in order_statuses.split(",") if s.strip()]
+    elif order_status is not None:
+        status_values = [order_status.value]
+
+    query = (
+        select(Order)
+        .options(selectinload(Order.items), selectinload(Order.user))
+        .join(User, Order.user_id == User.user_id)
+        .where(*conds)
+    )
+    if status_values:
+        query = query.where(Order.status.in_(status_values))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
 
@@ -290,6 +317,9 @@ async def list_orders(
                 "limit": limit,
                 "total_pages": (total + limit - 1) // limit if limit else 1,
             },
+            # {status: count} across the current date/branch/search context —
+            # the admin order tabs (B2) derive every badge from this.
+            "status_counts": status_counts,
             "scope": {
                 "is_super_admin": scope.is_super_admin,
                 "branch_id": str(effective_branch) if effective_branch else None,
