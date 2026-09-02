@@ -60,6 +60,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, set[tuple[str, str]]] = {
     "customer_support": {
         ("dashboard", "read"),
         ("products", "read"),
+        ("categories", "read"),  # view-only catalog reference while assisting customers (B5)
         ("orders", "read"), ("orders", "update"),
         ("customers", "read"), ("customers", "update"),
         ("reviews", "read"), ("reviews", "update"),

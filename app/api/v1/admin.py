@@ -13,7 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.database import get_db
-from app.core.dependencies import get_current_admin, require_roles
+from app.core.dependencies import (
+    BranchScope,
+    get_current_admin,
+    inject_branch_filter,
+    require_permission,
+    require_roles,
+)
 from app.models.branch import Branch
 from app.models.category import Category
 from app.models.order import Order, OrderStatus, PaymentStatus
@@ -28,13 +34,19 @@ router = APIRouter(tags=["Admin"])
 # Dashboard Endpoints
 # ============================================================================
 
-@router.get("/dashboard", response_model=dict)
+@router.get(
+    "/dashboard",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def get_dashboard_stats(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_admin)
 ):
     """
-    Get admin dashboard statistics.
+    Network-wide admin statistics (Super Admin only). Branch-scoped roles use
+    ``GET /admin/dashboard/stats`` (admin_dashboard.py), which isolates every
+    metric to the caller's branch and permission set.
     """
     try:
         # Total users
@@ -131,7 +143,11 @@ async def get_dashboard_stats(
         )
 
 
-@router.get("/analytics/revenue", response_model=dict)
+@router.get(
+    "/analytics/revenue",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def get_revenue_analytics(
     period: str = Query("7d", pattern="^(7d|30d|90d|1y)$"),
     db: AsyncSession = Depends(get_db),
@@ -200,7 +216,11 @@ async def get_revenue_analytics(
         )
 
 
-@router.get("/analytics/orders", response_model=dict)
+@router.get(
+    "/analytics/orders",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def get_order_analytics(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_admin)
@@ -257,19 +277,26 @@ async def get_customers(
     search: Optional[str] = None,
     role: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    _perm = Depends(require_permission("customers", "read")),
+    scope: BranchScope = Depends(inject_branch_filter),
 ):
     """
-    Get all customer users with filtering and pagination.
-
-    Note: this operates on the ``users`` (customer) table. Admin-account
-    management lives at ``/admin/users`` (see admin_users.py).
+    Customer directory (the ``users`` table). Branch-isolated: a scoped admin
+    (Branch Manager + their staff, Marketing/Inventory Manager) only sees
+    customers who have an order fulfilled by their branch; Super Admin and
+    Customer Support see everyone. Admin-account management is /admin/users.
     """
     try:
         query = select(User)
 
+        if not scope.is_unscoped:
+            branch_customer_ids = (
+                select(Order.user_id).where(Order.branch_id == scope.branch_id).distinct()
+            )
+            query = query.where(User.user_id.in_(branch_customer_ids))
+
         if search:
-            search_pattern = f"%{search}%"
+            search_pattern = f"%{search.strip()}%"
             query = query.where(
                 User.email.ilike(search_pattern) |
                 User.full_name.ilike(search_pattern) |
@@ -325,7 +352,11 @@ async def get_customers(
         )
 
 
-@router.put("/customers/{user_id}/role", response_model=dict)
+@router.put(
+    "/customers/{user_id}/role",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def update_customer_role(
     user_id: str,
     role: str = Query(..., pattern="^(customer|admin|manager)$"),
@@ -372,7 +403,11 @@ async def update_customer_role(
         )
 
 
-@router.put("/customers/{user_id}/status", response_model=dict)
+@router.put(
+    "/customers/{user_id}/status",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin", "customer_support"))],
+)
 async def toggle_customer_status(
     user_id: str,
     is_active: bool,
@@ -438,7 +473,8 @@ class BlockCustomerPayload(BaseModel):
 async def get_customer_profile(
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    _perm = Depends(require_permission("customers", "read")),
+    scope: BranchScope = Depends(inject_branch_filter),
 ):
     try:
         user_uuid = UUID(user_id)
@@ -456,13 +492,28 @@ async def get_customer_profile(
                 detail="User not found"
             )
 
+        # Branch isolation: a scoped admin may only see a customer who has an
+        # order in their branch, and gets branch-scoped lifetime numbers.
+        stats_filter = [Order.user_id == user_uuid, Order.status != "cancelled"]
+        if not scope.is_unscoped:
+            in_branch = await db.scalar(
+                select(func.count(Order.order_id)).where(
+                    Order.user_id == user_uuid, Order.branch_id == scope.branch_id
+                )
+            )
+            if not in_branch:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+                )
+            stats_filter.append(Order.branch_id == scope.branch_id)
+
         # Get order statistics
         orders_stats_result = await db.execute(
             select(
                 func.count(Order.order_id).label("total_orders"),
                 func.sum(Order.total_amount).label("total_spent")
             )
-            .where(Order.user_id == user_uuid, Order.status != "cancelled")
+            .where(*stats_filter)
         )
         stats = orders_stats_result.first()
         total_orders = stats.total_orders or 0
@@ -515,14 +566,21 @@ async def get_customer_orders(
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    _perm = Depends(require_permission("customers", "read")),
+    scope: BranchScope = Depends(inject_branch_filter),
 ):
     try:
         user_uuid = UUID(user_id)
 
+        # Branch isolation: a scoped admin only sees this customer's orders that
+        # their own branch fulfilled.
+        base_filter = [Order.user_id == user_uuid]
+        if not scope.is_unscoped:
+            base_filter.append(Order.branch_id == scope.branch_id)
+
         # Get orders count
         count_result = await db.execute(
-            select(func.count(Order.order_id)).where(Order.user_id == user_uuid)
+            select(func.count(Order.order_id)).where(*base_filter)
         )
         total = count_result.scalar() or 0
 
@@ -530,7 +588,7 @@ async def get_customer_orders(
         offset = (page - 1) * limit
         orders_result = await db.execute(
             select(Order)
-            .where(Order.user_id == user_uuid)
+            .where(*base_filter)
             .order_by(Order.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -826,7 +884,11 @@ async def delete_customer(
 # Inventory Management
 # ============================================================================
 
-@router.get("/inventory/low-stock", response_model=dict)
+@router.get(
+    "/inventory/low-stock",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def get_low_stock_products(
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -871,7 +933,11 @@ async def get_low_stock_products(
         )
 
 
-@router.get("/recent-orders", response_model=dict)
+@router.get(
+    "/recent-orders",
+    response_model=dict,
+    dependencies=[Depends(require_roles("super_admin"))],
+)
 async def get_recent_orders(
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
