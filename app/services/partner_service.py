@@ -175,6 +175,16 @@ class PartnerService:
         if existing.scalar_one_or_none() is not None:
             raise PartnerEmailTakenError("A partner with this email already exists")
 
+        if parent_partner_id is not None:
+            parent_res = await db.execute(
+                select(Partner).where(Partner.partner_id == parent_partner_id)
+            )
+            parent = parent_res.scalar_one_or_none()
+            if parent is None:
+                raise ValueError("Recruiting partner not found")
+            if parent.parent_partner_id is not None:
+                raise ValueError("Sub-partners cannot recruit further partners (2-tier limit)")
+
         referral_code = await PartnerService._generate_unique_code(db)
 
         partner = Partner(
