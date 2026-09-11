@@ -276,7 +276,24 @@ if (settings.storage_backend or "local").strip().lower() == "local":
     _media_root = Path(settings.media_root)
     # StaticFiles refuses to start if the directory is missing, which on a fresh
     # volume it always is.
-    _media_root.mkdir(parents=True, exist_ok=True)
+    #
+    # Creating it can itself fail — a read-only mount, a locked-down host, or a
+    # CI runner where the configured path (`/app/media`) is simply not ours to
+    # make. That must not take the module down: this runs at IMPORT time, so an
+    # unhandled error here means `import app.main` fails and nothing works, not
+    # even the routes that never touch an upload. Same philosophy as the
+    # writability probe below — say so loudly, then carry on without the mount.
+    _media_ready = True
+    try:
+        _media_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _media_ready = False
+        logger.error(
+            f"MEDIA_ROOT {_media_root} could not be created ({exc}). Uploads "
+            f"and /{settings.media_url_prefix.strip('/')} are DISABLED for this "
+            f"process; every other route still works. Set MEDIA_ROOT to a path "
+            f"this process may write to."
+        )
 
     # Fail LOUDLY at boot if the directory is not writable, instead of letting
     # the first admin upload discover it as an opaque 5xx. This is exactly how
@@ -284,6 +301,8 @@ if (settings.storage_backend or "local").strip().lower() == "local":
     # only the write failed — hours later, in someone else's browser console.
     _probe = _media_root / ".write-probe"
     try:
+        if not _media_ready:
+            raise OSError("media root does not exist")
         _probe.write_bytes(b"ok")
         _probe.unlink(missing_ok=True)
         logger.info(
@@ -298,11 +317,14 @@ if (settings.storage_backend or "local").strip().lower() == "local":
             f"directory exists in the image and is chowned to the app user."
         )
 
-    app.mount(
-        f"/{settings.media_url_prefix.strip('/')}",
-        StaticFiles(directory=str(_media_root)),
-        name="media",
-    )
+    # StaticFiles would raise on a directory that is not there, so only mount
+    # when we actually have one.
+    if _media_ready:
+        app.mount(
+            f"/{settings.media_url_prefix.strip('/')}",
+            StaticFiles(directory=str(_media_root)),
+            name="media",
+        )
 
 
 # ============================================================================
