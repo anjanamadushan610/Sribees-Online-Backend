@@ -17,13 +17,12 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config.redis import RedisKeys
 from app.config.settings import settings
-from app.models.branch import Branch
 from app.models.coupon import Coupon
 from tests.conftest import REDIS_URL, requires_db, requires_redis
 
@@ -56,7 +55,7 @@ def _coupon(code, branch_id):
 
 
 @pytest.mark.asyncio
-async def test_public_offers_are_filtered_to_the_shoppers_branch(app_redis, app_engine_reset):
+async def test_public_offers_are_filtered_to_the_shoppers_branch(app_redis, app_engine_reset, test_branch, second_test_branch):
     from app.main import app
 
     engine = create_async_engine(settings.async_database_url, poolclass=NullPool)
@@ -64,10 +63,7 @@ async def test_public_offers_are_filtered_to_the_shoppers_branch(app_redis, app_
     redis = await _redis()
 
     async with Session() as db:
-        branches = (await db.execute(select(Branch).limit(2))).scalars().all()
-        if len(branches) < 2:
-            pytest.skip("need at least two branches to prove cross-branch isolation")
-        mine, other = branches[0], branches[1]
+        mine, other = test_branch, second_test_branch
 
         await db.execute(delete(Coupon).where(Coupon.code.in_(CODES)))
         db.add_all([

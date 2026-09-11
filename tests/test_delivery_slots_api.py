@@ -15,7 +15,7 @@ import uuid
 
 import httpx
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -44,7 +44,7 @@ async def _redis():
 
 
 @pytest.mark.asyncio
-async def test_delivery_slots_reflect_cutoffs_and_configuration(app_redis, app_engine_reset):
+async def test_delivery_slots_reflect_cutoffs_and_configuration(app_redis, app_engine_reset, test_branch):
     from app.main import app
 
     engine = create_async_engine(settings.async_database_url, poolclass=NullPool)
@@ -52,9 +52,7 @@ async def test_delivery_slots_reflect_cutoffs_and_configuration(app_redis, app_e
     redis = await _redis()
 
     async with Session() as db:
-        branch = (await db.execute(select(Branch).limit(1))).scalar_one_or_none()
-        if branch is None:
-            pytest.skip("no branches seeded in this database")
+        branch = test_branch
         original = list(branch.delivery_runs or [])
 
         await redis.setex(
@@ -148,7 +146,7 @@ async def test_delivery_slots_reflect_cutoffs_and_configuration(app_redis, app_e
 
 
 @pytest.mark.asyncio
-async def test_delivery_slots_requires_branch_context(app_redis, app_engine_reset):
+async def test_delivery_slots_requires_branch_context(app_redis, app_engine_reset, test_branch):
     """A shopper with no delivery location chosen has no timetable to show."""
     from app.main import app
 

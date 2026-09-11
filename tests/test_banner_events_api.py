@@ -24,7 +24,6 @@ from sqlalchemy.pool import NullPool
 from app.config.redis import RedisKeys
 from app.config.settings import settings
 from app.models.banner import Banner, BannerEvent
-from app.models.branch import Branch
 from tests.conftest import REDIS_URL, requires_db, requires_redis
 
 pytestmark = [requires_db, requires_redis]
@@ -79,16 +78,14 @@ async def _count(db: AsyncSession, banner_id, event_type):
 
 
 @pytest.mark.asyncio
-async def test_banner_events_record_dedupe_and_scope(app_redis, app_engine_reset):
+async def test_banner_events_record_dedupe_and_scope(app_redis, app_engine_reset, test_branch):
     from app.main import app
 
     engine, Session = await _session_factory()
     redis = await _redis()
 
     async with Session() as db:
-        branch = (await db.execute(select(Branch).limit(1))).scalar_one_or_none()
-        if branch is None:
-            pytest.skip("no branches seeded in this database")
+        branch = test_branch
         live, expired = await _seed(db, branch.branch_id)
 
         # Guests resolve their branch from the X-Device-Id session key.
@@ -202,7 +199,7 @@ async def test_banner_events_record_dedupe_and_scope(app_redis, app_engine_reset
 
 
 @pytest.mark.asyncio
-async def test_banner_events_requires_branch_context(app_redis, app_engine_reset):
+async def test_banner_events_requires_branch_context(app_redis, app_engine_reset, test_branch):
     """No delivery location chosen yet = no branch to attribute events to."""
     from app.main import app
 

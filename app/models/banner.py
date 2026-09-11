@@ -21,6 +21,7 @@ from sqlalchemy import (
     Integer,
     String,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -176,6 +177,28 @@ class BannerEvent(Base):
         # in one branch, since a cutoff.
         Index("idx_banner_events_banner_created", "banner_id", "created_at"),
         Index("idx_banner_events_branch_created", "branch_id", "created_at"),
+        # One impression per banner per session per hour. This is what stops a
+        # customer scrolling the home screen up and down from inflating
+        # impressions and dragging every CTR below what the banner really
+        # earned -- the failure mode is silent, so it has to be the database
+        # that enforces it rather than the endpoint.
+        #
+        # Declared here as well as in migration 048 because a table built by
+        # create_all() (fresh deploy, E2E harness, new developer) would
+        # otherwise be missing it and would over-count.
+        #
+        # `created_at AT TIME ZONE 'UTC'` makes date_trunc IMMUTABLE, which an
+        # index expression requires; date_trunc on a timestamptz is only STABLE.
+        Index(
+            "uq_banner_events_impression_dedupe",
+            "banner_id",
+            "session_key",
+            text("date_trunc('hour', created_at AT TIME ZONE 'UTC')"),
+            unique=True,
+            postgresql_where=text(
+                "event_type = 'impression' AND session_key IS NOT NULL"
+            ),
+        ),
     )
 
     def __repr__(self):

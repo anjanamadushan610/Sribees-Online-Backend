@@ -104,3 +104,121 @@ async def app_engine_reset():
     from app.config.database import engine
 
     await engine.dispose()
+
+
+@pytest.fixture(scope="session")
+async def db_schema():
+    """
+    Make sure the tables the integration tests use exist.
+
+    `Base.metadata.create_all()` is idempotent — on a developer's database
+    everything is already there and this does nothing, while CI's empty
+    `test_db` gets a real schema. Without it the DB-backed tests would skip in
+    CI, and a test that only runs on one machine is not coverage.
+
+    This deliberately does NOT run the SQL migrations: they carry seed data and
+    branch-specific fixtures these tests should not depend on. Each test builds
+    the rows it needs.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    import app.models  # noqa: F401 - registers every mapper on Base.metadata
+    from app.config.database import Base
+    from app.config.settings import settings
+
+    engine = create_async_engine(settings.async_database_url, poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as exc:  # pragma: no cover - environment, not logic
+        pytest.skip(f"could not prepare the test schema: {exc}")
+    finally:
+        await engine.dispose()
+    yield
+
+
+@pytest.fixture
+async def test_branch(db_schema):
+    """
+    A branch owned by this test, removed afterwards.
+
+    Borrowing a seeded branch couples the test to fixture data that may not
+    exist (CI) and may change (a developer's database). Creating one keeps the
+    test true anywhere.
+    """
+    import uuid
+
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+    from sqlalchemy.pool import NullPool
+
+    from app.config.settings import settings
+    from app.models.branch import Branch
+
+    engine = create_async_engine(settings.async_database_url, poolclass=NullPool)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    suffix = uuid.uuid4().hex[:8].upper()
+    branch = Branch(
+        branch_id=uuid.uuid4(),
+        name=f"ZZ Test Branch {suffix}",
+        code=f"ZZT{suffix}",
+        province="Western",
+        district="Colombo",
+        is_active=True,
+        delivery_runs=[],
+    )
+    async with Session() as db:
+        db.add(branch)
+        await db.commit()
+    try:
+        yield branch
+    finally:
+        async with Session() as db:
+            await db.execute(delete(Branch).where(Branch.branch_id == branch.branch_id))
+            await db.commit()
+        await engine.dispose()
+
+
+@pytest.fixture
+async def second_test_branch(db_schema):
+    """A second independent branch, for assertions about cross-branch leakage."""
+    import uuid
+
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+    from sqlalchemy.pool import NullPool
+
+    from app.config.settings import settings
+    from app.models.branch import Branch
+
+    engine = create_async_engine(settings.async_database_url, poolclass=NullPool)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    suffix = uuid.uuid4().hex[:8].upper()
+    branch = Branch(
+        branch_id=uuid.uuid4(),
+        name=f"ZZ Other Branch {suffix}",
+        code=f"ZZO{suffix}",
+        province="Southern",
+        district="Galle",
+        is_active=True,
+        delivery_runs=[],
+    )
+    async with Session() as db:
+        db.add(branch)
+        await db.commit()
+    try:
+        yield branch
+    finally:
+        async with Session() as db:
+            await db.execute(delete(Branch).where(Branch.branch_id == branch.branch_id))
+            await db.commit()
+        await engine.dispose()
