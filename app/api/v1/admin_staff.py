@@ -108,10 +108,17 @@ async def create_staff(
             detail="An admin with this email already exists",
         )
 
-    # A branch-unscoped staff account (e.g. under a branchless Super Admin)
-    # would be silently unable to use any branch-scoped route later, since
-    # 'staff' is not in UNSCOPED_ROLES — require a resolvable branch now.
-    branch_id = data.branch_id or current_admin.branch_id
+    # Branch isolation: only a creator who has no home branch of their own
+    # (Super Admin, and a branchless Customer Support lead) may name the
+    # branch. A scoped base-role admin — Branch / Marketing / Inventory
+    # Manager — always creates inside their OWN branch, so a `branchId` in
+    # the request body is ignored rather than trusted: otherwise Colombo's
+    # Marketing Manager could mint an account that reads Kandy's data.
+    #
+    # A branch-unscoped staff account would also be silently unable to use any
+    # branch-scoped route later, since 'staff' is not in UNSCOPED_ROLES —
+    # require a resolvable branch now.
+    branch_id = current_admin.branch_id or data.branch_id
     if branch_id is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -191,6 +198,14 @@ async def update_staff(
     fields = data.model_dump(exclude_unset=True, exclude={"permission_ids"})
 
     if fields.get("branch_id") is not None:
+        # Same isolation rule as create: a scoped admin may not transfer one of
+        # their staff into another branch (which would hand that account the
+        # other branch's data while still being "their" staff member).
+        if current_admin.branch_id is not None and fields["branch_id"] != current_admin.branch_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only assign staff to your own branch.",
+            )
         await _validate_branch(db, fields["branch_id"])
         target.branch_id = fields["branch_id"]
     if fields.get("full_name"):

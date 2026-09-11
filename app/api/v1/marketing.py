@@ -8,16 +8,20 @@ Uses the ``branch_inventory`` table for per-branch overrides; global values on
   GET   /products                — list this branch's products (the picker)
   PATCH /inventory/{product_id}  — set/clear branch overrides
   GET   /quick-sale              — preview Quick Sale products for manager's branch
+  GET   /dashboard               — the branch Marketing Dashboard (KPIs + widgets)
 """
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.core.dependencies import require_permission
+from app.models.branch import Branch
 from app.schemas.product import BranchInventoryUpdateRequest
+from app.services import marketing_dashboard_service
 from app.services.product_service import ProductService
 
 router = APIRouter()
@@ -256,4 +260,53 @@ async def preview_quick_sale(
             "total": len(items),
             "branchId": str(branch_id),
         },
+    }
+
+
+# ============================================================================
+# GET /dashboard — the Marketing Manager's landing page
+# ============================================================================
+
+@router.get(
+    "/dashboard",
+    response_model=dict,
+    summary="Marketing Dashboard for your branch",
+    description=(
+        "Five KPIs and two live widgets for the manager's own branch: live "
+        "Quick Sale deals (and how many are perishable), active home banners "
+        "with their measured 7-day CTR, coupons redeemable here and which are "
+        "near their redemption limit, the next delivery run's ordering "
+        "cut-off, and the rolling 30-day Returning Customer Rate. "
+        "Every figure comes from a real row. Where one cannot be computed — "
+        "a branch with no delivery runs configured, a banner with too few "
+        "impressions to give a meaningful CTR, a branch with no completed "
+        "orders in the window — the field is `null` rather than a "
+        "plausible-looking zero, so the UI can say 'not set up yet' instead "
+        "of reporting a bad result as a real one."
+    ),
+)
+async def marketing_dashboard(
+    branch_id: Optional[UUID] = Query(
+        None, description="Super Admin only: which branch's dashboard to view"
+    ),
+    db: AsyncSession = Depends(get_db),
+    admin=RequireMarketingRead,
+):
+    resolved_branch = _resolve_branch_id(admin, branch_id)
+
+    branch = (
+        await db.execute(select(Branch).where(Branch.branch_id == resolved_branch))
+    ).scalar_one_or_none()
+    if branch is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "success": False,
+                "error": {"message": "Branch not found", "code": "BRANCH_NOT_FOUND"},
+            },
+        )
+
+    return {
+        "success": True,
+        "data": await marketing_dashboard_service.build_dashboard(db, branch),
     }

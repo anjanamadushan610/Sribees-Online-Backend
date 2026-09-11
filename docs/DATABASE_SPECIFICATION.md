@@ -557,10 +557,12 @@ wishlist_items   (user_id, product_id, variant_id)
 
 ## Migration history
 
-31 numbered files as of 2026-08-10 (`migrations/010_*.sql` through `033_*.sql` — there
+50 numbered files as of 2026-09-11 (`migrations/010_*.sql` through `050_*.sql` — there
 is no `001`–`009`; the base schema comes entirely from `create_all()`, migrations only
-begin once additive changes were needed on top of it). Grouped by what they actually
-do:
+begin once additive changes were needed on top of it). Two numbers are used twice
+(`038_audit_logs` / `038_coupon_max_discount_amount`, and `039_fix_cod_payment_status` /
+`039_seed_operations`) — harmless, since they are applied in filename order and neither
+pair touches the same table. Grouped by what they actually do:
 
 | Range | What |
 |---|---|
@@ -576,6 +578,15 @@ do:
 | 031 | Courier integration fields on `orders` |
 | 032 | Assigns real branches to the "generalist" demo admins that had been seeded with `branch_id = NULL` (2026-08-10) |
 | 033 | `stock_transfers` table (2026-08-10) |
+| 034–036 | Unique phone on registration, multilingual product/category content, unit-label normalisation |
+| 037 | Role + permission system (`roles`, `permissions`, `role_permissions`) — the runtime source of truth for RBAC |
+| 038 | Audit logs; coupon `max_discount_amount` (two files share the number) |
+| 039–041 | COD payment-status fix, operations seed data, order-number date fix, order status history, review↔order-item link |
+| 042 | `users.is_blocked` / `blocked_reason` |
+| 043–047 | Branch categories, order fulfilment milestones, `categories:read` for Customer Support, order escalations, return resolution |
+| 048 | Marketing Dashboard foundations: `coupons.branch_id`, `branches.delivery_runs` (JSONB), `products.is_perishable`, `banner_events` (2026-09-11) |
+| 049 | Coupon financial governance (`budget_cap`/`budget_spent`/`auto_stop_on_budget`, `exclude_quick_sale`, `first_order_only`, `per_user_limit`, `is_public`, `target_user_id`), catalog eligibility (`coupon_categories`, `coupon_products`), and banner scheduling (`banners.starts_at`/`ends_at`) (2026-09-11) |
+| 050 | SribeesExpress go-live: cached `addresses.courier_city_id`, `branches.courier_pickup_location_id`, the delivery-outcome/COD columns on `orders`, `courier_webhook_events`, `courier_sync_state`, and coverage-sync columns on `post_office_directory` (2026-09-11) |
 
 For exact column-level changes, read the migration file itself — they're short,
 narrated, and are the actual source of truth; this table is just a map of what to go

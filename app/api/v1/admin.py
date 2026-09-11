@@ -25,6 +25,7 @@ from app.models.category import Category
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.product import Product
 from app.models.user import Address, Session, User
+from app.services import customer_insight_service
 
 # Prefix "/admin" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Admin"])
@@ -276,6 +277,17 @@ async def get_customers(
     limit: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
     role: Optional[str] = None,
+    segment: Optional[str] = Query(
+        None,
+        pattern="^(returning|new|at_risk)$",
+        description=(
+            "Behavioural segment. Derived from order history at read time "
+            "(see CustomerInsightService), so it is never stale."
+        ),
+    ),
+    is_blocked: Optional[bool] = Query(
+        None, description="Filter on account status (the directory's Active/Blocked tabs)"
+    ),
     db: AsyncSession = Depends(get_db),
     _perm = Depends(require_permission("customers", "read")),
     scope: BranchScope = Depends(inject_branch_filter),
@@ -306,6 +318,9 @@ async def get_customers(
         if role:
             query = query.where(User.role == role)
 
+        if is_blocked is not None:
+            query = query.where(User.is_blocked.is_(is_blocked))
+
         # Count
         count_query = select(func.count()).select_from(query.subquery())
         total_result = await db.execute(count_query)
@@ -317,25 +332,49 @@ async def get_customers(
         result = await db.execute(query)
         users = result.scalars().all()
 
+        # Purchasing history for the whole page in one grouped query, scoped
+        # to this admin's branch. Net spend counts DELIVERED orders only —
+        # refunded money is not revenue from that customer, and this page used
+        # to imply it was.
+        stats_map = await customer_insight_service.stats_for_users(
+            db,
+            [u.user_id for u in users],
+            None if scope.is_unscoped else scope.branch_id,
+        )
+
+        rows = []
+        for u in users:
+            stats = stats_map.get(u.user_id) or customer_insight_service.CustomerStats(
+                user_id=u.user_id
+            )
+            rows.append(
+                {
+                    "user_id": str(u.user_id),
+                    "email": u.email,
+                    "full_name": u.full_name,
+                    "phone": u.phone,
+                    "role": u.role,
+                    "is_active": u.is_active,
+                    "is_verified": u.is_verified,
+                    "is_blocked": u.is_blocked,
+                    "blocked_reason": u.blocked_reason,
+                    "created_at": u.created_at.isoformat() if u.created_at else None,
+                    "last_login": u.last_login.isoformat() if u.last_login else None,
+                    **stats.as_dict(u.created_at),
+                }
+            )
+
+        # Segment is derived from order history, not stored, so it cannot be a
+        # SQL predicate without reimplementing the rules in two places. Applied
+        # to the page in Python instead; the page-size cap bounds the cost, and
+        # there is exactly one definition of what "at risk" means.
+        if segment:
+            rows = [r for r in rows if r["segment"] == segment]
+
         return {
             "success": True,
             "data": {
-                "users": [
-                    {
-                        "user_id": str(u.user_id),
-                        "email": u.email,
-                        "full_name": u.full_name,
-                        "phone": u.phone,
-                        "role": u.role,
-                        "is_active": u.is_active,
-                        "is_verified": u.is_verified,
-                        "is_blocked": u.is_blocked,
-                        "blocked_reason": u.blocked_reason,
-                        "created_at": u.created_at.isoformat() if u.created_at else None,
-                        "last_login": u.last_login.isoformat() if u.last_login else None
-                    }
-                    for u in users
-                ],
+                "users": rows,
                 "pagination": {
                     "total": total,
                     "page": page,
@@ -494,7 +533,6 @@ async def get_customer_profile(
 
         # Branch isolation: a scoped admin may only see a customer who has an
         # order in their branch, and gets branch-scoped lifetime numbers.
-        stats_filter = [Order.user_id == user_uuid, Order.status != "cancelled"]
         if not scope.is_unscoped:
             in_branch = await db.scalar(
                 select(func.count(Order.order_id)).where(
@@ -505,19 +543,20 @@ async def get_customer_profile(
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
                 )
-            stats_filter.append(Order.branch_id == scope.branch_id)
 
-        # Get order statistics
-        orders_stats_result = await db.execute(
-            select(
-                func.count(Order.order_id).label("total_orders"),
-                func.sum(Order.total_amount).label("total_spent")
-            )
-            .where(*stats_filter)
+        # Lifetime value, from the same service the directory list uses so the
+        # two screens can never disagree.
+        #
+        # This previously summed every order that was not literally 'cancelled',
+        # which counted REFUNDED and returned orders as money the customer had
+        # spent. A customer whose only order was refunded showed as a paying
+        # customer, and any retention decision made from that figure was made
+        # from a fiction.
+        stats = await customer_insight_service.stats_for_user(
+            db, user_uuid, None if scope.is_unscoped else scope.branch_id
         )
-        stats = orders_stats_result.first()
-        total_orders = stats.total_orders or 0
-        total_spent = float(stats.total_spent or 0)
+        total_orders = stats.completed_orders
+        total_spent = stats.net_spent
 
         return {
             "success": True,
@@ -546,8 +585,11 @@ async def get_customer_profile(
                     for addr in user.addresses
                 ],
                 "stats": {
+                    # Kept under the original names for existing callers;
+                    # both now mean DELIVERED-only.
                     "total_orders": total_orders,
-                    "total_spent": total_spent
+                    "total_spent": total_spent,
+                    **stats.as_dict(user.created_at),
                 }
             }
         }

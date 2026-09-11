@@ -17,6 +17,7 @@ branch's. Super Admins additionally manage *platform-wide* banners
 Prefix "/admin/banners" is applied by app/api/v1/router.py.
 """
 import io
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -30,14 +31,14 @@ from fastapi import (
     status,
 )
 from loguru import logger
-from sqlalchemy import or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.settings import settings
 from app.core.dependencies import BranchScope, inject_branch_filter, require_permission
 from app.core.media import media_url
-from app.models.banner import Banner
+from app.models.banner import Banner, BannerEvent, BannerEventType
 from app.schemas.banner import BannerCreate, BannerUpdate
 from app.services.storage import StorageError, get_storage
 
@@ -56,9 +57,24 @@ ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 # Helpers
 # ============================================================================
 
-def _format_banner(banner: Banner) -> dict:
+# Rolling window for the CTR column. A lifetime counter cannot answer "is this
+# banner working NOW", which is the only form of the question worth asking.
+PERFORMANCE_WINDOW_DAYS = 7
+
+# See _performance_map.
+_MIN_IMPRESSIONS = 50
+
+
+def _format_banner(banner: Banner, performance: dict | None = None) -> dict:
     """Serialize a Banner row; image_url is resolved to a fetchable URL here."""
+    perf = performance or {}
     return {
+        "impressions": perf.get("impressions", 0),
+        "clicks": perf.get("clicks", 0),
+        # null = not enough impressions yet for the rate to mean anything.
+        # The UI must render that as "collecting", never as 0%.
+        "ctr": perf.get("ctr"),
+        "performance_window_days": PERFORMANCE_WINDOW_DAYS,
         "banner_id": str(banner.banner_id),
         "title": banner.title,
         "subtitle": banner.subtitle,
@@ -69,8 +85,76 @@ def _format_banner(banner: Banner) -> dict:
         "is_platform_wide": banner.branch_id is None,
         "sort_order": banner.sort_order,
         "is_active": banner.is_active,
+        "starts_at": banner.starts_at.isoformat() if banner.starts_at else None,
+        "ends_at": banner.ends_at.isoformat() if banner.ends_at else None,
+        "is_always_active": banner.starts_at is None and banner.ends_at is None,
+        # Derived from is_active plus the schedule. Distinguishes "someone
+        # switched this off" (inactive) from "its own end date passed"
+        # (expired) — conflating them makes an admin re-enable a banner whose
+        # campaign is simply over.
+        "status": banner.schedule_status(),
         "created_at": banner.created_at.isoformat() if banner.created_at else None,
     }
+
+
+async def _performance_map(
+    db: AsyncSession, banner_ids: list[UUID], branch_id: Optional[UUID], days: int
+) -> dict[UUID, dict]:
+    """
+    Impressions, clicks and CTR per banner over a rolling window.
+
+    Scoped to ``branch_id`` for a branch admin so a platform-wide banner
+    reports how it performs *here* — the only version of that number a branch
+    manager can act on. A Super Admin (branch_id None) sees the network total.
+
+    CTR is returned as ``None`` below ``_MIN_IMPRESSIONS``: one click out of
+    three views is not a 33% click-through rate, and rendering it as one would
+    have managers retiring banners nobody has seen yet.
+    """
+    if not banner_ids:
+        return {}
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    filters = [BannerEvent.banner_id.in_(banner_ids), BannerEvent.created_at >= since]
+    if branch_id is not None:
+        filters.append(BannerEvent.branch_id == branch_id)
+
+    rows = (
+        await db.execute(
+            select(
+                BannerEvent.banner_id,
+                func.sum(
+                    case(
+                        (BannerEvent.event_type == BannerEventType.IMPRESSION.value, 1),
+                        else_=0,
+                    )
+                ).label("impressions"),
+                func.sum(
+                    case(
+                        (BannerEvent.event_type == BannerEventType.CLICK.value, 1),
+                        else_=0,
+                    )
+                ).label("clicks"),
+            )
+            .where(*filters)
+            .group_by(BannerEvent.banner_id)
+        )
+    ).all()
+
+    result = {}
+    for r in rows:
+        impressions = int(r.impressions or 0)
+        clicks = int(r.clicks or 0)
+        result[r.banner_id] = {
+            "impressions": impressions,
+            "clicks": clicks,
+            "ctr": (
+                round(clicks / impressions * 100, 1)
+                if impressions >= _MIN_IMPRESSIONS
+                else None
+            ),
+        }
+    return result
 
 
 async def _get_owned_banner(
@@ -140,10 +224,17 @@ async def list_banners(
     query = query.order_by(Banner.sort_order, Banner.created_at)
     banners = (await db.execute(query)).scalars().all()
 
+    perf = await _performance_map(
+        db,
+        [b.banner_id for b in banners],
+        None if scope.is_super_admin else scope.branch_id,
+        PERFORMANCE_WINDOW_DAYS,
+    )
+
     return {
         "success": True,
         "data": {
-            "banners": [_format_banner(b) for b in banners],
+            "banners": [_format_banner(b, perf.get(b.banner_id)) for b in banners],
             "scope": {
                 "is_super_admin": scope.is_super_admin,
                 "branch_id": str(scope.branch_id) if scope.branch_id else None,
@@ -239,6 +330,8 @@ async def create_banner(
         subtitle=body.subtitle,
         image_url=body.image_url,
         link_type=body.link_type,
+        starts_at=body.starts_at,
+        ends_at=body.ends_at,
         target_id=body.target_id,
         branch_id=branch_id,
         sort_order=body.sort_order,
@@ -273,8 +366,24 @@ async def update_banner(
 ):
     """Update a banner the caller owns."""
     banner = await _get_owned_banner(db, banner_id, scope)
+    fields = body.model_dump(exclude_unset=True)
 
-    for field, value in body.model_dump(exclude_unset=True).items():
+    # Validate the window and the destination the banner will END UP with: a
+    # partial update can move one end of the schedule, or switch link_type,
+    # without resending the other half, and the stale half still has to hold up.
+    from app.schemas.banner import _check_target, _check_window
+
+    next_start = fields.get("starts_at", banner.starts_at)
+    next_end = fields.get("ends_at", banner.ends_at)
+    next_link = fields.get("link_type", banner.link_type)
+    next_target = fields.get("target_id", banner.target_id)
+    try:
+        _check_window(next_start, next_end)
+        _check_target(next_link, next_target)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    for field, value in fields.items():
         setattr(banner, field, value)
 
     await db.commit()

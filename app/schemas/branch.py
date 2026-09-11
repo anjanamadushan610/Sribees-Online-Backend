@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # =============================================================================
 # Branch Schemas
@@ -55,6 +55,40 @@ class BranchUpdate(BaseModel):
             "exactly this list. Omit to leave coverage unchanged."
         ),
     )
+
+
+class DeliveryRun(BaseModel):
+    """
+    One daily dispatch round for a branch.
+
+    ``dispatch_time`` is when the van leaves, in 24-hour ``HH:MM`` Asia/Colombo
+    (Sri Lanka has one timezone and no DST, so a wall-clock string is exact).
+    ``cutoff_minutes`` is how long before that ordering closes, which is the
+    number the Marketing Dashboard counts down to — a manager can still act on
+    a run whose cut-off has not passed, and can do nothing about one that has.
+    """
+
+    label: str = Field(..., min_length=1, max_length=40)
+    dispatch_time: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    cutoff_minutes: int = Field(0, ge=0, le=24 * 60)
+
+
+class DeliveryRunsUpdate(BaseModel):
+    """
+    Full replacement set of a branch's daily delivery runs.
+
+    An empty list is allowed and means "this branch has not set its rounds up",
+    which the dashboard renders as a prompt rather than inventing a schedule.
+    """
+
+    delivery_runs: list[DeliveryRun] = Field(..., max_length=12)
+
+    @model_validator(mode="after")
+    def _no_duplicate_times(self) -> "DeliveryRunsUpdate":
+        times = [r.dispatch_time for r in self.delivery_runs]
+        if len(times) != len(set(times)):
+            raise ValueError("Two delivery runs cannot share the same dispatch time")
+        return self
 
 
 class BranchResponse(BaseModel):

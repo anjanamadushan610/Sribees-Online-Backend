@@ -42,7 +42,7 @@ MARX_PAYMENT_METHOD_MAP = {
 def to_courier_payment_method(payment_method: Optional[str]) -> str:
     """
     Map our payment_method to the courier contract's own vocabulary
-    (docs/COURIER_API.md section 4: ``"cod"`` or ``"prepaid"`` — COD usually
+    (docs/SRIBEESEXPRESS_ECOMMERCE_API.md section 6: ``"cod"`` or ``"prepaid"`` — COD usually
     carries a collection fee that must be priced into the quote).
     """
     normalized = (payment_method or "").strip().upper()

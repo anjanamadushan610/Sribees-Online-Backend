@@ -317,6 +317,7 @@ class ProductService:
             weight_unit=data.weight_unit,
             is_active=data.is_active,
             is_featured=data.is_featured,
+            is_perishable=data.is_perishable,
             meta_title=data.meta_title,
             meta_description=data.meta_description
         )
@@ -978,7 +979,7 @@ class ProductService:
     ) -> Dict[str, Decimal]:
         """
         Kg-normalized weight per product, for the courier's weight-based rate
-        quote (see docs/COURIER_API.md section 7).
+        quote (see docs/SRIBEESEXPRESS_ECOMMERCE_API.md section 6).
 
         Resolved fresh from the database at quote/checkout time, never from the
         Redis cart, for the same reason ``get_cashback_map`` is — a cart can sit

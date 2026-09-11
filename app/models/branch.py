@@ -7,7 +7,8 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,6 +45,27 @@ class Branch(Base):
     # New branches start inactive: a Super Admin creates the branch, but only
     # its Branch Manager can bring it live (PATCH /admin/branches/{id}/status).
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    # SribeesExpress pickup location registered for this branch (contract
+    # section 12). We are a multi-branch merchant, so the rider must collect
+    # from the fulfilling branch, not from one account-wide default address.
+    # NULL = not registered yet; booking then falls back to that default.
+    courier_pickup_location_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    courier_pickup_synced_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # The branch's daily dispatch rounds, ordered by dispatch_time. Each entry is
+    # {"label": str, "dispatch_time": "HH:MM" (24h, Asia/Colombo), "cutoff_minutes": int}.
+    # Ordering closes `cutoff_minutes` before the van leaves. Kept per branch
+    # rather than globally because a city branch and a regional one genuinely
+    # run different timetables. Empty list = not configured yet, which the
+    # dashboard surfaces as "no runs configured" rather than inventing one.
+    delivery_runs: Mapped[list] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -196,7 +218,18 @@ class PostOfficeDirectory(Base):
     )
     district: Mapped[str] = mapped_column(String(100), nullable=False)
     province: Mapped[str] = mapped_column(String(100), nullable=False)
+    # is_active is now maintained by courier_coverage_service.sync(): FALSE
+    # means SribeesExpress reported on this district and did not list this post
+    # office, i.e. they cannot deliver there yet. Checkout must refuse it
+    # rather than quote a parcel that will be rejected at booking.
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # The city_id this post office resolved to in the last coverage sync.
+    # Rate quotes and bookings are keyed on city_id, not on the post office
+    # name, so caching it here saves a POST /locations/resolve per address.
+    courier_city_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    courier_synced_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

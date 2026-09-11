@@ -105,6 +105,10 @@ class ProductCreate(BaseModel):
     weight_unit: str = "kg"
     is_active: bool = True
     is_featured: bool = False
+    is_perishable: bool = Field(
+        False,
+        description="Short shelf life — the stock Quick Sale exists to clear before it spoils",
+    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
 
@@ -140,6 +144,10 @@ class ProductUpdate(BaseModel):
     weight_unit: Optional[str] = None
     is_active: Optional[bool] = None
     is_featured: Optional[bool] = None
+    is_perishable: Optional[bool] = Field(
+        None,
+        description="Short shelf life — the stock Quick Sale exists to clear before it spoils",
+    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
 
