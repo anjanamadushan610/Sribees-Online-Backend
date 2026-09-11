@@ -402,10 +402,6 @@ class Address(Base):
         String(100),
         nullable=False,
     )
-    district: str = Column(
-        String(100),
-        nullable=False,
-    )
     postal_code: str = Column(
         String(20),
         nullable=False,

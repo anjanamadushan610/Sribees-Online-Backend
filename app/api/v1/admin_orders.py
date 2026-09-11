@@ -45,7 +45,7 @@ from app.schemas.order import (
     ReturnNoteRequest,
     UpdateOrderStatusRequest,
 )
-from app.services import order_workflow
+from app.services import courier_sync_service, order_workflow
 from app.services.invoice_service import InvoiceService
 from app.services.notification_service import NotificationService
 from app.services.order_service import OrderService
@@ -267,6 +267,54 @@ async def _fulfilment_contacts(db: AsyncSession, order: Order) -> dict:
         "courier_booking_status": order.courier_booking_status,
     }
     return {"branch": branch_block, "rider": rider_block}
+
+
+def _courier_block(order: Order) -> dict:
+    """
+    Everything the Order Details courier panel needs, including the two flags
+    that decide what the operator is allowed to do next.
+
+    ``can_request_pickup`` is the button's enablement: there is no shipment
+    yet, the order is past confirmation, and it has not been cancelled. A
+    booked order shows its waybill instead -- re-pressing must never create a
+    second parcel.
+    """
+    booked = bool(order.courier_shipment_id)
+    return {
+        "shipment_id": order.courier_shipment_id,
+        "waybill": order.courier_waybill_number,
+        "booking_status": order.courier_booking_status,
+        "tracking_status": order.courier_tracking_status,
+        "tracking_url": order.courier_tracking_url,
+        "tracking_updated_at": (
+            order.courier_tracking_updated_at.isoformat()
+            if order.courier_tracking_updated_at
+            else None
+        ),
+        "pickup_location_name": order.courier_pickup_location_name,
+        "handover_required": order.courier_handover_required,
+        "handover_verified": order.courier_handover_verified,
+        # COD only: `delivered` alone does NOT mean the cash was collected.
+        "cod_collected": order.courier_cod_collected,
+        "cod_collected_amount": (
+            float(order.courier_cod_collected_amount)
+            if order.courier_cod_collected_amount is not None
+            else None
+        ),
+        "remittance_id": order.courier_remittance_id,
+        "failure_note": order.courier_failure_note,
+        "will_retry": order.courier_will_retry,
+        "can_request_pickup": (
+            not booked
+            and order.status
+            not in (
+                OrderStatusEnum.PENDING.value,
+                OrderStatusEnum.CANCELLED.value,
+                OrderStatusEnum.DELIVERED.value,
+            )
+        ),
+        "can_refresh_tracking": booked,
+    }
 
 
 @router.get("", response_model=dict)
@@ -614,12 +662,14 @@ async def get_order(
     scope: BranchScope = Depends(inject_branch_filter),
 ):
     """Full order details (items, pricing, customer, delivery address,
-    fulfilment contacts and escalation tickets — B4)."""
+    fulfilment contacts, escalation tickets — B4 — and the SribeesExpress
+    shipment)."""
     order = await _load_scoped_order(db, order_id, scope)
     branch_name = await _branch_name(db, order.branch_id)
     data = _format_order_detail(order, branch_name)
     data["fulfilment_contacts"] = await _fulfilment_contacts(db, order)
     data["escalations"] = await _list_escalations(db, order_id)
+    data["courier"] = _courier_block(order)
     return {"success": True, "data": data}
 
 
@@ -725,6 +775,91 @@ async def update_order_status(
         "success": True,
         "data": _format_order_detail(order, branch_name),
         "message": f"Order status updated to {body.status.value}",
+    }
+
+
+@router.post("/{order_id}/courier/request-pickup", response_model=dict)
+async def request_courier_pickup(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(require_permission("orders", "update")),
+):
+    """
+    Ask SribeesExpress to collect this order — the dashboard's Request Pickup.
+
+    Checkout books automatically on confirmation, so this is the manual path
+    for what that leaves behind: a booking that failed during a courier
+    outage, an address corrected after the order was placed, or an order
+    older than the integration. Branch-scoped like every other write here —
+    a Branch Manager can only dispatch their own branch's parcels.
+
+    Already booked returns 200 with the existing waybill, not an error:
+    pressing twice is a double-click, not a fault, and must not produce a
+    second parcel. A courier refusal is a 502 carrying the reason, because
+    the operator is the one who can act on it.
+    """
+    order = await _load_scoped_order(db, order_id, scope)
+
+    ok, message = await OrderService.book_courier_shipment_now(db, order)
+    admin_name = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
+    if not ok:
+        logger.warning(
+            f"[admin] Pickup request for {order.order_number} by {admin_name} failed: {message}"
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=message)
+
+    logger.info(f"[admin] Pickup requested for {order.order_number} by {admin_name}: {message}")
+    branch_name = await _branch_name(db, order.branch_id)
+    return {
+        "success": True,
+        "data": {
+            "order": _format_order_detail(order, branch_name),
+            "courier": _courier_block(order),
+        },
+        "message": message,
+    }
+
+
+@router.post("/{order_id}/courier/refresh", response_model=dict)
+async def refresh_courier_tracking(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(require_permission("orders", "update")),
+):
+    """
+    Re-read this one shipment from SribeesExpress and apply what it says.
+
+    Webhooks are not retried on their side, so a single missed push leaves an
+    order stuck at a stale status with nothing to correct it until the next
+    reconciliation sweep. This is that sweep for one order, on demand — what
+    support reaches for when a customer says the parcel arrived and the
+    dashboard disagrees.
+    """
+    order = await _load_scoped_order(db, order_id, scope)
+    if not order.courier_shipment_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This order has no SribeesExpress shipment to refresh.",
+        )
+
+    # refresh_order_tracking swallows courier errors and returns None -- right
+    # for a background sweep, wrong for a button someone just pressed.
+    if await courier_sync_service.refresh_order_tracking(db, order) is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="SribeesExpress could not be reached. The status shown is the last one we had.",
+        )
+
+    branch_name = await _branch_name(db, order.branch_id)
+    return {
+        "success": True,
+        "data": {
+            "order": _format_order_detail(order, branch_name),
+            "courier": _courier_block(order),
+        },
+        "message": f"Tracking refreshed — {order.courier_tracking_status or 'unknown'}.",
     }
 
 
@@ -974,7 +1109,7 @@ async def update_order_escalation(
 )
 async def reconcile_marx_payments(db: AsyncSession = Depends(get_db)):
     """
-    Manually trigger the Marx IPG reconciliation sweep (docs/COURIER_API.md's
+    Manually trigger the Marx IPG reconciliation sweep (the courier contract's
     sibling recommendation in the Marx doc's own section 7): resolves gateway
     orders stuck PENDING against Marx's GET .../summary. Cross-branch, so
     restricted to super_admin regardless of the router's default roles. Shares
