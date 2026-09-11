@@ -31,7 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import settings
 from app.models.order import Order
 from app.schemas.order import OrderStatusEnum
-from app.services.courier_service import CourierError, CourierService, CourierUnavailableError
+from app.services.courier_service import (
+    CourierError,
+    CourierService,
+    CourierUnavailableError,
+)
 from app.services.delivery_verification_service import DeliveryVerificationService
 
 # SribeesExpress's external status vocabulary (contract section 8) mapped onto

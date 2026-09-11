@@ -23,7 +23,11 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import Address
-from app.services.courier_service import CourierError, CourierService, CourierUnavailableError
+from app.services.courier_service import (
+    CourierError,
+    CourierService,
+    CourierUnavailableError,
+)
 
 # resolved: false reasons that can flip to resolved: true later without the
 # customer changing anything -- SribeesExpress ops just has to configure the

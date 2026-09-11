@@ -13,7 +13,7 @@ from uuid import UUID
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.coupon import Coupon, CouponCategory, CouponProduct
+from app.models.coupon import Coupon
 
 
 class CouponValidationError(ValueError):

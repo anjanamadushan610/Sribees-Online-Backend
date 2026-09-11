@@ -38,7 +38,11 @@ from app.schemas.courier import (
     PickupLocationSyncResult,
 )
 from app.services import courier_coverage_service, courier_sync_service
-from app.services.courier_service import CourierError, CourierService, CourierUnavailableError
+from app.services.courier_service import (
+    CourierError,
+    CourierService,
+    CourierUnavailableError,
+)
 
 router = APIRouter(tags=["Admin - Courier"])
 
@@ -96,14 +100,14 @@ async def sync_pickup_locations(
             )
             continue
 
-        payload = dict(
-            name=branch.name,
-            phone=branch.phone,
-            address=branch.address,
-            post_office=branch.post_office,
-            district=branch.district,
-            province=branch.province,
-        )
+        payload = {
+            "name": branch.name,
+            "phone": branch.phone,
+            "address": branch.address,
+            "post_office": branch.post_office,
+            "district": branch.district,
+            "province": branch.province,
+        }
 
         try:
             if branch.courier_pickup_location_id:

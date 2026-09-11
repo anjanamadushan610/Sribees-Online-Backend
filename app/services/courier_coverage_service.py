@@ -37,7 +37,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import PostOfficeDirectory
 from app.models.user import Address
-from app.services.courier_service import CourierError, CourierService, CourierUnavailableError
+from app.services.courier_service import (
+    CourierService,
+)
 
 
 @dataclass
@@ -83,7 +85,7 @@ async def _count_addresses_by_post_office(db: AsyncSession, names: List[str]) ->
             .group_by(func.lower(Address.post_office))
         )
     ).all()
-    return {name: count for name, count in rows}
+    return dict(rows)
 
 
 async def sync(db: AsyncSession) -> CoverageSyncResult:

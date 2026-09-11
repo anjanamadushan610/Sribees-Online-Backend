@@ -36,10 +36,10 @@ from app.schemas.order import (
     PaymentStatusEnum,
     to_courier_payment_method,
 )
+from app.services import courier_location_service, delivery_verification_service
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
-from app.services import courier_location_service, delivery_verification_service
-from app.services.coupon_service import CouponService, CouponValidationError
+from app.services.coupon_service import CouponService
 from app.services.courier_service import (
     CourierError,
     CourierQuoteAlreadyUsedError,
@@ -197,7 +197,6 @@ class OrderService:
         # Resolved before pricing because cashback rates (and the courier
         # quote) are branch-specific.
         branch_id = None
-        branch = None
         try:
             from app.services import branch_service
 
@@ -206,7 +205,6 @@ class OrderService:
             )
             if mapping is not None:
                 branch_id = mapping.branch_id
-                branch = mapping.branch
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Could not resolve branch for order: {exc}")
 
@@ -675,24 +673,24 @@ class OrderService:
             else None
         )
 
-        booking_kwargs = dict(
-            merchant_order_ref=order.order_number,
-            recipient_name=address.recipient_name or "Customer",
-            recipient_phone=address.phone or "",
-            address_line1=address.address_line1,
-            address_line2=address.address_line2,
-            post_office=address.post_office,
-            district=address.district,
-            province=address.province,
-            postal_code=address.postal_code,
-            cod_amount=cod_amount,
-            handover_code=handover_code,
-            pickup_location_id=pickup_location_id,
-            requested_delivery_date=(
+        booking_kwargs = {
+            "merchant_order_ref": order.order_number,
+            "recipient_name": address.recipient_name or "Customer",
+            "recipient_phone": address.phone or "",
+            "address_line1": address.address_line1,
+            "address_line2": address.address_line2,
+            "post_office": address.post_office,
+            "district": address.district,
+            "province": address.province,
+            "postal_code": address.postal_code,
+            "cod_amount": cod_amount,
+            "handover_code": handover_code,
+            "pickup_location_id": pickup_location_id,
+            "requested_delivery_date": (
                 order.delivery_slot_date.date().isoformat() if order.delivery_slot_date else None
             ),
-            requested_delivery_window=order.delivery_slot_time,
-        )
+            "requested_delivery_window": order.delivery_slot_time,
+        }
 
         try:
             result = await CourierService.book_shipment(

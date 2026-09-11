@@ -360,7 +360,6 @@ async def quote_order(
         # create_from_cart's resolution and show a different delivery fee at
         # checkout than what was actually charged.
         address = None
-        branch = None
         branch_id = None
         if data.delivery_address_id:
             try:
@@ -375,7 +374,6 @@ async def quote_order(
                 )
                 if mapping is not None:
                     branch_id = mapping.branch_id
-                    branch = mapping.branch
 
         if branch_id is None:
             context = await branch_service.get_branch_context(

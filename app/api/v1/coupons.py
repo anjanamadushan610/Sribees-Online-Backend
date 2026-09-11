@@ -3,7 +3,6 @@ Shopper-facing Coupons API Endpoints
 """
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
-
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status

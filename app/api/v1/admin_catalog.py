@@ -51,10 +51,10 @@ from app.schemas.product import (
     SuggestKeywordsRequest,
     SuggestSkuRequest,
 )
+from app.services import sales_velocity_service
 from app.services.category_service import CategoryService
 from app.services.embedding_service import GeminiAPIError
 from app.services.keyword_suggestion_service import suggest_search_keywords
-from app.services import sales_velocity_service
 from app.services.product_service import ProductService
 from app.services.storage import StorageError, get_storage
 

@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.database import get_db
-from app.services import customer_insight_service
 from app.core.dependencies import (
     BranchScope,
     get_current_admin,
@@ -26,6 +25,7 @@ from app.models.category import Category
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.product import Product
 from app.models.user import Address, Session, User
+from app.services import customer_insight_service
 
 # Prefix "/admin" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Admin"])

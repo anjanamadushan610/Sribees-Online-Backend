@@ -10,6 +10,7 @@ via the ``X-Device-Id`` header, the same convention as branch resolution.
 
 Prefix "/banners" is applied by app/api/v1/router.py.
 """
+from datetime import datetime, timezone
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -17,8 +18,6 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from loguru import logger
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
-from datetime import datetime, timezone
-
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession

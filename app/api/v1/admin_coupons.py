@@ -15,6 +15,7 @@ orders referencing the code stay intact.
 
 Prefix "/admin/coupons" is applied by app/api/v1/router.py.
 """
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -23,9 +24,6 @@ from loguru import logger
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from datetime import datetime, timezone
-from decimal import Decimal
 
 from app.config.database import get_db
 from app.core.dependencies import BranchScope, inject_branch_filter, require_roles
