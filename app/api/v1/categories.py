@@ -191,6 +191,17 @@ async def create_category(
             detail="Category with this slug already exists"
         )
 
+    if data.parent_category_id is not None and data.image_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Images are only supported on top-level categories.",
+        )
+    if data.parent_category_id is None and (not data.image_url or not str(data.image_url).strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Category Image is required for top-level categories.",
+        )
+
     try:
         category = await CategoryService.create(db, data)
         logger.info(f"Category created: {category.category_id} - {category.name}")
@@ -243,6 +254,20 @@ async def update_category(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Category with this slug already exists"
             )
+
+    fields = data.model_dump(exclude_unset=True)
+    next_parent = fields.get("parent_category_id", category.parent_category_id)
+    next_image = fields.get("image_url", category.image_url)
+    if next_parent is not None and next_image:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Images are only supported on top-level categories.",
+        )
+    if next_parent is None and (not next_image or not str(next_image).strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Category Image is required for top-level categories.",
+        )
 
     try:
         updated_category = await CategoryService.update(db, category, data)

@@ -120,12 +120,13 @@ async def _validate_parent(
 
 def _validate_category_image(parent_id: Optional[UUID], image_url: Optional[str]) -> None:
     """
-    Images belong to top-level categories only.
+    Images belong to top-level categories only and are required for them.
 
     The mobile home screen renders one tile per top-level category *from its
     image*; sub-categories appear as text beneath their parent and have nowhere
     to show one. Accepting an image on a sub-category would store a file that no
-    screen can ever display, so reject it rather than silently keep it.
+    screen can ever display, and a top-level category without an image breaks
+    the mobile home screen layout.
     """
     if parent_id is not None and image_url:
         raise HTTPException(
@@ -134,6 +135,11 @@ def _validate_category_image(parent_id: Optional[UUID], image_url: Optional[str]
                 "Images are only supported on top-level categories. "
                 "A sub-category inherits its parent's imagery."
             ),
+        )
+    if parent_id is None and (not image_url or not str(image_url).strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Category Image is required for top-level categories.",
         )
 
 

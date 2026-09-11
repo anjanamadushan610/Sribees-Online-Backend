@@ -88,22 +88,45 @@ class PartnerService:
     # ------------------------------------------------------------------
 
     @staticmethod
+    async def _generate_unique_code(db: AsyncSession, prefix: str = "SB") -> str:
+        """
+        Generate an unambiguous, unique partner referral code (e.g. SB8K9M2P).
+
+        Checks against both `partners` and `users` tables so that partner codes
+        and user invite codes never clash.
+        """
+        code_length = settings.referral_code_length
+        random_part_length = max(4, code_length - len(prefix))
+
+        for _ in range(10):
+            candidate = f"{prefix}{''.join(secrets.choice(_CODE_ALPHABET) for _ in range(random_part_length))}"
+
+            # Check collision in partners
+            p_clash = await db.execute(
+                select(Partner.partner_id).where(Partner.referral_code == candidate)
+            )
+            if p_clash.scalar_one_or_none() is not None:
+                continue
+
+            # Check collision in users
+            u_clash = await db.execute(
+                select(User.user_id).where(User.referral_code == candidate)
+            )
+            if u_clash.scalar_one_or_none() is not None:
+                continue
+
+            return candidate
+
+        raise RuntimeError("Could not allocate a unique partner referral code")
+
+    @staticmethod
     async def get_or_create_code(db: AsyncSession, partner: Partner) -> str:
         """Return this partner's code, minting it on first request."""
         if partner.referral_code:
             return partner.referral_code
 
         for _ in range(5):
-            candidate = "".join(
-                secrets.choice(_CODE_ALPHABET)
-                for _ in range(settings.referral_code_length)
-            )
-            clash = await db.execute(
-                select(Partner.partner_id).where(Partner.referral_code == candidate)
-            )
-            if clash.scalar_one_or_none() is not None:
-                continue
-
+            candidate = await PartnerService._generate_unique_code(db)
             partner.referral_code = candidate
             try:
                 await db.commit()
@@ -152,6 +175,18 @@ class PartnerService:
         if existing.scalar_one_or_none() is not None:
             raise PartnerEmailTakenError("A partner with this email already exists")
 
+        if parent_partner_id is not None:
+            parent_res = await db.execute(
+                select(Partner).where(Partner.partner_id == parent_partner_id)
+            )
+            parent = parent_res.scalar_one_or_none()
+            if parent is None:
+                raise ValueError("Recruiting partner not found")
+            if parent.parent_partner_id is not None:
+                raise ValueError("Sub-partners cannot recruit further partners (2-tier limit)")
+
+        referral_code = await PartnerService._generate_unique_code(db)
+
         partner = Partner(
             partner_id=uuid4(),
             email=email.strip().lower(),
@@ -159,13 +194,14 @@ class PartnerService:
             full_name=full_name.strip(),
             phone=phone.strip() if phone else None,
             parent_partner_id=parent_partner_id,
+            referral_code=referral_code,
             is_active=True,
         )
         db.add(partner)
         await db.commit()
         await db.refresh(partner)
         logger.info(
-            f"Partner created: {partner.email} "
+            f"Partner created: {partner.email} code={partner.referral_code} "
             f"(parent={parent_partner_id or 'none — top level'})"
         )
         return partner
@@ -184,6 +220,26 @@ class PartnerService:
             .scalars()
             .all()
         )
+
+        # Backfill any existing partners that were created without a referral_code
+        backfilled = False
+        for p in partners:
+            if not p.referral_code:
+                try:
+                    p.referral_code = await PartnerService._generate_unique_code(db)
+                    backfilled = True
+                except Exception as exc:
+                    logger.warning(
+                        f"Failed to backfill referral code for partner {p.partner_id}: {exc}"
+                    )
+        if backfilled:
+            try:
+                await db.commit()
+                for p in partners:
+                    await db.refresh(p)
+            except Exception as exc:
+                logger.error(f"Failed to commit backfilled partner codes: {exc}")
+                await db.rollback()
 
         totals_rows = await db.execute(
             select(
