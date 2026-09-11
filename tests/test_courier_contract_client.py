@@ -26,7 +26,6 @@ from app.services.courier_service import (
     format_recipient_address,
 )
 
-
 # ---------------------------------------------------------------------------
 # Error envelope -> exception type (contract section 4)
 # ---------------------------------------------------------------------------
@@ -471,7 +470,6 @@ async def test_a_null_remittance_id_never_clears_a_settled_one(stub_status_trans
 
 @pytest.mark.asyncio
 async def test_status_filter_accepts_a_list_and_is_sent_comma_separated(monkeypatch):
-    from app.services import courier_service
     from app.services.courier_service import CourierService as CS
 
     captured = {}

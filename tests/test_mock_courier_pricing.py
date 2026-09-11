@@ -34,7 +34,7 @@ def test_prepaid_orders_never_get_a_cod_fee():
 
 @pytest.mark.asyncio
 async def test_rates_endpoint_forces_weight_exceeds_maximum():
-    from mock_courier.rates import get_rate, RateRequest
+    from mock_courier.rates import RateRequest, get_rate
 
     response = await get_rate(
         RateRequest(
@@ -51,7 +51,7 @@ async def test_rates_endpoint_forces_weight_exceeds_maximum():
 
 @pytest.mark.asyncio
 async def test_rates_endpoint_forces_unserviceable():
-    from mock_courier.rates import get_rate, RateRequest
+    from mock_courier.rates import RateRequest, get_rate
 
     result = await get_rate(
         RateRequest(
