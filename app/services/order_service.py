@@ -436,16 +436,13 @@ class OrderService:
             )
             db.add(order_item)
 
-        # Hold branch stock against this order (best-effort, non-blocking —
-        # never fails checkout). Converted to a real deduction when the parcel
-        # is handed to the courier; released if the order is cancelled first.
-        from app.services.inventory_service import InventoryService
-
-        await InventoryService.reserve_for_order(
-            db,
-            order,
-            [(UUID(i["product_id"]), int(i["quantity"])) for i in cart["items"]],
-        )
+        # NOTE: branch-stock reservation was reverted in 56fc85b after it broke
+        # production, and the revert took app/services/inventory_service.py and
+        # orders.stock_committed_at with it -- but left these call sites behind.
+        # Every one of them raised ModuleNotFoundError at runtime, which is how
+        # `handed_to_courier` (and checkout) returned a 500. Removed rather than
+        # re-implemented: bringing stock holds back is a deliberate decision with
+        # its own migration, not something to restore by accident here.
 
         # Record wallet movements atomically with the order.
         # Spend first so the earned cashback isn't immediately spendable on the
@@ -614,6 +611,54 @@ class OrderService:
         return True, f"Pickup requested. SribeesExpress waybill {order.courier_shipment_id}."
 
     @staticmethod
+    async def _fresh_courier_quote(db: AsyncSession, order: Order, address, cod_amount):
+        """
+        Price this order with SribeesExpress right now.
+
+        Returns ``(quote, None)`` or ``(None, reason)``. Two callers need the
+        same thing -- a current rate for the same parcel: an order that never
+        got a quote at checkout (the courier was down, or it predates the
+        integration), and one whose quote has expired or been consumed.
+        """
+        if address.courier_city_id is None:
+            return None, (
+                "The delivery address has never resolved to a SribeesExpress "
+                "city. Re-save the address, or run the coverage sync if its "
+                "post office is new."
+            )
+        # Queried directly rather than via order.items -- that relationship is
+        # not always eagerly loaded on the Order instance this is called with
+        # (e.g. straight out of create_from_cart), and a lazy load would fail
+        # under the async session.
+        item_rows = (
+            await db.execute(
+                select(OrderItem.product_id, OrderItem.quantity).where(
+                    OrderItem.order_id == order.order_id
+                )
+            )
+        ).all()
+        priced_items = await OrderService._attach_weights(
+            db,
+            [
+                {"product_id": str(product_id), "quantity": quantity}
+                for product_id, quantity in item_rows
+            ],
+        )
+        weight_kg = sum(
+            Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"]))
+            for i in priced_items
+        )
+        quote = await CourierService.get_rate(
+            city_id=address.courier_city_id,
+            weight_kg=weight_kg,
+            payment_method=to_courier_payment_method(order.payment_method),
+            cod_amount=cod_amount,
+        )
+        if not quote.serviceable:
+            return None, f"SribeesExpress does not serve this city ({quote.reason})."
+        return quote, None
+
+    @staticmethod
     async def _book_courier_shipment(db: AsyncSession, order: Order) -> Optional[str]:
         """
         Book the SribeesExpress shipment for a confirmed order (contract
@@ -692,9 +737,35 @@ class OrderService:
             "requested_delivery_window": order.delivery_slot_time,
         }
 
+        # An order with no quote cannot be booked: SribeesExpress types quote_id
+        # as a string and answers an explicit null with a 422, not with "price
+        # it at today's rate". No quote is the normal state for exactly the
+        # orders Request Pickup exists to rescue -- the courier was down at
+        # checkout, or the order predates the integration -- so price it now
+        # rather than failing on a field we can fill in ourselves.
+        quote_id = order.courier_quote_id
+        if not quote_id:
+            try:
+                fresh, failure = await OrderService._fresh_courier_quote(
+                    db, order, address, cod_amount
+                )
+            except (CourierUnavailableError, CourierError) as exc:
+                order.courier_booking_status = "failed"
+                await db.commit()
+                logger.error(f"Courier quote failed for order {order.order_number}: {exc}")
+                return f"SribeesExpress could not price this parcel: {exc}"
+            if failure is not None:
+                order.courier_booking_status = "failed"
+                await db.commit()
+                logger.error(f"Cannot quote order {order.order_number}: {failure}")
+                return failure
+            quote_id = fresh.quote_id
+            order.courier_quote_id = quote_id
+            order.courier_quote_expires_at = fresh.expires_at
+
         try:
             result = await CourierService.book_shipment(
-                quote_id=order.courier_quote_id, **booking_kwargs
+                quote_id=quote_id, **booking_kwargs
             )
         except (CourierQuoteExpiredError, CourierQuoteAlreadyUsedError) as exc:
             # The customer already paid the OLD shipping_amount; we cannot
@@ -709,55 +780,15 @@ class OrderService:
             logger.warning(
                 f"Courier quote unusable for order {order.order_number} ({exc.code}), re-quoting"
             )
-            if address.courier_city_id is None:
-                order.courier_booking_status = "failed"
-                await db.commit()
-                logger.error(
-                    f"Cannot re-quote order {order.order_number}: address has no courier city_id"
-                )
-                return (
-                    "The delivery address has never resolved to a SribeesExpress "
-                    "city. Re-save the address, or run the coverage sync if its "
-                    "post office is new."
-                )
             try:
-                # Queried directly rather than via order.items -- that
-                # relationship is not always eagerly loaded on the Order
-                # instance this is called with (e.g. straight out of
-                # create_from_cart), and a lazy load would fail under the
-                # async session.
-                item_rows = (
-                    await db.execute(
-                        select(OrderItem.product_id, OrderItem.quantity).where(
-                            OrderItem.order_id == order.order_id
-                        )
-                    )
-                ).all()
-                priced_items = await OrderService._attach_weights(
-                    db,
-                    [
-                        {"product_id": str(product_id), "quantity": quantity}
-                        for product_id, quantity in item_rows
-                    ],
+                fresh, failure = await OrderService._fresh_courier_quote(
+                    db, order, address, cod_amount
                 )
-                weight_kg = sum(
-                    Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"]))
-                    for i in priced_items
-                )
-                fresh = await CourierService.get_rate(
-                    city_id=address.courier_city_id,
-                    weight_kg=weight_kg,
-                    payment_method=to_courier_payment_method(order.payment_method),
-                    cod_amount=cod_amount,
-                )
-                if not fresh.serviceable:
+                if failure is not None:
                     order.courier_booking_status = "failed"
                     await db.commit()
-                    logger.error(
-                        f"Order {order.order_number}: courier no longer serves this city "
-                        f"({fresh.reason})"
-                    )
-                    return f"SribeesExpress does not serve this city ({fresh.reason})."
+                    logger.error(f"Cannot re-quote order {order.order_number}: {failure}")
+                    return failure
                 result = await CourierService.book_shipment(
                     quote_id=fresh.quote_id, **booking_kwargs
                 )
@@ -1116,21 +1147,6 @@ class OrderService:
         )
 
     @staticmethod
-    async def _reverse_order_stock(db: AsyncSession, order: Order) -> None:
-        """
-        Undo this order's branch-stock effect on cancellation: release the
-        reservation if the parcel never shipped, or put the units back on the
-        shelf if it did (Super-Admin override cancel of a dispatched order).
-        Staged in the caller's transaction; does not commit. Idempotent.
-        """
-        from app.services.inventory_service import InventoryService
-
-        if order.stock_committed_at is not None:
-            await InventoryService.restock_for_order(db, order)
-        else:
-            await InventoryService.release_reservation_for_order(db, order)
-
-    @staticmethod
     async def update_status(
         db: AsyncSession,
         order: Order,
@@ -1186,20 +1202,6 @@ class OrderService:
             order.cancelled_at = now
             if not was_cancelled:
                 await OrderService._reverse_order_financials(db, order)
-                await OrderService._reverse_order_stock(db, order)
-
-        # Deduct branch stock once the parcel leaves the branch. Idempotent via
-        # order.stock_committed_at, so a later courier-driven SHIPPED/DELIVERED
-        # for the same order is a no-op.
-        if status in (
-            OrderStatusEnum.HANDED_TO_COURIER,
-            OrderStatusEnum.SHIPPED,
-            OrderStatusEnum.OUT_FOR_DELIVERY,
-            OrderStatusEnum.DELIVERED,
-        ):
-            from app.services.inventory_service import InventoryService
-
-            await InventoryService.commit_for_order(db, order)
 
         # Log status transition in audit history
         history = OrderStatusHistory(
@@ -1293,7 +1295,6 @@ class OrderService:
         # clawback) atomically within this transaction. The non-cancellable
         # guard above ensures this runs only on a real cancellation transition.
         await OrderService._reverse_order_financials(db, order)
-        await OrderService._reverse_order_stock(db, order)
 
         await db.commit()
         await db.refresh(order)

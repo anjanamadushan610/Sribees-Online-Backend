@@ -391,7 +391,6 @@ class CourierService:
         """
         payload: Dict[str, Any] = {
             "merchant_order_ref": merchant_order_ref,
-            "quote_id": quote_id,
             "recipient_name": (recipient_name or "")[:RECIPIENT_NAME_MAX],
             "recipient_phone": (recipient_phone or "")[:RECIPIENT_PHONE_MAX],
             "recipient_address": format_recipient_address(
@@ -410,6 +409,13 @@ class CourierService:
         ):
             if value:
                 payload[key] = value
+
+        # Omitted rather than sent as null when we have no quote: SribeesExpress
+        # types quote_id as a string and answers an explicit null with a 422
+        # validation_error, not with "priced at today's rate". Callers that
+        # cannot supply one are expected to fetch a rate first.
+        if quote_id:
+            payload["quote_id"] = quote_id
 
         if handover_code:
             # Both fields or neither -- one without the other is a documented

@@ -86,6 +86,13 @@ def _format_order_row(order: Order, customer: Optional[User], branch_name: Optio
         "total_amount": float(order.total_amount or 0),
         "item_count": len(order.items) if order.items is not None else 0,
         "created_at": order.created_at.isoformat() if order.created_at else None,
+        # Enough courier state to spot a parcel that needs a human without
+        # opening every order. A failed booking is otherwise invisible from
+        # the list: the order sits at Packed looking perfectly normal while
+        # no rider has ever been asked to collect it.
+        "courier_booking_status": order.courier_booking_status,
+        "courier_waybill": order.courier_waybill_number,
+        "courier_tracking_status": order.courier_tracking_status,
     }
 
 
@@ -221,6 +228,27 @@ async def _branch_name(db: AsyncSession, branch_id: Optional[UUID]) -> Optional[
     ).scalar_one_or_none()
 
 
+async def _branch_pickup_registered(db: AsyncSession, branch_id: Optional[UUID]) -> bool:
+    """
+    Whether the fulfilling branch is registered as a SribeesExpress pickup
+    location (contract section 12).
+
+    Unregistered is not a booking failure -- SribeesExpress silently falls back
+    to whatever default origin our account holds, which for a multi-branch
+    merchant is another branch's address. The rider then drives to the wrong
+    shop and the parcel is never collected, with nothing in the booking
+    response to say so. So the flag is surfaced to the operator before they
+    press Request Pickup, not discovered afterwards.
+    """
+    if branch_id is None:
+        return False
+    return (
+        await db.execute(
+            select(Branch.courier_pickup_location_id).where(Branch.branch_id == branch_id)
+        )
+    ).scalar_one_or_none() is not None
+
+
 # Order states before the parcel is picked (no rider yet) — QA spec B4 Module A.
 _RIDER_PENDING_STATES = {
     "pending", "confirmed", "processing", "packing",
@@ -269,15 +297,20 @@ async def _fulfilment_contacts(db: AsyncSession, order: Order) -> dict:
     return {"branch": branch_block, "rider": rider_block}
 
 
-def _courier_block(order: Order) -> dict:
+def _courier_block(order: Order, *, branch_pickup_registered: bool = False) -> dict:
     """
-    Everything the Order Details courier panel needs, including the two flags
+    Everything the Order Details courier panel needs, including the three flags
     that decide what the operator is allowed to do next.
 
     ``can_request_pickup`` is the button's enablement: there is no shipment
     yet, the order is past confirmation, and it has not been cancelled. A
     booked order shows its waybill instead -- re-pressing must never create a
     second parcel.
+
+    ``branch_pickup_registered`` is a warning, not a block: booking an
+    unregistered branch's parcel succeeds and sends the rider to the account
+    default address. Refusing the booking over it would be worse than letting
+    it through with the address wrong, so the panel warns and still allows it.
     """
     booked = bool(order.courier_shipment_id)
     return {
@@ -314,6 +347,7 @@ def _courier_block(order: Order) -> dict:
             )
         ),
         "can_refresh_tracking": booked,
+        "branch_pickup_registered": branch_pickup_registered,
     }
 
 
@@ -669,7 +703,9 @@ async def get_order(
     data = _format_order_detail(order, branch_name)
     data["fulfilment_contacts"] = await _fulfilment_contacts(db, order)
     data["escalations"] = await _list_escalations(db, order_id)
-    data["courier"] = _courier_block(order)
+    data["courier"] = _courier_block(
+        order, branch_pickup_registered=await _branch_pickup_registered(db, order.branch_id)
+    )
     return {"success": True, "data": data}
 
 
@@ -798,8 +834,19 @@ async def request_courier_pickup(
     pressing twice is a double-click, not a fault, and must not produce a
     second parcel. A courier refusal is a 502 carrying the reason, because
     the operator is the one who can act on it.
+
+    Held to FULFILMENT_ROLES for the same reason the status machine is
+    (order_workflow §RBAC): dispatching a parcel is a branch-floor act, and
+    Customer Support holds orders:update so they can annotate and escalate,
+    not so they can send a rider. Their path to getting one sent is an
+    escalation to the branch.
     """
     order = await _load_scoped_order(db, order_id, scope)
+    if _actor_role(admin) not in order_workflow.FULFILMENT_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a Branch Manager or Super Admin can dispatch a parcel.",
+        )
 
     ok, message = await OrderService.book_courier_shipment_now(db, order)
     admin_name = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
@@ -815,7 +862,10 @@ async def request_courier_pickup(
         "success": True,
         "data": {
             "order": _format_order_detail(order, branch_name),
-            "courier": _courier_block(order),
+            "courier": _courier_block(
+                order,
+                branch_pickup_registered=await _branch_pickup_registered(db, order.branch_id),
+            ),
         },
         "message": message,
     }
@@ -857,7 +907,10 @@ async def refresh_courier_tracking(
         "success": True,
         "data": {
             "order": _format_order_detail(order, branch_name),
-            "courier": _courier_block(order),
+            "courier": _courier_block(
+                order,
+                branch_pickup_registered=await _branch_pickup_registered(db, order.branch_id),
+            ),
         },
         "message": f"Tracking refreshed — {order.courier_tracking_status or 'unknown'}.",
     }

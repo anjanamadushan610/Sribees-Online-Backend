@@ -28,7 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import get_current_admin
+from app.core.dependencies import get_current_admin, require_roles
 from app.models.branch import Branch
 from app.models.order import Order
 from app.schemas.courier import (
@@ -45,6 +45,19 @@ from app.services.courier_service import (
 )
 
 router = APIRouter(tags=["Admin - Courier"])
+
+# Every route here touches the SribeesExpress ACCOUNT, not one order: pickup
+# addresses for the whole estate, the webhook secret, the COD ledger. None of
+# it is branch-scoped and none of it is delegatable (`settings` is excluded
+# from DELEGATABLE_PERMISSIONS by design), so these are role-gated rather than
+# permission-gated. Before this, any authenticated admin -- Customer Support
+# included -- could re-register the webhook endpoint and invalidate the secret
+# every inbound status update is verified against.
+_ACCOUNT_OPS = Depends(require_roles("super_admin"))
+# Reading what SribeesExpress owes us is a finance/ops question a Branch
+# Manager legitimately asks about their own deliveries, so reads open one
+# role wider than the writes.
+_COURIER_READ = Depends(require_roles("super_admin", "branch_manager"))
 
 
 async def _recover_pickup_location_by_name(name: str) -> Optional[dict]:
@@ -64,7 +77,7 @@ async def _recover_pickup_location_by_name(name: str) -> Optional[dict]:
 @router.post("/pickup-locations/sync", response_model=PickupLocationSyncResponse)
 async def sync_pickup_locations(
     db: AsyncSession = Depends(get_db),
-    current_admin=Depends(get_current_admin),
+    current_admin=_ACCOUNT_OPS,
 ) -> PickupLocationSyncResponse:
     """
     Register every active branch as a SribeesExpress pickup location, or
@@ -166,7 +179,7 @@ async def sync_pickup_locations(
 @router.post("/sync", response_model=CourierSweepResponse)
 async def run_reconciliation_sweep(
     db: AsyncSession = Depends(get_db),
-    current_admin=Depends(get_current_admin),
+    current_admin=_ACCOUNT_OPS,
 ) -> CourierSweepResponse:
     """
     Run the shipment reconciliation sweep now (contract section 7a).
@@ -183,7 +196,7 @@ async def run_reconciliation_sweep(
 @router.post("/coverage/sync", response_model=CoverageSyncResponse)
 async def sync_coverage(
     db: AsyncSession = Depends(get_db),
-    current_admin=Depends(get_current_admin),
+    current_admin=_ACCOUNT_OPS,
 ) -> CoverageSyncResponse:
     """
     Rebuild ``post_office_directory`` from ``GET /ecommerce/coverage``.
@@ -206,7 +219,7 @@ async def sync_coverage(
 
 
 @router.get("/cod-balance", response_model=dict)
-async def get_cod_balance(current_admin=Depends(get_current_admin)) -> dict:
+async def get_cod_balance(current_admin=_COURIER_READ) -> dict:
     """
     Cash SribeesExpress has collected from our customers and not yet paid out
     (contract section 14).
@@ -229,7 +242,7 @@ async def get_cod_balance(current_admin=Depends(get_current_admin)) -> dict:
 async def list_remittances(
     limit: int = 50,
     offset: int = 0,
-    current_admin=Depends(get_current_admin),
+    current_admin=_COURIER_READ,
 ) -> dict:
     """
     Our COD payout history (contract section 14). Read-only — generating a run
@@ -250,7 +263,7 @@ async def list_remittances(
 async def get_remittance_shipments(
     remittance_id: int,
     db: AsyncSession = Depends(get_db),
-    current_admin=Depends(get_current_admin),
+    current_admin=_COURIER_READ,
 ) -> dict:
     """
     Which shipments a given payout covered, joined back to our own order
@@ -290,7 +303,7 @@ async def get_remittance_shipments(
 async def register_webhook_endpoint(
     url: str,
     description: str = "",
-    current_admin=Depends(get_current_admin),
+    current_admin=_ACCOUNT_OPS,
 ) -> dict:
     """
     Register our webhook URL with SribeesExpress (contract section 10.1).
