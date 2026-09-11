@@ -137,10 +137,18 @@ class Order(Base):
     # proof-of-delivery we ever receive, so all of it is persisted rather than
     # collapsed into the status. For a COD order, `delivered` on its own does
     # NOT mean the cash was collected -- courier_cod_collected does (§8).
-    courier_handover_required = Column(Boolean, nullable=False, default=False)
+    # server_default, not just default: `default=` is Python-side, so a
+    # table built by create_all() (the E2E harness, a fresh local DB) would
+    # get NOT NULL with no DEFAULT and reject any raw INSERT that omits the
+    # column. Migration 050 declares the same default.
+    courier_handover_required = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     courier_handover_verified = Column(Boolean, nullable=True)
     courier_handover_attempts = Column(Integer, nullable=True)
-    courier_cod_collected = Column(Boolean, nullable=False, default=False)
+    courier_cod_collected = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     courier_cod_collected_amount = Column(Numeric(12, 2), nullable=True)
     courier_cod_collected_at = Column(DateTime(timezone=True), nullable=True)
     # Rider free text on a failed/returned shipment. Free text by design
