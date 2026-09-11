@@ -14,6 +14,8 @@ from app.api.v1 import (
     admin_branches,
     admin_catalog,
     admin_coupons,
+    admin_courier,
+    admin_customer_promos,
     admin_dashboard,
     admin_inventory,
     admin_locations,
@@ -33,6 +35,7 @@ from app.api.v1 import (
     chat,
     coupons,
     courier_webhooks,
+    delivery,
     locations,
     marketing,
     notifications,
@@ -135,9 +138,19 @@ router.include_router(
     tags=["Payments"],
 )
 
-# Courier webhooks (/courier/webhooks) -- inbound-only, the courier calls us.
-# Authenticated with courier_inbound_api_key, a separate secret from the key
-# we send when calling OUT to the courier (see app/services/courier_service.py).
+# Admin courier ops (/admin/courier) -- pickup-location registration, the
+# reconciliation sweep an external cron drives (there is no scheduler in this
+# backend), and one-time webhook-endpoint registration.
+router.include_router(
+    admin_courier.router,
+    prefix="/admin/courier",
+    tags=["Admin - Courier"],
+)
+
+# Courier webhooks (/courier/webhooks) -- inbound-only, SribeesExpress calls
+# us. Authenticated by HMAC over the raw body (X-Sribees-Signature) using
+# courier_webhook_secret, NOT by a shared api key -- see
+# docs/SRIBEESEXPRESS_ECOMMERCE_API.md section 10.3.
 router.include_router(
     courier_webhooks.router,
     prefix="/courier/webhooks",
@@ -154,6 +167,15 @@ router.include_router(
     branch.router,
     prefix="/branch",
     tags=["Branch Routing"],
+)
+
+# Delivery slots (/delivery/slots) — the dispatch rounds a customer can order
+# into, from branches.delivery_runs. This path has been listed in main.py's
+# route index since long before anything served it.
+router.include_router(
+    delivery.router,
+    prefix="/delivery",
+    tags=["Delivery"],
 )
 
 router.include_router(
@@ -286,6 +308,16 @@ router.include_router(
     admin_analytics.router,
     prefix="/admin/analytics",
     tags=["Admin Analytics"],
+)
+
+# Admin 1-to-1 retention promos (/admin/customers/{id}/promo). Mounted on the
+# customer path rather than under /admin/coupons because it is a customer
+# action, not a campaign one: it issues a coupon nobody else can ever redeem.
+# Gated on marketing:create + the same branch isolation as the directory.
+router.include_router(
+    admin_customer_promos.router,
+    prefix="/admin/customers",
+    tags=["Admin Customer Promos"],
 )
 
 # Admin Coupons (/admin/coupons) — Promotions management.

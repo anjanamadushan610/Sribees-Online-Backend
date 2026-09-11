@@ -80,6 +80,13 @@ class Product(Base):
     weight_unit = Column(String(10), default="kg")
     is_active = Column(Boolean, default=True)
     is_featured = Column(Boolean, default=False)
+    is_perishable = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        server_default="false",
+        comment="Short shelf life — the stock Quick Sale exists to clear before it spoils",
+    )
 
     # Global-level marketing defaults (fallback when no branch override exists)
     discount_percentage = Column(

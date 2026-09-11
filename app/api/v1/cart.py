@@ -5,11 +5,15 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
+from app.config.redis import get_redis
 from app.core.dependencies import get_current_user
 from app.schemas.cart import (
     AddToCartRequest,
@@ -21,6 +25,26 @@ from app.services.coupon_service import CouponService, CouponValidationError
 
 # Prefix "/cart" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Cart"])
+
+
+async def _optional_branch_id(redis: Redis, current_user) -> Optional[UUID]:
+    """
+    The shopper's currently selected delivery branch, or ``None``.
+
+    Deliberately non-fatal: a shopper who has not chosen a delivery location
+    yet has no branch context, and the cart must keep working for them. Used
+    only to fail a branch-owned coupon early — checkout re-checks against the
+    branch that actually fulfils the order and is the authoritative gate.
+    """
+    try:
+        from app.services import branch_service
+
+        context = await branch_service.get_branch_context(redis, str(current_user.user_id))
+        if context and context.get("branch_id"):
+            return UUID(context["branch_id"])
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not resolve branch context for coupon check: {exc}")
+    return None
 
 
 # ============================================================================
@@ -173,6 +197,7 @@ async def clear_cart(
 async def apply_coupon(
     data: ApplyCouponRequest,
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
     current_user = Depends(get_current_user)
 ):
     """
@@ -191,10 +216,6 @@ async def apply_coupon(
                 detail="Your cart is empty.",
             )
 
-        subtotal = Decimal(
-            str(sum(item["price"] * item["quantity"] for item in cart["items"]))
-        )
-
         coupon = await CouponService.get_by_code(db, data.code)
         if coupon is None:
             raise HTTPException(
@@ -202,8 +223,41 @@ async def apply_coupon(
                 detail="Invalid coupon code.",
             )
 
-        # Enforce is_active, validity window, usage limit and min order value.
-        CouponService.validate(coupon, subtotal, datetime.now(timezone.utc))
+        # Everything here is best-effort and exists so the shopper learns the
+        # code will not work NOW, at the moment they type it, rather than at
+        # checkout with their card out. Checkout re-runs all of it against the
+        # branch that actually fulfils the order and is the authoritative gate.
+        applied_branch_id = await _optional_branch_id(redis, current_user)
+
+        # The eligible subtotal, not the cart total: a coupon that excludes
+        # clearance stock, or is restricted to certain categories, must be
+        # measured against the goods it can actually discount, or the shopper
+        # is told the minimum is met and then refused at checkout.
+        enriched = await CouponService.enrich_items(
+            db, cart["items"], applied_branch_id
+        )
+        subtotal = CouponService.eligible_subtotal(coupon, enriched)
+
+        user_redemptions = await CouponService.redemptions_by_user(
+            db, coupon.code, current_user.user_id
+        )
+        had_completed = (
+            await CouponService.has_completed_order(
+                db, current_user.user_id, applied_branch_id
+            )
+            if coupon.first_order_only
+            else None
+        )
+
+        CouponService.validate(
+            coupon,
+            subtotal,
+            datetime.now(timezone.utc),
+            branch_id=applied_branch_id,
+            user_id=current_user.user_id,
+            user_redemptions=user_redemptions,
+            user_has_completed_order=had_completed,
+        )
 
         # Apply using the DATABASE discount values (client input ignored).
         updated_cart = await CartService.apply_coupon(

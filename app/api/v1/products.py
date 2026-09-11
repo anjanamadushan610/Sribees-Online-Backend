@@ -96,6 +96,12 @@ def format_product(
             else float(settings.cashback_rate) * 100,
         ),
         "is_on_sale": eff.get("is_on_sale", product.is_on_sale),
+        # The branch's own price, distinct from the resolved `price` above:
+        # null means this branch has set no override and is selling at the
+        # global catalog price. The admin Products table needs the two apart
+        # so it can label the column honestly per viewer.
+        "branch_price": eff.get("branch_price"),
+        "is_perishable": bool(getattr(product, "is_perishable", False)),
         "stock_quantity": eff.get("stock_quantity", product.stock_quantity),
         "is_active": eff.get("is_active", product.is_active),
         "is_featured": product.is_featured,

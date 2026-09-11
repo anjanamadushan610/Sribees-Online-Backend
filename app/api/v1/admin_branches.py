@@ -27,7 +27,7 @@ from app.core.dependencies import get_current_admin, require_roles
 from app.models.admin import Admin, AdminRole
 from app.models.branch import Branch, PostOfficeBranchMapping
 from app.models.product import BranchInventory
-from app.schemas.branch import BranchCreate, BranchUpdate
+from app.schemas.branch import BranchCreate, BranchUpdate, DeliveryRunsUpdate
 from app.services import branch_service
 from app.services.category_service import CategoryService
 
@@ -53,6 +53,7 @@ def _format_branch(b: Branch, coverage_post_offices: list[str] | None = None) ->
         "phone": b.phone,
         "manager_id": str(b.manager_id) if b.manager_id else None,
         "is_active": b.is_active,
+        "delivery_runs": b.delivery_runs or [],
         "coverage_post_offices": coverage_post_offices or [],
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "updated_at": b.updated_at.isoformat() if b.updated_at else None,
@@ -272,6 +273,50 @@ async def delete_branch(
 
 class BranchStatusUpdate(BaseModel):
     is_active: bool
+
+
+@router.put("/{branch_id}/delivery-runs", response_model=dict)
+async def set_branch_delivery_runs(
+    branch_id: UUID,
+    data: DeliveryRunsUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """
+    Replace a branch's daily delivery rounds.
+
+    Deliberately its own route rather than a field on ``PUT /{branch_id}``
+    (Super-Admin-only): the dispatch timetable is a floor-operations decision
+    owned by whoever actually runs the branch, exactly like the status toggle
+    above. Super Admins may set any branch's; a Branch Manager only their own.
+
+    Stored sorted by dispatch time so every reader — the Marketing
+    Dashboard's cut-off countdown included — sees the same order regardless
+    of how the form submitted them.
+    """
+    if admin.role != AdminRole.SUPER_ADMIN and admin.branch_id != branch_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only change your own branch's delivery runs.",
+        )
+
+    branch = await _get_branch_or_404(db, branch_id)
+    branch.delivery_runs = [
+        run.model_dump()
+        for run in sorted(data.delivery_runs, key=lambda r: r.dispatch_time)
+    ]
+    await db.commit()
+    await db.refresh(branch)
+    coverage = await branch_service.get_branch_coverage(db, branch.branch_id)
+    logger.info(
+        f"[admin] Branch {branch_id} delivery runs set to "
+        f"{len(branch.delivery_runs)} round(s) by {admin.admin_id}"
+    )
+    return {
+        "success": True,
+        "data": _format_branch(branch, coverage),
+        "message": "Delivery runs updated successfully",
+    }
 
 
 @router.patch("/{branch_id}/status", response_model=dict)

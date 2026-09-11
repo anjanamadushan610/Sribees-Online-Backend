@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -33,6 +34,31 @@ class CouponCreate(BaseModel):
     valid_from: datetime
     valid_until: datetime
     is_active: bool = True
+    # Owning branch. Ignored for a branch-scoped creator (they are pinned to
+    # their own branch); a Super Admin sending null creates a network-wide
+    # coupon valid at every branch.
+    branch_id: Optional[UUID] = None
+
+    # ------------------------------------------------------------------
+    # Financial protection
+    # ------------------------------------------------------------------
+    # usage_limit caps how many times a code is used; this caps what it costs.
+    # NULL = uncapped.
+    budget_cap: Optional[Decimal] = Field(default=None, gt=0)
+    auto_stop_on_budget: bool = True
+    # Clearance lines count toward neither the discount base nor min_order_value.
+    exclude_quick_sale: bool = True
+
+    # ------------------------------------------------------------------
+    # Eligibility and targeting
+    # ------------------------------------------------------------------
+    first_order_only: bool = False
+    per_user_limit: Optional[int] = Field(default=None, ge=1)
+    is_public: bool = True
+    # Empty/omitted = the entire catalog. Naming either narrows the coupon to
+    # the union of the two.
+    category_ids: Optional[list[UUID]] = None
+    product_ids: Optional[list[UUID]] = None
 
     @field_validator("code")
     @classmethod
@@ -46,6 +72,18 @@ class CouponCreate(BaseModel):
         _validate_discount(self.discount_type, self.discount_value)
         if self.discount_type == CouponDiscountType.FIXED and self.min_order_value < self.discount_value:
             raise ValueError("min_order_value must be greater than or equal to discount_value for fixed discounts")
+        # A fixed-discount campaign whose whole budget is smaller than one
+        # redemption can never pay out even once. Catching it here saves a
+        # manager launching a code that refuses every customer who tries it.
+        if (
+            self.budget_cap is not None
+            and self.discount_type == CouponDiscountType.FIXED
+            and self.budget_cap < self.discount_value
+        ):
+            raise ValueError(
+                "Total campaign budget must be at least one discount "
+                f"({self.discount_value}) or no customer can ever redeem it"
+            )
         return self
 
 
@@ -61,6 +99,18 @@ class CouponUpdate(BaseModel):
     valid_from: Optional[datetime] = None
     valid_until: Optional[datetime] = None
     is_active: Optional[bool] = None
+
+    budget_cap: Optional[Decimal] = Field(default=None, gt=0)
+    auto_stop_on_budget: Optional[bool] = None
+    exclude_quick_sale: Optional[bool] = None
+    first_order_only: Optional[bool] = None
+    per_user_limit: Optional[int] = Field(default=None, ge=1)
+    is_public: Optional[bool] = None
+    # Sending either replaces that eligibility set entirely; omitting it leaves
+    # the set alone. An explicit empty list widens the coupon back to the whole
+    # catalog, which is the only way to undo a restriction.
+    category_ids: Optional[list[UUID]] = None
+    product_ids: Optional[list[UUID]] = None
 
     @field_validator("code")
     @classmethod

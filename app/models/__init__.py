@@ -5,10 +5,15 @@ SQLAlchemy ORM models for all database tables.
 """
 from app.models.admin import Admin, AdminRole, AdminSession
 from app.models.app_settings import AppSetting
-from app.models.banner import Banner
+from app.models.banner import Banner, BannerEvent, BannerEventType
 from app.models.branch import Branch, PostOfficeBranchMapping, PostOfficeDirectory
 from app.models.category import Category
-from app.models.coupon import Coupon, CouponDiscountType
+from app.models.coupon import (
+    Coupon,
+    CouponCategory,
+    CouponDiscountType,
+    CouponProduct,
+)
 from app.models.escalation import (
     EscalationCategory,
     EscalationStatus,
@@ -48,6 +53,8 @@ __all__ = [
     "Address",
     # Banner
     "Banner",
+    "BannerEvent",
+    "BannerEventType",
     # Referrals
     "Partner",
     "ReferralCommission",
@@ -56,6 +63,8 @@ __all__ = [
     "Category",
     # Coupon
     "Coupon",
+    "CouponCategory",
+    "CouponProduct",
     "CouponDiscountType",
     # Order escalations (B4)
     "OrderEscalation",
