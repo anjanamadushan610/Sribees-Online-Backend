@@ -241,4 +241,6 @@ async def unserviceable_post_offices(db: AsyncSession) -> List[Tuple[str, str]]:
             .order_by(PostOfficeDirectory.district, PostOfficeDirectory.post_office)
         )
     ).all()
-    return [(po, d) for po, d in rows]
+    # list(rows) rather than a pass-through comprehension: SQLAlchemy Row
+    # objects already unpack as (post_office, district) tuples.
+    return list(rows)
