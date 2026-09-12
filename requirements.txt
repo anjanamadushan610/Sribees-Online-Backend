@@ -19,6 +19,14 @@ python-jose[cryptography]==3.3.0
 passlib[argon2]==1.7.4
 python-multipart==0.0.6
 
+# Credential encryption at rest (app/core/crypto.py). Declared explicitly
+# rather than leaning on the python-jose[cryptography] extra above: this is a
+# direct import on the STARTUP path, so if that extra ever stopped pulling it
+# in, the app would stop booting with no other warning. A floor rather than a
+# pin -- Fernet's API has been stable for a decade and the image resolves a
+# newer build than a pin would allow.
+cryptography>=42.0.0
+
 # HTTP Client
 httpx==0.26.0
 aiofiles==23.2.1
