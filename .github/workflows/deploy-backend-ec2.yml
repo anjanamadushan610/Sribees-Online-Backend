@@ -261,36 +261,49 @@ jobs:
               exit 1
             fi
 
-            # Start the app first: on boot it runs SQLAlchemy create_all(), which
-            # creates any MISSING TABLES. The raw SQL migrations below then ALTER
-            # those tables to add new COLUMNS/constraints, so the tables must
-            # already exist before migrations run.
-            echo "Starting application (creates base tables on first boot)..."
+            # Boot the app once so SQLAlchemy create_all() can create any MISSING
+            # TABLES -- the raw SQL migrations only ALTER tables, so the tables
+            # have to exist first.
+            #
+            # This boot is ALLOWED TO FAIL, and that is the whole point. A
+            # release that adds a column starts an image whose ORM selects that
+            # column, against a database where the migration adding it has not
+            # run yet; startup queries the table, the column is missing, and the
+            # app exits. That is not a broken release -- it is the ordering
+            # doing what it always does, and the deploy recovers from it below
+            # by running the migrations and restarting.
+            #
+            # It took production down once (2026-09-12) because the migrations
+            # were copied out of the RUNNING container: the app could not start
+            # without the migration, and the migration could not be reached
+            # without the app. Hence the extraction from the image below.
+            echo "Booting the application once (creates any missing base tables)..."
             sudo docker compose up -d fastapi_backend
 
-            echo "Waiting for the application to report healthy..."
+            echo "Giving it a moment to run create_all()..."
             APP_READY=0
-            for i in $(seq 1 40); do
+            for i in $(seq 1 20); do
               if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then
                 APP_READY=1
-                echo "Application is healthy."
+                echo "Application is healthy on the first boot."
                 break
               fi
-              echo "  ...waiting for app ($i/40)"
               sleep 3
             done
             if [ "$APP_READY" -ne 1 ]; then
-              echo "WARNING: app did not report healthy in time; running migrations anyway."
-              sudo docker compose logs --tail 50 fastapi_backend || true
+              echo "First boot did not report healthy -- expected when this release"
+              echo "adds a column. Migrations run next, then the app is restarted."
             fi
 
             echo "==== 7b. RUN SQL MIGRATIONS (idempotent, in filename order) ===="
-            # The migration .sql files ship inside the backend image at
-            # /app/migrations. Copy them out of the running container so we can
-            # feed each into psql. Files use IF NOT EXISTS, so re-running every
-            # deploy is safe.
+            # Taken from the IMAGE, not from a running container. The container
+            # may legitimately be dead at this point (see above), and the
+            # migrations are exactly what would revive it -- reaching them
+            # through it would be circular.
             rm -rf ./migrations
-            sudo docker compose cp fastapi_backend:/app/migrations ./migrations
+            MIG_CID=$(sudo docker create "${DOCKER_IMAGE}:latest")
+            sudo docker cp "${MIG_CID}:/app/migrations" ./migrations
+            sudo docker rm -f "${MIG_CID}" >/dev/null 2>&1 || true
             sudo chown -R "$(id -un)":"$(id -gn)" ./migrations 2>/dev/null || true
 
             if ls ./migrations/*.sql >/dev/null 2>&1; then
@@ -310,6 +323,29 @@ jobs:
               echo "All SQL migrations applied successfully."
             else
               echo "No .sql migration files found in the image — skipping migrations."
+            fi
+
+            echo "==== 7b-2. RESTART THE APP ONTO THE MIGRATED SCHEMA ===="
+            # The first boot may have died against the old schema. Now that the
+            # columns exist, restart and require health: this is the gate that
+            # decides whether the deploy succeeded, and a red X here is what
+            # should have been shown instead of a 502 nobody was watching for.
+            sudo docker compose up -d --force-recreate fastapi_backend
+
+            APP_READY=0
+            for i in $(seq 1 40); do
+              if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then
+                APP_READY=1
+                echo "Application is healthy on the migrated schema."
+                break
+              fi
+              echo "  ...waiting for app ($i/40)"
+              sleep 3
+            done
+            if [ "$APP_READY" -ne 1 ]; then
+              echo "ERROR: the application is still unhealthy AFTER migrations."
+              sudo docker compose logs --tail 80 fastapi_backend || true
+              exit 1
             fi
 
             echo "==== 7c. POST-DEPLOY SMOKE TEST ===="
