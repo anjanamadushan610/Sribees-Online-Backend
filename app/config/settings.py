@@ -238,7 +238,7 @@ class Settings(BaseSettings):
         default="",
         description=(
             "SribeesExpress origin, WITHOUT the /api/v1/ecommerce path "
-            "(e.g. https://api.sribeesexpress.lk). Point at mock_courier in dev."
+            "(e.g. https://devapiexpress.sribees.com for sandbox)."
         ),
     )
     courier_api_key: str = Field(

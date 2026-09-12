@@ -20,6 +20,7 @@ them belong on a checkout path:
 Prefix "/admin/courier" is applied by app/api/v1/router.py.
 """
 from datetime import datetime, timezone
+from uuid import UUID
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -32,12 +33,21 @@ from app.core.dependencies import get_current_admin, require_roles
 from app.models.branch import Branch
 from app.models.order import Order
 from app.schemas.courier import (
+    CourierCredentialsResponse,
+    CourierKeyStatus,
+    CourierKeyTestResult,
+    CourierKeyUpdate,
     CourierSweepResponse,
     CoverageSyncResponse,
     PickupLocationSyncResponse,
     PickupLocationSyncResult,
 )
-from app.services import courier_coverage_service, courier_sync_service
+from app.services.app_settings_service import AppSettingsService
+from app.services import (
+    courier_coverage_service,
+    courier_credentials,
+    courier_sync_service,
+)
 from app.services.courier_service import (
     CourierError,
     CourierService,
@@ -72,6 +82,43 @@ async def _recover_pickup_location_by_name(name: str) -> Optional[dict]:
         if (location.get("name") or "").strip().lower() == name.strip().lower():
             return location
     return None
+
+
+async def _register_one_pickup_location(db, branch, payload: dict) -> tuple[dict, str]:
+    """
+    Register (or update) one branch's pickup location, in that branch's own
+    SribeesExpress account.
+
+    The scope matters: a pickup location only exists inside the account that
+    created it, so a branch with its own merchant key must register in that
+    account. Registering it under the account-wide key instead would store an
+    id that resolves to nothing at booking time, and the failure would not
+    surface until a rider was already expected.
+
+    Returns ``(location, action)`` where action is created | updated | recovered.
+    """
+    async with courier_credentials.for_branch(db, branch.branch_id):
+        if branch.courier_pickup_location_id:
+            return (
+                await CourierService.update_pickup_location(
+                    branch.courier_pickup_location_id, **payload
+                ),
+                "updated",
+            )
+        try:
+            return await CourierService.create_pickup_location(**payload), "created"
+        except CourierError as exc:
+            if exc.code != "pickup_location_name_already_registered":
+                raise
+            # We lost the id (restored from a backup, or a previous sync stored
+            # nothing) but SribeesExpress still holds the location. Recover it
+            # by name rather than leaving the branch permanently unregistered --
+            # creating a second one is refused, by design, so this is the only
+            # way back.
+            recovered = await _recover_pickup_location_by_name(branch.name)
+            if recovered is None:
+                raise
+            return recovered, "recovered"
 
 
 @router.post("/pickup-locations/sync", response_model=PickupLocationSyncResponse)
@@ -123,28 +170,8 @@ async def sync_pickup_locations(
         }
 
         try:
-            if branch.courier_pickup_location_id:
-                result = await CourierService.update_pickup_location(
-                    branch.courier_pickup_location_id, **payload
-                )
-                action = "updated"
-            else:
-                try:
-                    result = await CourierService.create_pickup_location(**payload)
-                    action = "created"
-                except CourierError as exc:
-                    if exc.code != "pickup_location_name_already_registered":
-                        raise
-                    # We lost the id (restored from a backup, or a previous
-                    # sync stored nothing) but SribeesExpress still holds the
-                    # location. Recover the id by name rather than leaving the
-                    # branch permanently unregistered -- creating a second one
-                    # is refused, by design, so this is the only way back.
-                    result = await _recover_pickup_location_by_name(branch.name)
-                    if result is None:
-                        raise
-                    action = "recovered"
-        except (CourierUnavailableError, CourierError) as exc:
+            result, action = await _register_one_pickup_location(db, branch, payload)
+        except (CourierUnavailableError, CourierError, courier_credentials.CourierKeyMissingError) as exc:
             failed += 1
             logger.error(f"Pickup location sync failed for branch {branch.code}: {exc}")
             results.append(
@@ -193,6 +220,158 @@ async def run_reconciliation_sweep(
     return CourierSweepResponse(seen=seen, applied=applied)
 
 
+def _key_status(
+    *,
+    scope: str,
+    own_key: Optional[str],
+    effective_source: str,
+    branch=None,
+) -> CourierKeyStatus:
+    """Describe one slot for the UI without handing over the credential."""
+    return CourierKeyStatus(
+        scope=scope,
+        branch_id=str(branch.branch_id) if branch is not None else None,
+        branch_code=branch.code if branch is not None else None,
+        branch_name=branch.name if branch is not None else None,
+        is_set=bool(own_key),
+        masked=courier_credentials.mask(own_key),
+        environment=courier_credentials.environment_of(own_key),
+        source=effective_source,
+        set_at=(
+            branch.courier_api_key_set_at.isoformat()
+            if branch is not None and branch.courier_api_key_set_at
+            else None
+        ),
+        set_by=branch.courier_api_key_set_by if branch is not None else None,
+    )
+
+
+@router.get("/credentials", response_model=CourierCredentialsResponse)
+async def get_courier_credentials(
+    db: AsyncSession = Depends(get_db),
+    current_admin=_ACCOUNT_OPS,
+) -> CourierCredentialsResponse:
+    """
+    Which SribeesExpress account each branch books against.
+
+    Returns masks, never keys — there is no endpoint that reads a key back,
+    only ones that replace it. A branch with no key of its own is shown as
+    booking against the account, so the page answers "where does this branch's
+    parcel actually go?" rather than just "is a key set?".
+    """
+    account_raw = await courier_credentials.account_key(db)
+    db_row = await AppSettingsService.get_by_key(db, courier_credentials.ACCOUNT_KEY)
+    from_db = bool(db_row and db_row.is_active and (db_row.value or "").strip())
+
+    account = _key_status(
+        scope="account",
+        own_key=account_raw,
+        effective_source=("account" if from_db else "environment") if account_raw else "none",
+    )
+
+    branches = (
+        (await db.execute(select(Branch).order_by(Branch.code))).scalars().all()
+    )
+    rows = [
+        _key_status(
+            scope="branch",
+            own_key=branch.courier_api_key,
+            effective_source=(
+                "branch"
+                if branch.courier_api_key
+                else (("account" if from_db else "environment") if account_raw else "none")
+            ),
+            branch=branch,
+        )
+        for branch in branches
+    ]
+    return CourierCredentialsResponse(account=account, branches=rows)
+
+
+@router.put("/credentials", response_model=CourierCredentialsResponse)
+async def set_account_courier_key(
+    body: CourierKeyUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin=_ACCOUNT_OPS,
+) -> CourierCredentialsResponse:
+    """
+    Set the account-wide key — the one every branch without its own key books
+    against, and the one the sandbox → live switch turns.
+
+    Clearing it falls back to the deployment's own ``COURIER_API_KEY``, not to
+    "no courier": undoing a mistaken change should land somewhere that works.
+    """
+    actor = getattr(current_admin, "email", "unknown")
+    await courier_credentials.set_account_key(db, body.api_key, actor=actor)
+    return await get_courier_credentials(db=db, current_admin=current_admin)
+
+
+@router.put("/credentials/branches/{branch_id}", response_model=CourierCredentialsResponse)
+async def set_branch_courier_key(
+    branch_id: UUID,
+    body: CourierKeyUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin=_ACCOUNT_OPS,
+) -> CourierCredentialsResponse:
+    """
+    Give one branch its own SribeesExpress account, or take it back.
+
+    For a branch that signs with SribeesExpress in its own name: its parcels,
+    its pickup locations and its COD ledger all then live in that account.
+    After setting one, re-run the pickup-location sync — the branch's pickup
+    address exists in the old account, not the new one.
+    """
+    branch = (
+        await db.execute(select(Branch).where(Branch.branch_id == branch_id))
+    ).scalar_one_or_none()
+    if branch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found")
+
+    actor = getattr(current_admin, "email", "unknown")
+    await courier_credentials.set_branch_key(db, branch, body.api_key, actor=actor)
+    return await get_courier_credentials(db=db, current_admin=current_admin)
+
+
+@router.post("/credentials/test", response_model=CourierKeyTestResult)
+async def test_courier_key(
+    branch_id: Optional[UUID] = None,
+    db: AsyncSession = Depends(get_db),
+    current_admin=_ACCOUNT_OPS,
+) -> CourierKeyTestResult:
+    """
+    Make a real, side-effect-free call with whichever key serves this scope.
+
+    ``GET /ecommerce/coverage`` is the probe: it is a read, it needs a valid
+    key, and its row count is a useful answer in itself — a key that
+    authenticates but sees zero post offices is configured against an account
+    with no delivery areas, which fails later and much more confusingly.
+    """
+    try:
+        key = await courier_credentials.resolve(db, branch_id)
+    except courier_credentials.CourierKeyMissingError as exc:
+        return CourierKeyTestResult(ok=False, detail=str(exc))
+
+    try:
+        async with courier_credentials.using(key):
+            rows = await CourierService.get_coverage()
+    except (CourierUnavailableError, CourierError) as exc:
+        return CourierKeyTestResult(
+            ok=False,
+            environment=courier_credentials.environment_of(key),
+            detail=str(exc)[:300],
+        )
+
+    return CourierKeyTestResult(
+        ok=True,
+        environment=courier_credentials.environment_of(key),
+        post_offices=len(rows),
+        detail=(
+            f"Authenticated against the {courier_credentials.environment_of(key)} "
+            f"environment; {len(rows)} serviceable post office(s) visible."
+        ),
+    )
+
+
 @router.post("/coverage/sync", response_model=CoverageSyncResponse)
 async def sync_coverage(
     db: AsyncSession = Depends(get_db),
@@ -232,7 +411,8 @@ async def get_cod_balance(current_admin=_COURIER_READ) -> dict:
     with them.
     """
     try:
-        data = await CourierService.get_cod_balance()
+        async with courier_credentials.for_account(db):
+            data = await CourierService.get_cod_balance()
     except (CourierUnavailableError, CourierError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
     return {"success": True, "data": data}
@@ -253,7 +433,8 @@ async def list_remittances(
     statement.
     """
     try:
-        data = await CourierService.list_remittances(limit=limit, offset=offset)
+        async with courier_credentials.for_account(db):
+            data = await CourierService.list_remittances(limit=limit, offset=offset)
     except (CourierUnavailableError, CourierError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
     return {"success": True, "data": data}
@@ -274,7 +455,8 @@ async def get_remittance_shipments(
     webhook, since being remitted is not a shipment status change.
     """
     try:
-        rows = await CourierService.get_remittance_shipments(remittance_id)
+        async with courier_credentials.for_account(db):
+            rows = await CourierService.get_remittance_shipments(remittance_id)
     except (CourierUnavailableError, CourierError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
@@ -323,7 +505,10 @@ async def register_webhook_endpoint(
             detail="SribeesExpress only accepts an https:// webhook URL.",
         )
     try:
-        result = await CourierService.register_webhook_endpoint(url=url, description=description)
+        async with courier_credentials.for_account(db):
+            result = await CourierService.register_webhook_endpoint(
+                url=url, description=description
+            )
     except (CourierUnavailableError, CourierError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 

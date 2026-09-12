@@ -31,7 +31,7 @@ inventory, orders, analytics, marketing — is branch-aware.
 - 🔄 **Branch-to-branch stock transfers** — request → approve → ship → complete, with
   real stock movement between branches
 - 💳 **Payments** — Marx IPG gateway integration, wallet balance + cashback, COD
-- 🚚 **Courier integration** — real courier API + a local mock courier service for dev,
+- 🚚 **Courier integration** — SribeesExpress `/api/v1/ecommerce/*`, sandbox and live on the same code path,
   delivery-verification codes
 - 🤝 **Partner / referral program** — a separate portal (`partner-portal/`) for a
   professional referral team: multi-level commission tracking, self-registration,
@@ -72,7 +72,6 @@ SRIBEESonline/                     ← workspace root (local-only git history, n
 │   ├── docker/postgres/            # init.sql (extensions only) + ec2-docker-compose.yml
 │   ├── docker-compose.yml          # local dev stack (Postgres+pgvector, Redis, MinIO, backend)
 │   ├── docker-compose.prod.yml
-│   ├── mock_courier/               # standalone mock courier API for local dev
 │   ├── scripts/                    # setup.sh, smoke_test.py, seed helpers
 │   ├── tests/
 │   ├── .github/workflows/          # deploy.yml (lint/test), deploy-backend-ec2.yml (build+deploy)

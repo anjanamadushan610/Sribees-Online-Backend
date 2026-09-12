@@ -36,7 +36,11 @@ from app.schemas.order import (
     PaymentStatusEnum,
     to_courier_payment_method,
 )
-from app.services import courier_location_service, delivery_verification_service
+from app.services import (
+    courier_credentials,
+    courier_location_service,
+    delivery_verification_service,
+)
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.coupon_service import CouponService
@@ -648,12 +652,13 @@ class OrderService:
             Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"]))
             for i in priced_items
         )
-        quote = await CourierService.get_rate(
-            city_id=address.courier_city_id,
-            weight_kg=weight_kg,
-            payment_method=to_courier_payment_method(order.payment_method),
-            cod_amount=cod_amount,
-        )
+        async with courier_credentials.for_branch(db, order.branch_id):
+            quote = await CourierService.get_rate(
+                city_id=address.courier_city_id,
+                weight_kg=weight_kg,
+                payment_method=to_courier_payment_method(order.payment_method),
+                cod_amount=cod_amount,
+            )
         if not quote.serviceable:
             return None, f"SribeesExpress does not serve this city ({quote.reason})."
         return quote, None
@@ -764,9 +769,10 @@ class OrderService:
             order.courier_quote_expires_at = fresh.expires_at
 
         try:
-            result = await CourierService.book_shipment(
-                quote_id=quote_id, **booking_kwargs
-            )
+            async with courier_credentials.for_branch(db, order.branch_id):
+                result = await CourierService.book_shipment(
+                    quote_id=quote_id, **booking_kwargs
+                )
         except (CourierQuoteExpiredError, CourierQuoteAlreadyUsedError) as exc:
             # The customer already paid the OLD shipping_amount; we cannot
             # re-bill them for a higher quote now. Re-quote and book at the new
@@ -789,9 +795,10 @@ class OrderService:
                     await db.commit()
                     logger.error(f"Cannot re-quote order {order.order_number}: {failure}")
                     return failure
-                result = await CourierService.book_shipment(
-                    quote_id=fresh.quote_id, **booking_kwargs
-                )
+                async with courier_credentials.for_branch(db, order.branch_id):
+                    result = await CourierService.book_shipment(
+                        quote_id=fresh.quote_id, **booking_kwargs
+                    )
             except (CourierUnavailableError, CourierError) as exc:
                 order.courier_booking_status = "failed"
                 await db.commit()

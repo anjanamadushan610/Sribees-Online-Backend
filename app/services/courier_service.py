@@ -157,8 +157,20 @@ class CourierService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _headers() -> dict:
-        return {"X-Api-Key": settings.courier_api_key, "Content-Type": "application/json"}
+    def _headers(api_key: Optional[str] = None) -> dict:
+        """
+        Auth for one call. ``api_key`` is the resolved key for whoever this
+        call is on behalf of -- a branch with its own SribeesExpress account,
+        or the account-wide key. It falls back to the environment variable so
+        that callers with no branch context (and the tests) keep working
+        unchanged; see app/services/courier_credentials.py for the order.
+        """
+        from app.services import courier_credentials
+
+        return {
+            "X-Api-Key": api_key or courier_credentials.active_key() or settings.courier_api_key,
+            "Content-Type": "application/json",
+        }
 
     @staticmethod
     def _raise_for_error(response: httpx.Response, path: str) -> None:

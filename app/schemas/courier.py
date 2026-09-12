@@ -82,3 +82,59 @@ class CoverageSyncResponse(BaseModel):
             "re-pick an address, so these need following up, not ignoring."
         ),
     )
+
+
+class CourierKeyStatus(BaseModel):
+    """
+    One credential slot, described without ever revealing it.
+
+    ``masked`` keeps the ``sk_test_``/``sk_live_`` prefix on purpose: which
+    environment a key books in is the single most consequential thing about it,
+    and "did go-live actually happen?" should be answerable at a glance.
+    """
+
+    scope: str = Field(description="account | branch")
+    branch_id: Optional[str] = None
+    branch_code: Optional[str] = None
+    branch_name: Optional[str] = None
+    is_set: bool = Field(description="Whether this slot holds its own key.")
+    masked: Optional[str] = Field(default=None, description="e.g. sk_test_****HJ0")
+    environment: Optional[str] = Field(
+        default=None, description="test | live | unknown — derived from the key prefix."
+    )
+    source: str = Field(
+        description=(
+            "Where the key actually used for this scope comes from: "
+            "branch | account | environment | none."
+        )
+    )
+    set_at: Optional[str] = None
+    set_by: Optional[str] = None
+
+
+class CourierCredentialsResponse(BaseModel):
+    """The account slot plus one row per branch."""
+
+    account: CourierKeyStatus
+    branches: List[CourierKeyStatus]
+
+
+class CourierKeyUpdate(BaseModel):
+    """Set or clear a key. An empty/absent value clears the slot."""
+
+    api_key: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="The SribeesExpress merchant key. Empty clears this slot.",
+    )
+
+
+class CourierKeyTestResult(BaseModel):
+    """Outcome of a live call made with one scope's key."""
+
+    ok: bool
+    environment: Optional[str] = None
+    detail: str
+    post_offices: Optional[int] = Field(
+        default=None, description="Coverage rows the key could see, when the call succeeded."
+    )

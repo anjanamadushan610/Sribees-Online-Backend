@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import PostOfficeDirectory
 from app.models.user import Address
+from app.services import courier_credentials
 from app.services.courier_service import (
     CourierService,
 )
@@ -96,7 +97,12 @@ async def sync(db: AsyncSession) -> CoverageSyncResult:
     resolution, this is an operator-triggered action, so a failure is worth
     surfacing as an error rather than swallowing into a partial sync.
     """
-    rows = await CourierService.get_coverage()
+    # The account-wide key, deliberately: coverage describes one merchant
+    # account's serviceable area, and the directory it fills is shared by every
+    # branch. A branch key would rebuild that shared directory from a different
+    # account's view of the country.
+    async with courier_credentials.for_account(db):
+        rows = await CourierService.get_coverage()
     result = CoverageSyncResult(fetched=len(rows))
     if not rows:
         # An empty response means they have configured nothing at all. Treating

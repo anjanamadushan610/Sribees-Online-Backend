@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import settings
 from app.models.order import Order
 from app.schemas.order import OrderStatusEnum
+from app.services import courier_credentials
 from app.services.courier_service import (
     CourierError,
     CourierService,
@@ -188,7 +189,8 @@ async def refresh_order_tracking(db: AsyncSession, order: Order) -> Optional[dic
     if not order.courier_shipment_id:
         return None
     try:
-        payload = await CourierService.get_shipment(order.courier_shipment_id)
+        async with courier_credentials.for_branch(db, order.branch_id):
+            payload = await CourierService.get_shipment(order.courier_shipment_id)
     except (CourierUnavailableError, CourierError) as exc:
         logger.warning(f"Could not refresh tracking for order {order.order_number}: {exc}")
         return None

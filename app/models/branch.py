@@ -53,6 +53,15 @@ class Branch(Base):
     courier_pickup_synced_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # This branch's own SribeesExpress merchant key, for a branch that signs
+    # with them in its own name. NULL = book against the account-wide key.
+    # Plaintext at rest (see migration 051's security note); never returned by
+    # the API, only masked, and only a Super Admin can set it.
+    courier_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    courier_api_key_set_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    courier_api_key_set_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     # The branch's daily dispatch rounds, ordered by dispatch_time. Each entry is
     # {"label": str, "dispatch_time": "HH:MM" (24h, Asia/Colombo), "cutoff_minutes": int}.

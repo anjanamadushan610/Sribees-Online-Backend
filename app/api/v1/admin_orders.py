@@ -14,6 +14,7 @@ Prefix "/admin/orders" is applied by app/api/v1/router.py.
 """
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -34,11 +35,12 @@ from app.core.dependencies import (
 from app.models.admin import Admin
 from app.models.branch import Branch
 from app.models.escalation import EscalationStatus, OrderEscalation
-from app.models.order import Order
+from app.models.order import Order, OrderItem
 from app.models.user import User
 from app.schemas.escalation import EscalationCreate, EscalationUpdate
 from app.schemas.order import (
     OrderStatusEnum,
+    PaymentMethodEnum,
     OverrideOrderStatusRequest,
     RejectReturnRequest,
     ResolveReturnRequest,
@@ -868,6 +870,97 @@ async def request_courier_pickup(
             ),
         },
         "message": message,
+    }
+
+
+@router.get("/{order_id}/courier/label", response_model=dict)
+async def get_courier_label(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """
+    Everything a shipping label needs for this parcel.
+
+    SribeesExpress does have a label builder, but it lives on their staff API
+    behind a staff login (`POST /api/v1/shipments/labels`, OAuth2), not on the
+    merchant `/ecommerce` namespace our API key reaches — so a merchant cannot
+    call it. What it returns is not a rendered label either: it is exactly
+    these fields, with their own docs saying "the barcode is drawn client-side
+    from `waybill_id`, which keeps paper size, printer model and layout out of
+    the API".
+
+    So we render it ourselves, from data we already hold, and deliberately
+    mirror their `ShippingLabelOut` field-for-field. If they later expose the
+    builder to merchants, the printer component does not change — only where
+    the rows come from.
+
+    404 until the parcel is booked: a label without a waybill is a sticker
+    that routes nothing, and printing one is worse than printing none.
+    """
+    order = await _load_scoped_order(db, order_id, scope)
+    if not order.courier_shipment_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No parcel booked yet — request a pickup before printing a label.",
+        )
+
+    address = order.delivery_address
+    branch = (
+        await db.execute(select(Branch).where(Branch.branch_id == order.branch_id))
+    ).scalar_one_or_none() if order.branch_id else None
+
+    # Billed weight, resolved the same way the rate quote resolves it, so the
+    # number on the sticker is the number the parcel was priced at.
+    item_rows = (
+        await db.execute(
+            select(OrderItem.product_id, OrderItem.quantity).where(
+                OrderItem.order_id == order.order_id
+            )
+        )
+    ).all()
+    priced = await OrderService._attach_weights(
+        db,
+        [{"product_id": str(pid), "quantity": qty} for pid, qty in item_rows],
+    )
+    weight_kg = sum(
+        Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"])) for i in priced
+    )
+
+    is_cod = (order.payment_method or "").upper() == PaymentMethodEnum.COD.value
+    address_parts = [
+        address.address_line1,
+        address.address_line2,
+        address.post_office,
+        address.district,
+    ] if address else []
+
+    return {
+        "success": True,
+        "data": {
+            "waybill_id": order.courier_shipment_id,
+            "order_number": order.order_number,
+            "booked_at": order.created_at.isoformat() if order.created_at else None,
+            "sender_name": branch.name if branch else None,
+            "sender_phone": branch.phone if branch else None,
+            "origin_branch": branch.name if branch else None,
+            "recipient_name": (address.recipient_name if address else None) or "Customer",
+            "recipient_phone": (address.phone if address else None) or "",
+            "recipient_address": ", ".join([p for p in address_parts if p]),
+            "destination_city": address.courier_city_name if address else None,
+            "destination_district": address.district if address else None,
+            "postal_code": address.postal_code if address else None,
+            "weight_kg": str(weight_kg),
+            # The rider collects the ORDER total at the door, not the goods
+            # value -- delivery is part of what the customer owes.
+            "cod_amount": str(order.total_amount if is_cod else Decimal("0")),
+            "is_cod": is_cod,
+            "delivery_charge": str(order.shipping_amount or Decimal("0")),
+            "item_count": len(item_rows),
+            "status_name": order.courier_tracking_status,
+            "requires_handover_code": bool(order.courier_handover_required),
+            "tracking_url": order.courier_tracking_url,
+        },
     }
 
 
