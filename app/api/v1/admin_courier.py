@@ -30,13 +30,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.settings import settings
+from app.core.crypto import DecryptionError
 from app.core.dependencies import get_current_admin, require_roles
 from app.models.branch import Branch
 from app.models.order import Order
 from app.schemas.courier import (
-    CourierConfigStatus,
+    CourierBaseUrlUpdate,
+    CourierBranchKeyStatus,
     CourierCredentialsResponse,
-    CourierKeyStatus,
+    CourierEnvironmentConfig,
+    CourierEnvironmentUpdate,
     CourierKeyTestResult,
     CourierKeyUpdate,
     CourierSweepResponse,
@@ -44,7 +47,6 @@ from app.schemas.courier import (
     PickupLocationSyncResponse,
     PickupLocationSyncResult,
 )
-from app.services.app_settings_service import AppSettingsService
 from app.services import (
     courier_coverage_service,
     courier_credentials,
@@ -222,52 +224,81 @@ async def run_reconciliation_sweep(
     return CourierSweepResponse(seen=seen, applied=applied)
 
 
-def _config_status(account_raw: Optional[str]) -> CourierConfigStatus:
+async def _credentials_payload(db: AsyncSession) -> CourierCredentialsResponse:
     """
-    Describe this deployment's courier configuration.
+    Build the whole Settings → Courier picture: both environments, every
+    branch, and whether this deployment can verify a webhook at all.
 
-    Exists so "is production actually wired up?" is a dashboard question rather
-    than an SSH session. Nothing secret is returned: a boolean for each secret
-    and the base URL, which is not one.
+    Nothing secret is returned. Keys come back masked; the base URLs are not
+    secrets and are returned in full, because the most common misconfiguration
+    is a URL that already carries the path prefix the client appends itself —
+    and that shows up as a 404 on every call, which reads like an outage.
     """
-    base = (settings.courier_base_url or "").rstrip("/")
-    return CourierConfigStatus(
-        base_url=base or None,
-        # The client appends /api/v1/ecommerce itself. A base URL that already
-        # ends in it produces .../api/v1/ecommerce/api/v1/ecommerce/rates, and
-        # every call 404s -- which reads like an outage rather than a typo.
-        base_url_ok=bool(base) and not base.endswith("/api/v1/ecommerce"),
-        api_key_configured=bool(account_raw),
-        api_key_environment=courier_credentials.environment_of(account_raw),
+    account_env = await courier_credentials.account_environment(db)
+
+    any_unreadable = False
+
+    environments: list[CourierEnvironmentConfig] = []
+    for env in courier_credentials.ENVIRONMENTS:
+        base = await courier_credentials.base_url_for(db, env)
+        stored = await courier_credentials.raw_account_api_key(db, env)
+        key, unreadable = courier_credentials.try_decrypt(stored)
+        any_unreadable = any_unreadable or unreadable
+        environments.append(
+            CourierEnvironmentConfig(
+                environment=env,
+                base_url=base,
+                base_url_ok=bool(base) and not base.endswith("/api/v1/ecommerce"),
+                api_key_set=bool(stored),
+                api_key_masked=courier_credentials.mask(key),
+                api_key_environment=courier_credentials.environment_of(key),
+                api_key_unreadable=unreadable,
+                usable=bool(base and key),
+            )
+        )
+
+    rows: list[CourierBranchKeyStatus] = []
+    for branch in (await db.execute(select(Branch).order_by(Branch.code))).scalars().all():
+        effective = (branch.courier_environment or account_env).lower()
+        raw_test = getattr(branch, courier_credentials.BRANCH_KEY_COLUMN[courier_credentials.TEST])
+        raw_live = getattr(branch, courier_credentials.BRANCH_KEY_COLUMN[courier_credentials.LIVE])
+        test_key, test_bad = courier_credentials.try_decrypt(raw_test)
+        live_key, live_bad = courier_credentials.try_decrypt(raw_live)
+        any_unreadable = any_unreadable or test_bad or live_bad
+        own = test_key if effective == courier_credentials.TEST else live_key
+        rows.append(
+            CourierBranchKeyStatus(
+                branch_id=str(branch.branch_id),
+                branch_code=branch.code,
+                branch_name=branch.name,
+                environment_override=branch.courier_environment,
+                effective_environment=effective,
+                test_key_set=bool(raw_test),
+                test_key_masked=courier_credentials.mask(test_key),
+                live_key_set=bool(raw_live),
+                live_key_masked=courier_credentials.mask(live_key),
+                key_unreadable=test_bad or live_bad,
+                key_source="branch" if own else "account",
+                set_at=(
+                    branch.courier_api_key_set_at.isoformat()
+                    if branch.courier_api_key_set_at
+                    else None
+                ),
+                set_by=branch.courier_api_key_set_by,
+            )
+        )
+
+    return CourierCredentialsResponse(
+        environment=account_env,
+        environments=environments,
+        branches=rows,
         webhook_secret_configured=bool((settings.courier_webhook_secret or "").strip()),
-        webhook_tolerance_seconds=settings.courier_webhook_tolerance_seconds,
-        request_timeout_seconds=settings.courier_request_timeout_seconds,
-    )
-
-
-def _key_status(
-    *,
-    scope: str,
-    own_key: Optional[str],
-    effective_source: str,
-    branch=None,
-) -> CourierKeyStatus:
-    """Describe one slot for the UI without handing over the credential."""
-    return CourierKeyStatus(
-        scope=scope,
-        branch_id=str(branch.branch_id) if branch is not None else None,
-        branch_code=branch.code if branch is not None else None,
-        branch_name=branch.name if branch is not None else None,
-        is_set=bool(own_key),
-        masked=courier_credentials.mask(own_key),
-        environment=courier_credentials.environment_of(own_key),
-        source=effective_source,
-        set_at=(
-            branch.courier_api_key_set_at.isoformat()
-            if branch is not None and branch.courier_api_key_set_at
-            else None
+        any_key_unreadable=any_unreadable,
+        credential_encryption=(
+            "dedicated"
+            if (settings.credential_encryption_key or "").strip()
+            else "derived"
         ),
-        set_by=branch.courier_api_key_set_by if branch is not None else None,
     )
 
 
@@ -277,63 +308,95 @@ async def get_courier_credentials(
     current_admin=_ACCOUNT_OPS,
 ) -> CourierCredentialsResponse:
     """
-    Which SribeesExpress account each branch books against.
+    Which SribeesExpress account and environment each branch books against.
 
-    Returns masks, never keys — there is no endpoint that reads a key back,
-    only ones that replace it. A branch with no key of its own is shown as
-    booking against the account, so the page answers "where does this branch's
-    parcel actually go?" rather than just "is a key set?".
+    Masks only — there is no endpoint that reads a key back, just ones that
+    replace it. A branch with no key of its own is shown as booking against
+    the account, so this answers "where does this branch's parcel actually
+    go?" rather than merely "is a key set?".
     """
-    account_raw = await courier_credentials.account_key(db)
-    db_row = await AppSettingsService.get_by_key(db, courier_credentials.ACCOUNT_KEY)
-    from_db = bool(db_row and db_row.is_active and (db_row.value or "").strip())
-
-    account = _key_status(
-        scope="account",
-        own_key=account_raw,
-        effective_source=("account" if from_db else "environment") if account_raw else "none",
-    )
-
-    branches = (
-        (await db.execute(select(Branch).order_by(Branch.code))).scalars().all()
-    )
-    rows = [
-        _key_status(
-            scope="branch",
-            own_key=branch.courier_api_key,
-            effective_source=(
-                "branch"
-                if branch.courier_api_key
-                else (("account" if from_db else "environment") if account_raw else "none")
-            ),
-            branch=branch,
-        )
-        for branch in branches
-    ]
-    return CourierCredentialsResponse(
-        config=_config_status(account_raw), account=account, branches=rows
-    )
+    return await _credentials_payload(db)
 
 
-@router.put("/credentials", response_model=CourierCredentialsResponse)
+@router.put("/credentials/key", response_model=CourierCredentialsResponse)
 async def set_account_courier_key(
     body: CourierKeyUpdate,
     db: AsyncSession = Depends(get_db),
     current_admin=_ACCOUNT_OPS,
 ) -> CourierCredentialsResponse:
     """
-    Set the account-wide key — the one every branch without its own key books
-    against, and the one the sandbox → live switch turns.
+    Set the account-wide key for one environment — the key every branch
+    without its own books against.
 
-    Clearing it falls back to the deployment's own ``COURIER_API_KEY``, not to
-    "no courier": undoing a mistaken change should land somewhere that works.
+    Both environments are held at once, so going live later is a switch rather
+    than a re-entry. Stored encrypted; an empty value clears the slot.
     """
     actor = getattr(current_admin, "email", "unknown")
-    await courier_credentials.set_account_key(db, body.api_key, actor=actor)
-    return await get_courier_credentials(db=db, current_admin=current_admin)
+    try:
+        await courier_credentials.set_account_api_key(
+            db, body.environment, body.api_key, actor=actor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return await _credentials_payload(db)
 
 
-@router.put("/credentials/branches/{branch_id}", response_model=CourierCredentialsResponse)
+@router.put("/credentials/base-url", response_model=CourierCredentialsResponse)
+async def set_courier_base_url(
+    body: CourierBaseUrlUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin=_ACCOUNT_OPS,
+) -> CourierCredentialsResponse:
+    """
+    Set the SribeesExpress host for one environment.
+
+    Origin only. A URL that already carries ``/api/v1/ecommerce`` is refused
+    here rather than producing a doubled path and a 404 on every call later.
+    """
+    actor = getattr(current_admin, "email", "unknown")
+    try:
+        await courier_credentials.set_base_url(db, body.environment, body.base_url, actor=actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return await _credentials_payload(db)
+
+
+@router.put("/credentials/environment", response_model=CourierCredentialsResponse)
+async def set_courier_environment(
+    body: CourierEnvironmentUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin=_ACCOUNT_OPS,
+) -> CourierCredentialsResponse:
+    """
+    Switch every branch that has no override between sandbox and live.
+
+    This is go-live. Refused unless that environment is actually usable — a
+    switch to an environment with no key or no host would take every branch
+    offline at once, and the failure would surface as a customer's checkout
+    rather than as an error here.
+    """
+    if body.environment not in courier_credentials.ENVIRONMENTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"environment must be one of {courier_credentials.ENVIRONMENTS}",
+        )
+    base = await courier_credentials.base_url_for(db, body.environment)
+    key = await courier_credentials.account_api_key(db, body.environment)
+    if not base or not key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"The {body.environment} environment is not set up yet "
+                f"({'no base URL' if not base else 'no API key'}). "
+                "Switching to it would stop every branch from booking."
+            ),
+        )
+    actor = getattr(current_admin, "email", "unknown")
+    await courier_credentials.set_account_environment(db, body.environment, actor=actor)
+    return await _credentials_payload(db)
+
+
+@router.put("/credentials/branches/{branch_id}/key", response_model=CourierCredentialsResponse)
 async def set_branch_courier_key(
     branch_id: UUID,
     body: CourierKeyUpdate,
@@ -341,22 +404,50 @@ async def set_branch_courier_key(
     current_admin=_ACCOUNT_OPS,
 ) -> CourierCredentialsResponse:
     """
-    Give one branch its own SribeesExpress account, or take it back.
+    Give one branch its own SribeesExpress account for an environment, or take
+    it back.
 
     For a branch that signs with SribeesExpress in its own name: its parcels,
     its pickup locations and its COD ledger all then live in that account.
     After setting one, re-run the pickup-location sync — the branch's pickup
     address exists in the old account, not the new one.
     """
-    branch = (
-        await db.execute(select(Branch).where(Branch.branch_id == branch_id))
-    ).scalar_one_or_none()
-    if branch is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found")
-
+    branch = await _load_branch(db, branch_id)
     actor = getattr(current_admin, "email", "unknown")
-    await courier_credentials.set_branch_key(db, branch, body.api_key, actor=actor)
-    return await get_courier_credentials(db=db, current_admin=current_admin)
+    try:
+        await courier_credentials.set_branch_api_key(
+            db, branch, body.environment, body.api_key, actor=actor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return await _credentials_payload(db)
+
+
+@router.put(
+    "/credentials/branches/{branch_id}/environment",
+    response_model=CourierCredentialsResponse,
+)
+async def set_branch_courier_environment(
+    branch_id: UUID,
+    body: CourierEnvironmentUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin=_ACCOUNT_OPS,
+) -> CourierCredentialsResponse:
+    """
+    Pin one branch to an environment, or return it to following the account.
+
+    Exists for a staged go-live: the first branch books real parcels while the
+    rest stay in the sandbox.
+    """
+    branch = await _load_branch(db, branch_id)
+    actor = getattr(current_admin, "email", "unknown")
+    try:
+        await courier_credentials.set_branch_environment(
+            db, branch, body.environment, actor=actor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return await _credentials_payload(db)
 
 
 @router.post("/credentials/test", response_model=CourierKeyTestResult)
@@ -366,37 +457,51 @@ async def test_courier_key(
     current_admin=_ACCOUNT_OPS,
 ) -> CourierKeyTestResult:
     """
-    Make a real, side-effect-free call with whichever key serves this scope.
+    Make a real, side-effect-free call with whichever credentials serve this
+    scope.
 
     ``GET /ecommerce/coverage`` is the probe: it is a read, it needs a valid
     key, and its row count is a useful answer in itself — a key that
-    authenticates but sees zero post offices is configured against an account
-    with no delivery areas, which fails later and much more confusingly.
+    authenticates but sees zero post offices is pointed at an account with no
+    delivery areas, which fails later and far more confusingly.
     """
     try:
-        key = await courier_credentials.resolve(db, branch_id)
-    except courier_credentials.CourierKeyMissingError as exc:
+        target = await courier_credentials.resolve(db, branch_id)
+    except courier_credentials.CourierNotConfiguredError as exc:
+        return CourierKeyTestResult(ok=False, detail=str(exc))
+    except DecryptionError as exc:
         return CourierKeyTestResult(ok=False, detail=str(exc))
 
     try:
-        async with courier_credentials.using(key):
+        async with courier_credentials.using(target):
             rows = await CourierService.get_coverage()
     except (CourierUnavailableError, CourierError) as exc:
         return CourierKeyTestResult(
             ok=False,
-            environment=courier_credentials.environment_of(key),
+            environment=target.environment,
+            key_source=target.key_source,
             detail=str(exc)[:300],
         )
 
     return CourierKeyTestResult(
         ok=True,
-        environment=courier_credentials.environment_of(key),
+        environment=target.environment,
+        key_source=target.key_source,
         post_offices=len(rows),
         detail=(
-            f"Authenticated against the {courier_credentials.environment_of(key)} "
-            f"environment; {len(rows)} serviceable post office(s) visible."
+            f"Authenticated against the {target.environment} environment using the "
+            f"{target.key_source} key; {len(rows)} serviceable post office(s) visible."
         ),
     )
+
+
+async def _load_branch(db: AsyncSession, branch_id: UUID) -> Branch:
+    branch = (
+        await db.execute(select(Branch).where(Branch.branch_id == branch_id))
+    ).scalar_one_or_none()
+    if branch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found")
+    return branch
 
 
 @router.post("/coverage/sync", response_model=CoverageSyncResponse)

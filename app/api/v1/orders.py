@@ -25,7 +25,12 @@ from app.schemas.order import (
     UpdatePaymentStatusRequest,
     to_courier_payment_method,
 )
-from app.services import branch_service, courier_location_service, courier_sync_service
+from app.services import (
+    branch_service,
+    courier_credentials,
+    courier_location_service,
+    courier_sync_service,
+)
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.invoice_service import InvoiceService
@@ -402,17 +407,23 @@ async def quote_order(
             ):
                 city_id = await courier_location_service.resolve_address(db, address)
 
-        breakdown = await PricingService.quote(
-            items=items,
-            coupon=cart.get("coupon"),
-            use_wallet=data.use_wallet,
-            wallet_balance=wallet_balance,
-            delivery_fee=pricing_config["delivery_fee"],
-            tax_rate=pricing_config["tax_rate"],
-            city_id=city_id,
-            payment_method=to_courier_payment_method(data.payment_method),
-            wallet_amount=data.wallet_amount,
-        )
+        # The courier quote inside this call is made on behalf of the
+        # fulfilling branch -- a branch with its own SribeesExpress account
+        # must be priced by that account. Without a scope the rate call has no
+        # host or key and PricingService would silently fall back to the flat
+        # fee, so the scope is opened here where the branch is known.
+        async with courier_credentials.optional_for_branch(db, branch_id):
+            breakdown = await PricingService.quote(
+                items=items,
+                coupon=cart.get("coupon"),
+                use_wallet=data.use_wallet,
+                wallet_balance=wallet_balance,
+                delivery_fee=pricing_config["delivery_fee"],
+                tax_rate=pricing_config["tax_rate"],
+                city_id=city_id,
+                payment_method=to_courier_payment_method(data.payment_method),
+                wallet_amount=data.wallet_amount,
+            )
 
         item_count = sum(i.get("quantity", 0) for i in cart.get("items", []))
 

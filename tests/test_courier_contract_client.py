@@ -80,10 +80,14 @@ def test_an_unparseable_error_body_is_treated_as_an_outage():
 
 
 @pytest.mark.asyncio
-async def test_unconfigured_base_url_fails_fast_without_a_network_call(monkeypatch):
-    from app.config.settings import settings
-
-    monkeypatch.setattr(settings, "courier_base_url", "", raising=False)
+async def test_call_outside_a_credential_scope_fails_fast_without_a_network_call():
+    """
+    The host and key come from the enclosing credential scope, so a call made
+    outside one has nowhere to go. It must raise before touching the network:
+    an empty base URL would otherwise surface as httpx.InvalidURL from deep
+    inside the client, which the retry logic does not catch, and that would
+    break every checkout instead of falling back to the flat delivery fee.
+    """
     with pytest.raises(CourierUnavailableError):
         await CourierService.get_rate(city_id=42, weight_kg=Decimal("1"), payment_method="cod")
 

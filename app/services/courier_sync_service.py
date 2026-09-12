@@ -264,42 +264,46 @@ async def sweep(db: AsyncSession) -> Tuple[int, int]:
     limit = settings.courier_sync_batch_limit
 
     try:
-        while True:
-            rows = await CourierService.list_shipments(
-                updated_since=since, limit=limit, offset=offset
-            )
-            if not rows:
-                break
+        # Resolved once for the whole sweep rather than per page: this reads
+        # one account's shipments end to end, and re-deriving the credential
+        # on every page would be work with no answer that could change.
+        async with courier_credentials.for_account(db):
+            while True:
+                rows = await CourierService.list_shipments(
+                    updated_since=since, limit=limit, offset=offset
+                )
+                if not rows:
+                    break
 
-            for row in rows:
-                seen += 1
-                # Tracked over every row, including ones we do not own: an
-                # unmatched shipment still proves the cursor can move past it.
-                row_at = _parse_dt(row.get("updated_at"))
-                if row_at and (high_water is None or row_at > high_water):
-                    high_water = row_at
+                for row in rows:
+                    seen += 1
+                    # Tracked over every row, including ones we do not own: an
+                    # unmatched shipment still proves the cursor can move past it.
+                    row_at = _parse_dt(row.get("updated_at"))
+                    if row_at and (high_water is None or row_at > high_water):
+                        high_water = row_at
 
-                shipment_id = row.get("shipment_id")
-                if not shipment_id:
-                    continue
-                order = (
-                    await db.execute(
-                        select(Order).where(Order.courier_shipment_id == shipment_id)
-                    )
-                ).scalar_one_or_none()
-                if order is None:
-                    # A shipment we did not book, or one whose order was
-                    # deleted. Not an error -- the sandbox and production share
-                    # a host, and ops can book manually.
-                    logger.debug(f"Sweep: no order for shipment {shipment_id}")
-                    continue
-                if await apply_shipment_payload(db, order, row, commit=False):
-                    applied += 1
+                    shipment_id = row.get("shipment_id")
+                    if not shipment_id:
+                        continue
+                    order = (
+                        await db.execute(
+                            select(Order).where(Order.courier_shipment_id == shipment_id)
+                        )
+                    ).scalar_one_or_none()
+                    if order is None:
+                        # A shipment we did not book, or one whose order was
+                        # deleted. Not an error -- the sandbox and production share
+                        # a host, and ops can book manually.
+                        logger.debug(f"Sweep: no order for shipment {shipment_id}")
+                        continue
+                    if await apply_shipment_payload(db, order, row, commit=False):
+                        applied += 1
 
-            await db.commit()
-            if len(rows) < limit:
-                break
-            offset += limit
+                await db.commit()
+                if len(rows) < limit:
+                    break
+                offset += limit
     except (CourierUnavailableError, CourierError) as exc:
         await db.rollback()
         logger.error(f"Courier reconciliation sweep failed: {exc}")

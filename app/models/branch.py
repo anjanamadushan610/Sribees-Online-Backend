@@ -53,11 +53,17 @@ class Branch(Base):
     courier_pickup_synced_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # This branch's own SribeesExpress merchant key, for a branch that signs
-    # with them in its own name. NULL = book against the account-wide key.
-    # Plaintext at rest (see migration 051's security note); never returned by
-    # the API, only masked, and only a Super Admin can set it.
-    courier_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # This branch's own SribeesExpress merchant keys, for a branch that signs
+    # with them in its own name. Both environments are held at once so going
+    # live is a switch rather than a re-entry. Fernet-encrypted at rest
+    # (app/core/crypto.py); never returned by the API, only masked, and only a
+    # Super Admin can set them. NULL = book against the account-wide key.
+    courier_api_key_test: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    courier_api_key_live: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Pins this branch to 'test' or 'live' regardless of the account default.
+    # NULL = follow the account. Exists for a staged go-live: one branch books
+    # real parcels while the rest stay in the sandbox.
+    courier_environment: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     courier_api_key_set_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

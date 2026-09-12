@@ -84,85 +84,67 @@ class CoverageSyncResponse(BaseModel):
     )
 
 
-class CourierKeyStatus(BaseModel):
-    """
-    One credential slot, described without ever revealing it.
+class CourierEnvironmentConfig(BaseModel):
+    """One environment's account-wide setup, described without its secret."""
 
-    ``masked`` keeps the ``sk_test_``/``sk_live_`` prefix on purpose: which
-    environment a key books in is the single most consequential thing about it,
-    and "did go-live actually happen?" should be answerable at a glance.
-    """
-
-    scope: str = Field(description="account | branch")
-    branch_id: Optional[str] = None
-    branch_code: Optional[str] = None
-    branch_name: Optional[str] = None
-    is_set: bool = Field(description="Whether this slot holds its own key.")
-    masked: Optional[str] = Field(default=None, description="e.g. sk_test_****HJ0")
-    environment: Optional[str] = Field(
-        default=None, description="test | live | unknown — derived from the key prefix."
+    environment: str = Field(description="test | live")
+    base_url: Optional[str] = Field(
+        default=None, description="Origin only — the /api/v1/ecommerce path is appended."
     )
-    source: str = Field(
+    base_url_ok: bool = Field(
         description=(
-            "Where the key actually used for this scope comes from: "
-            "branch | account | environment | none."
+            "False when the stored URL already carries the /api/v1/ecommerce prefix the "
+            "client appends itself, which doubles the path and 404s every call."
         )
     )
+    api_key_set: bool
+    api_key_masked: Optional[str] = Field(default=None, description="e.g. sk_test_****HJ0")
+    api_key_environment: Optional[str] = Field(
+        default=None,
+        description=(
+            "The environment the key's own prefix claims. A mismatch with `environment` "
+            "means a live key is sitting in the sandbox slot, or the reverse."
+        ),
+    )
+    api_key_unreadable: bool = Field(
+        default=False,
+        description=(
+            "A key IS stored but will not decrypt -- the credential master key changed "
+            "since it was saved. Re-enter the key to repair it."
+        ),
+    )
+    usable: bool = Field(description="Whether a base URL and a readable key are both present.")
+
+
+class CourierBranchKeyStatus(BaseModel):
+    """One branch's own credentials and which environment it books in."""
+
+    branch_id: str
+    branch_code: str
+    branch_name: str
+    #: NULL when the branch follows the account default.
+    environment_override: Optional[str] = None
+    effective_environment: str
+    test_key_set: bool
+    test_key_masked: Optional[str] = None
+    live_key_set: bool
+    live_key_masked: Optional[str] = None
+    key_unreadable: bool = Field(
+        default=False, description="A stored key here will not decrypt -- re-enter it."
+    )
+    #: branch | account — where the key it actually books with comes from.
+    key_source: str
     set_at: Optional[str] = None
     set_by: Optional[str] = None
 
 
 class CourierCredentialsResponse(BaseModel):
-    """The deployment's own configuration, the account slot, and one row per branch."""
+    """Everything Settings → Courier needs, with no secret in it."""
 
-    config: "CourierConfigStatus"
-    account: CourierKeyStatus
-    branches: List[CourierKeyStatus]
-
-
-class CourierKeyUpdate(BaseModel):
-    """Set or clear a key. An empty/absent value clears the slot."""
-
-    api_key: Optional[str] = Field(
-        default=None,
-        max_length=200,
-        description="The SribeesExpress merchant key. Empty clears this slot.",
-    )
-
-
-class CourierKeyTestResult(BaseModel):
-    """Outcome of a live call made with one scope's key."""
-
-    ok: bool
-    environment: Optional[str] = None
-    detail: str
-    post_offices: Optional[int] = Field(
-        default=None, description="Coverage rows the key could see, when the call succeeded."
-    )
-
-
-class CourierConfigStatus(BaseModel):
-    """
-    What THIS deployment is configured with — the question that otherwise
-    needs an SSH session and a look at the server's .env.
-
-    Only presence and shape, never values. ``base_url`` is included in full
-    because it is not a secret and because getting it wrong is the single most
-    common misconfiguration: the client appends ``/api/v1/ecommerce`` itself,
-    so a base URL that already carries the prefix 404s every call.
-    """
-
-    base_url: Optional[str] = None
-    base_url_ok: bool = Field(
-        description=(
-            "False when the base URL already contains the /api/v1/ecommerce prefix "
-            "the client appends itself, which doubles the path."
-        )
-    )
-    api_key_configured: bool
-    api_key_environment: Optional[str] = Field(
-        default=None, description="test | live | unknown — from the account-wide key."
-    )
+    #: The environment branches book in unless they override it.
+    environment: str
+    environments: List[CourierEnvironmentConfig]
+    branches: List[CourierBranchKeyStatus]
     webhook_secret_configured: bool = Field(
         description=(
             "Whether inbound status pushes can be verified at all. False means every "
@@ -170,8 +152,51 @@ class CourierConfigStatus(BaseModel):
             "reconciliation sweep runs."
         )
     )
-    webhook_tolerance_seconds: int
-    request_timeout_seconds: float
+    any_key_unreadable: bool = Field(
+        default=False,
+        description=(
+            "At least one stored credential will not decrypt. Every affected slot has to "
+            "be re-entered; nothing can book until they are."
+        ),
+    )
+    credential_encryption: str = Field(
+        description=(
+            "dedicated — CREDENTIAL_ENCRYPTION_KEY is set. derived — it is being derived "
+            "from JWT_SECRET_KEY, which works but means rotating that secret would make "
+            "every stored key unreadable."
+        )
+    )
 
 
-CourierCredentialsResponse.model_rebuild()
+class CourierKeyUpdate(BaseModel):
+    """Set or clear one key. An empty value clears the slot."""
+
+    environment: str = Field(description="test | live")
+    api_key: Optional[str] = Field(default=None, max_length=200)
+
+
+class CourierBaseUrlUpdate(BaseModel):
+    """Set the host for one environment. Origin only."""
+
+    environment: str = Field(description="test | live")
+    base_url: Optional[str] = Field(default=None, max_length=500)
+
+
+class CourierEnvironmentUpdate(BaseModel):
+    """Switch the account default, or pin/unpin one branch."""
+
+    environment: Optional[str] = Field(
+        default=None, description="test | live. Null (branch only) = follow the account."
+    )
+
+
+class CourierKeyTestResult(BaseModel):
+    """Outcome of a live call made with one scope's credentials."""
+
+    ok: bool
+    environment: Optional[str] = None
+    key_source: Optional[str] = None
+    detail: str
+    post_offices: Optional[int] = Field(
+        default=None, description="Coverage rows the key could see, when the call succeeded."
+    )

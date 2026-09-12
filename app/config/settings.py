@@ -169,6 +169,16 @@ class Settings(BaseSettings):
         description="JWT secret key"
     )
     jwt_algorithm: str = Field(default="HS256", description="JWT algorithm")
+    credential_encryption_key: str = Field(
+        default="",
+        description=(
+            "Fernet key (urlsafe-base64, 32 bytes) that encrypts third-party credentials "
+            "stored in the database -- see app/core/crypto.py. Generate once with "
+            "Fernet.generate_key(). Left empty it is derived from JWT_SECRET_KEY, which "
+            "works but ties the two together: rotating the JWT secret would then make "
+            "stored credentials unreadable."
+        ),
+    )
     jwt_access_token_expire_minutes: int = Field(default=15, description="Access token expiry (minutes)")
     jwt_refresh_token_expire_days: int = Field(default=7, description="Refresh token expiry (days)")
 
@@ -234,17 +244,20 @@ class Settings(BaseSettings):
     # Courier Integration -- SribeesExpress
     # (see fastapi_backend/docs/SRIBEESEXPRESS_ECOMMERCE_API.md)
     # =========================================================================
-    courier_base_url: str = Field(
-        default="",
-        description=(
-            "SribeesExpress origin, WITHOUT the /api/v1/ecommerce path "
-            "(e.g. https://devapiexpress.sribees.com for sandbox)."
-        ),
-    )
-    courier_api_key: str = Field(
-        default="",
-        description="X-Api-Key we send on every /api/v1/ecommerce/* call (sk_live_... / sk_test_...)",
-    )
+    # The base URL and the merchant keys are NOT settings. They live in the
+    # database and are managed from Settings -> Courier, because:
+    #
+    #   * the sandbox -> live switch is the change most likely to be made under
+    #     time pressure, and requiring a redeploy for it is how a launch slips;
+    #   * a branch can hold its own SribeesExpress merchant account, and one
+    #     environment variable cannot express "per branch, per environment";
+    #   * the base URL is not a secret -- anyone holding a key already knows
+    #     which host it belongs to -- so there was never a reason for it to be
+    #     deployment config in the first place.
+    #
+    # The keys are encrypted at rest (app/core/crypto.py) with
+    # CREDENTIAL_ENCRYPTION_KEY above; see app/services/courier_credentials.py
+    # for how a call resolves branch -> account -> environment.
     courier_webhook_secret: str = Field(
         default="",
         description=(

@@ -288,17 +288,23 @@ class OrderService:
         ):
             city_id = await courier_location_service.resolve_address(db, address)
 
-        breakdown = await PricingService.quote(
-            items=priced_items,
-            coupon=coupon_for_pricing,
-            use_wallet=data.use_wallet,
-            wallet_balance=wallet_balance,
-            delivery_fee=pricing_config["delivery_fee"],
-            tax_rate=pricing_config["tax_rate"],
-            city_id=city_id,
-            payment_method=to_courier_payment_method(data.payment_method),
-            wallet_amount=data.wallet_amount,
-        )
+        # The courier quote inside this call is made on behalf of the
+        # fulfilling branch -- a branch with its own SribeesExpress account
+        # must be priced by that account. Without a scope the rate call has no
+        # host or key and PricingService would silently fall back to the flat
+        # fee, so the scope is opened here where the branch is known.
+        async with courier_credentials.optional_for_branch(db, branch_id):
+            breakdown = await PricingService.quote(
+                items=priced_items,
+                coupon=coupon_for_pricing,
+                use_wallet=data.use_wallet,
+                wallet_balance=wallet_balance,
+                delivery_fee=pricing_config["delivery_fee"],
+                tax_rate=pricing_config["tax_rate"],
+                city_id=city_id,
+                payment_method=to_courier_payment_method(data.payment_method),
+                wallet_amount=data.wallet_amount,
+            )
 
         wallet_deduction = breakdown.wallet_deduction
         cashback_earned = breakdown.cashback_earned
@@ -1235,7 +1241,8 @@ class OrderService:
     async def _cancel_courier_shipment(order: Order) -> None:
         """Best-effort courier-side cancellation; never blocks an order cancellation."""
         try:
-            await CourierService.cancel_shipment(order.courier_shipment_id)
+            async with courier_credentials.for_branch(db, order.branch_id):
+                await CourierService.cancel_shipment(order.courier_shipment_id)
             logger.info(f"Courier shipment cancelled for order {order.order_number}")
         except (CourierUnavailableError, CourierError) as exc:
             logger.warning(

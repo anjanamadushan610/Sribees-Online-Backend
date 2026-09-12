@@ -3,7 +3,7 @@ Courier Service — HTTP client for SribeesExpress's ``/api/v1/ecommerce/*`` API
 
 Contract: ``docs/SRIBEESEXPRESS_ECOMMERCE_API.md``. SRIBEESonline is the
 client; SribeesExpress exposes the API. Every call sends ``X-Api-Key:
-settings.courier_api_key``.
+the key of the enclosing ``courier_credentials`` scope.
 
 Three things about this contract shape the client:
 
@@ -34,7 +34,7 @@ from loguru import logger
 
 from app.config.settings import settings
 
-# The contract's own path prefix. settings.courier_base_url holds the origin
+# The contract's own path prefix. The active credential scope holds the origin
 # only, so that a deployment can point at a mock/staging host without also
 # having to know the API's internal layout.
 API_PREFIX = "/api/v1/ecommerce"
@@ -157,18 +157,34 @@ class CourierService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _headers(api_key: Optional[str] = None) -> dict:
+    def _target():
         """
-        Auth for one call. ``api_key`` is the resolved key for whoever this
-        call is on behalf of -- a branch with its own SribeesExpress account,
-        or the account-wide key. It falls back to the environment variable so
-        that callers with no branch context (and the tests) keep working
-        unchanged; see app/services/courier_credentials.py for the order.
+        Whose account this call acts as: host, key and environment.
+
+        Comes from the enclosing ``courier_credentials`` scope. There is no
+        fallback -- the host and key live in the database, not in deployment
+        config, so "no scope" means a caller forgot to open one rather than
+        "use the default", and guessing would send a merchant's parcels into
+        whichever account happened to be configured last.
+
+        Imported inside the function because courier_credentials imports this
+        module's exceptions.
         """
         from app.services import courier_credentials
 
+        target = courier_credentials.active_target()
+        if target is None:
+            raise CourierUnavailableError(
+                "No SribeesExpress credentials are in scope for this call. Wrap it in "
+                "courier_credentials.for_branch(...) or .for_account(...)."
+            )
+        return target
+
+    @staticmethod
+    def _headers(api_key: Optional[str] = None) -> dict:
+        """Auth for one call, from the active scope unless overridden."""
         return {
-            "X-Api-Key": api_key or courier_credentials.active_key() or settings.courier_api_key,
+            "X-Api-Key": api_key or CourierService._target().api_key,
             "Content-Type": "application/json",
         }
 
@@ -214,16 +230,14 @@ class CourierService:
         retried once after its ``Retry-After``, capped — a courier throttling
         us must not hold a customer's checkout request open indefinitely.
 
-        An unconfigured ``courier_base_url`` is treated as unavailable
-        immediately, without attempting a network call: an empty base URL
-        would otherwise raise ``httpx.InvalidURL``, which the except clause
-        below does not catch, and that would break EVERY checkout rather than
-        falling back to the flat delivery fee.
+        The host comes from the active credential scope. A call made outside
+        one raises ``CourierUnavailableError`` before touching the network:
+        an empty base URL would otherwise raise ``httpx.InvalidURL``, which
+        the except clause below does not catch, and that would break EVERY
+        checkout rather than falling back to the flat delivery fee.
         """
-        if not settings.courier_base_url:
-            raise CourierUnavailableError("courier_base_url is not configured")
-
-        url = f"{settings.courier_base_url.rstrip('/')}{API_PREFIX}{path}"
+        target = CourierService._target()
+        url = f"{target.base_url.rstrip('/')}{API_PREFIX}{path}"
         timeout = settings.courier_request_timeout_seconds
         last_exc: Optional[Exception] = None
 
@@ -231,7 +245,14 @@ class CourierService:
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.request(
-                        method, url, json=json, params=params, headers=CourierService._headers()
+                        method,
+                        url,
+                        json=json,
+                        params=params,
+                        headers={
+                            "X-Api-Key": target.api_key,
+                            "Content-Type": "application/json",
+                        },
                     )
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_exc = exc

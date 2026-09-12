@@ -23,6 +23,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import Address
+from app.services import courier_credentials
 from app.services.courier_service import (
     CourierError,
     CourierService,
@@ -48,12 +49,19 @@ async def resolve_address(db: AsyncSession, address: Address, *, commit: bool = 
     (it is NOT NULL), so in practice we should never see that reason.
     """
     try:
-        result = await CourierService.resolve_location(
-            post_office=address.post_office,
-            district=address.district,
-            province=address.province,
-        )
-    except (CourierUnavailableError, CourierError) as exc:
+        # The account scope, not a branch one: city ids are an account-level
+        # notion, and a saved address does not belong to a branch yet.
+        async with courier_credentials.for_account(db):
+            result = await CourierService.resolve_location(
+                post_office=address.post_office,
+                district=address.district,
+                province=address.province,
+            )
+    except (
+        CourierUnavailableError,
+        CourierError,
+        courier_credentials.CourierNotConfiguredError,
+    ) as exc:
         # Deliberately leaves courier_resolved_at untouched: this is "we don't
         # know yet", not "we asked and the answer was no". A later sweep
         # should retry it, and a NULL resolved_at is how it finds it.

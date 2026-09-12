@@ -52,15 +52,14 @@ async def test_unresolved_address_falls_back_to_flat_fee():
 
 
 @pytest.mark.asyncio
-async def test_unconfigured_courier_base_url_falls_back_to_flat_fee(monkeypatch):
+async def test_unconfigured_courier_falls_back_to_flat_fee():
     """
     The exact production scenario at first deploy: an address IS resolved
-    (city_id present) but COURIER_BASE_URL is still empty because no
-    SribeesExpress keys have been issued yet. Checkout must not break.
+    (city_id present) but no SribeesExpress credentials have been entered yet,
+    so there is no credential scope for the call to run in. Checkout must not
+    break -- it quotes the flat platform fee, exactly as it does during an
+    outage.
     """
-    from app.config.settings import settings
-
-    monkeypatch.setattr(settings, "courier_base_url", "", raising=False)
     breakdown = await PricingService.quote(
         _ITEMS,
         delivery_fee=Decimal("350"),
