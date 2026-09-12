@@ -29,10 +29,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
+from app.config.settings import settings
 from app.core.dependencies import get_current_admin, require_roles
 from app.models.branch import Branch
 from app.models.order import Order
 from app.schemas.courier import (
+    CourierConfigStatus,
     CourierCredentialsResponse,
     CourierKeyStatus,
     CourierKeyTestResult,
@@ -220,6 +222,29 @@ async def run_reconciliation_sweep(
     return CourierSweepResponse(seen=seen, applied=applied)
 
 
+def _config_status(account_raw: Optional[str]) -> CourierConfigStatus:
+    """
+    Describe this deployment's courier configuration.
+
+    Exists so "is production actually wired up?" is a dashboard question rather
+    than an SSH session. Nothing secret is returned: a boolean for each secret
+    and the base URL, which is not one.
+    """
+    base = (settings.courier_base_url or "").rstrip("/")
+    return CourierConfigStatus(
+        base_url=base or None,
+        # The client appends /api/v1/ecommerce itself. A base URL that already
+        # ends in it produces .../api/v1/ecommerce/api/v1/ecommerce/rates, and
+        # every call 404s -- which reads like an outage rather than a typo.
+        base_url_ok=bool(base) and not base.endswith("/api/v1/ecommerce"),
+        api_key_configured=bool(account_raw),
+        api_key_environment=courier_credentials.environment_of(account_raw),
+        webhook_secret_configured=bool((settings.courier_webhook_secret or "").strip()),
+        webhook_tolerance_seconds=settings.courier_webhook_tolerance_seconds,
+        request_timeout_seconds=settings.courier_request_timeout_seconds,
+    )
+
+
 def _key_status(
     *,
     scope: str,
@@ -285,7 +310,9 @@ async def get_courier_credentials(
         )
         for branch in branches
     ]
-    return CourierCredentialsResponse(account=account, branches=rows)
+    return CourierCredentialsResponse(
+        config=_config_status(account_raw), account=account, branches=rows
+    )
 
 
 @router.put("/credentials", response_model=CourierCredentialsResponse)

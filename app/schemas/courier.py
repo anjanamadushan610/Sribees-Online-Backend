@@ -113,8 +113,9 @@ class CourierKeyStatus(BaseModel):
 
 
 class CourierCredentialsResponse(BaseModel):
-    """The account slot plus one row per branch."""
+    """The deployment's own configuration, the account slot, and one row per branch."""
 
+    config: "CourierConfigStatus"
     account: CourierKeyStatus
     branches: List[CourierKeyStatus]
 
@@ -138,3 +139,39 @@ class CourierKeyTestResult(BaseModel):
     post_offices: Optional[int] = Field(
         default=None, description="Coverage rows the key could see, when the call succeeded."
     )
+
+
+class CourierConfigStatus(BaseModel):
+    """
+    What THIS deployment is configured with — the question that otherwise
+    needs an SSH session and a look at the server's .env.
+
+    Only presence and shape, never values. ``base_url`` is included in full
+    because it is not a secret and because getting it wrong is the single most
+    common misconfiguration: the client appends ``/api/v1/ecommerce`` itself,
+    so a base URL that already carries the prefix 404s every call.
+    """
+
+    base_url: Optional[str] = None
+    base_url_ok: bool = Field(
+        description=(
+            "False when the base URL already contains the /api/v1/ecommerce prefix "
+            "the client appends itself, which doubles the path."
+        )
+    )
+    api_key_configured: bool
+    api_key_environment: Optional[str] = Field(
+        default=None, description="test | live | unknown — from the account-wide key."
+    )
+    webhook_secret_configured: bool = Field(
+        description=(
+            "Whether inbound status pushes can be verified at all. False means every "
+            "webhook SribeesExpress sends is rejected, and orders only move when the "
+            "reconciliation sweep runs."
+        )
+    )
+    webhook_tolerance_seconds: int
+    request_timeout_seconds: float
+
+
+CourierCredentialsResponse.model_rebuild()
