@@ -36,12 +36,12 @@ router = APIRouter(tags=["User Addresses"])
 async def _build_response(db: AsyncSession, address: Address) -> AddressResponse:
     """
     Map an Address ORM row to the response schema, resolving the delivery branch
-    from its post office (hyper-local: the address dictates the serving branch).
+    from its postal city (hyper-local: the address dictates the serving branch).
     """
     mapping = None
     try:
-        mapping = await branch_service.resolve_branch_by_post_office(
-            db, address.post_office
+        mapping = await branch_service.resolve_branch_by_postal_city(
+            db, address.postal_city
         )
     except Exception as exc:  # pragma: no cover - resolution is best-effort
         logger.warning(f"Branch resolution failed for address {address.address_id}: {exc}")
@@ -53,7 +53,8 @@ async def _build_response(db: AsyncSession, address: Address) -> AddressResponse
         phone=address.phone,
         address_line1=address.address_line1,
         address_line2=address.address_line2,
-        post_office=address.post_office,
+        postal_city=address.postal_city,
+        post_office=address.postal_city,
         district=address.district,
         province=address.province,
         postal_code=address.postal_code,
@@ -61,6 +62,7 @@ async def _build_response(db: AsyncSession, address: Address) -> AddressResponse
         branch_id=str(mapping.branch_id) if mapping else None,
         branch_name=mapping.branch_name if mapping else None,
         is_serviceable=mapping is not None,
+        delivery_available=address.courier_postal_city_id is not None,
     )
 
 
@@ -136,20 +138,19 @@ async def create_address(
             phone=data.phone,
             address_line1=data.address_line1,
             address_line2=data.address_line2,
-            post_office=data.post_office,
+            postal_city=data.postal_city,
             district=data.district,
             province=data.province,
             postal_code=data.postal_code or "",
             is_default=data.is_default,
         )
+        # Matched against the synced SribeesExpress directory in the same
+        # transaction — a local lookup, so saving an address never waits on
+        # the courier.
+        await courier_location_service.resolve_address(db, address, commit=False)
         db.add(address)
         await db.commit()
         await db.refresh(address)
-
-        # Resolve the SribeesExpress city_id once, here, rather than on every
-        # checkout (contract section 5a). Best-effort -- an unresolved address
-        # still saves and simply quotes at the flat delivery fee.
-        await courier_location_service.resolve_address(db, address)
 
         return AddressDetailResponse(
             data=await _build_response(db, address),
@@ -174,10 +175,8 @@ async def update_address(
     """Update one of the authenticated user's addresses (partial)."""
     address = await _get_owned_address(db, address_id, current_user.user_id)
 
-    # Captured before the fields are overwritten -- a changed post office or
-    # district invalidates the cached courier city_id.
     location_changed = (
-        (data.post_office is not None and data.post_office != address.post_office)
+        (data.postal_city is not None and data.postal_city != address.postal_city)
         or (data.district is not None and data.district != address.district)
     )
 
@@ -195,8 +194,8 @@ async def update_address(
             address.address_line1 = data.address_line1
         if data.address_line2 is not None:
             address.address_line2 = data.address_line2
-        if data.post_office is not None:
-            address.post_office = data.post_office
+        if data.postal_city is not None:
+            address.postal_city = data.postal_city
         if data.district is not None:
             address.district = data.district
         if data.province is not None:
@@ -206,16 +205,13 @@ async def update_address(
         if data.is_default is not None:
             address.is_default = data.is_default
 
+        # A moved address must not keep the old town's courier id — it would
+        # quote and book delivery to the wrong place.
+        if location_changed:
+            await courier_location_service.resolve_address(db, address, commit=False)
+
         await db.commit()
         await db.refresh(address)
-
-        # Only re-resolve when the location itself moved (or the last answer
-        # was one SribeesExpress ops can flip). Renaming an address or fixing
-        # a phone number must not spend a courier call.
-        if courier_location_service.needs_resolution(
-            address, post_office_changed=location_changed
-        ):
-            await courier_location_service.resolve_address(db, address)
 
         return AddressDetailResponse(
             data=await _build_response(db, address),

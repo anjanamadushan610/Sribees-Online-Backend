@@ -576,7 +576,7 @@ async def get_customer_profile(
                         "address_id": str(addr.address_id),
                         "address_line1": addr.address_line1,
                         "address_line2": addr.address_line2,
-                        "post_office": addr.post_office,
+                        "postal_city": addr.postal_city,
                         "district": addr.district,
                         "postal_code": addr.postal_code,
                         "province": addr.province,

@@ -40,15 +40,60 @@ from app.services.courier_service import (
 from app.services.delivery_verification_service import DeliveryVerificationService
 
 # SribeesExpress's external status vocabulary (contract section 8) mapped onto
-# our own order statuses. Only the transitions that mean something to a
-# customer are mapped: booked/picked_up/in_transit all sit under our existing
-# "shipped", and `cancelled`/`returned` are deliberately absent — a courier
-# cancelling a parcel must not silently cancel a paid order, that is an ops
-# decision with refund consequences.
+# our own order statuses. Once a parcel is ready for pickup the courier drives
+# the order: their rider collecting it is our "handed to courier", and so on to
+# the door. `booked` maps to nothing (booking is what READY_FOR_PICKUP already
+# records), and `cancelled`/`returned` are deliberately absent — a courier
+# cancelling or returning a parcel must not silently cancel or refund a paid
+# order; that is an ops decision with refund consequences.
 STATUS_MAP = {
+    "picked_up": OrderStatusEnum.HANDED_TO_COURIER,
+    "in_transit": OrderStatusEnum.SHIPPED,
     "out_for_delivery": OrderStatusEnum.OUT_FOR_DELIVERY,
     "delivered": OrderStatusEnum.DELIVERED,
+    "failed": OrderStatusEnum.DELIVERY_FAILED,
 }
+
+# Our statuses in delivery order, for "is this courier update news or history".
+_DELIVERY_PROGRESS = (
+    "pending",
+    "confirmed",
+    "processing",
+    "packing",
+    "packed",
+    "ready_for_pickup",
+    "handed_to_courier",
+    "shipped",
+    "out_for_delivery",
+    "delivered",
+)
+
+# Nothing the courier reports moves an order out of these: it has been
+# delivered, cancelled, sent back, or is in a returns/refund conversation.
+_SETTLED = frozenset(
+    {"delivered", "cancelled", "rto_initiated", "return_requested", "return_approved", "refunded"}
+)
+
+
+def should_mirror(current: str, target: str) -> bool:
+    """
+    Whether a courier-reported status should move our order from ``current``.
+
+    Forward only. Webhooks arrive out of order and the sweep replays history, so
+    a late ``picked_up`` must not pull an order that is already
+    ``out_for_delivery`` back to ``handed_to_courier``. Two sideways steps are
+    real, though: a failed attempt (``delivery_failed``) from anywhere on the
+    road, and a redispatch or late delivery out of it.
+    """
+    if current == target or current in _SETTLED:
+        return False
+    if target == OrderStatusEnum.DELIVERY_FAILED.value:
+        return current in ("ready_for_pickup", "handed_to_courier", "shipped", "out_for_delivery")
+    if current == OrderStatusEnum.DELIVERY_FAILED.value:
+        return target in ("out_for_delivery", "delivered")
+    if current not in _DELIVERY_PROGRESS or target not in _DELIVERY_PROGRESS:
+        return False
+    return _DELIVERY_PROGRESS.index(target) > _DELIVERY_PROGRESS.index(current)
 
 # How far back the next sweep re-reads. Covers a row stamped before our query
 # ran but committed after it -- see sweep()'s docstring.
@@ -167,13 +212,24 @@ async def apply_shipment_payload(
     # written when update_status fires its side effects (notifications,
     # cashback crediting).
     mapped = STATUS_MAP.get(status or "")
-    if mapped is not None and order.status != mapped.value:
+    if mapped is not None and should_mirror(order.status, mapped.value):
         from app.services.order_service import OrderService
 
         await OrderService.update_status(
             db, order, mapped, changed_by="SribeesExpress", notes=f"Courier reported {status}"
         )
         changed = True
+        # From pickup onwards the courier is what moves the order, so it is
+        # also what tells the customer. Best-effort: a failed push must not
+        # un-apply a status the courier really reported.
+        try:
+            from app.services.notification_service import NotificationService
+
+            await NotificationService.notify_order_status(
+                db, user_id=order.user_id, order_number=order.order_number, status=mapped.value
+            )
+        except Exception as exc:  # pragma: no cover - notification is best-effort
+            logger.warning(f"Courier status notification failed for {order.order_number}: {exc}")
     elif changed and commit:
         await db.commit()
 
@@ -191,7 +247,12 @@ async def refresh_order_tracking(db: AsyncSession, order: Order) -> Optional[dic
     try:
         async with courier_credentials.for_branch(db, order.branch_id):
             payload = await CourierService.get_shipment(order.courier_shipment_id)
-    except (CourierUnavailableError, CourierError) as exc:
+    except (
+        CourierUnavailableError,
+        CourierError,
+        courier_credentials.CourierNotConfiguredError,
+        courier_credentials.DecryptionError,
+    ) as exc:
         logger.warning(f"Could not refresh tracking for order {order.order_number}: {exc}")
         return None
 
@@ -218,98 +279,122 @@ async def _set_cursor(db: AsyncSession, *, synced_at: Optional[datetime], error:
     await db.commit()
 
 
-async def sweep(db: AsyncSession) -> Tuple[int, int]:
+async def _sweep_one_account(
+    db: AsyncSession,
+    target: courier_credentials.CourierTarget,
+    since: Optional[datetime],
+) -> Tuple[int, int, Optional[datetime]]:
+    """One account's shipments since ``since``: (seen, applied, newest updated_at)."""
+    high_water: Optional[datetime] = None
+    seen = 0
+    applied = 0
+    offset = 0
+    limit = settings.courier_sync_batch_limit
+
+    # Resolved once for the whole account rather than per page: re-deriving the
+    # credential on every page would be work with no answer that could change.
+    async with courier_credentials.using(target):
+        while True:
+            rows = await CourierService.list_shipments(
+                updated_since=since, limit=limit, offset=offset
+            )
+            if not rows:
+                break
+
+            for row in rows:
+                seen += 1
+                # Tracked over every row, including ones we do not own: an
+                # unmatched shipment still proves the cursor can move past it.
+                row_at = _parse_dt(row.get("updated_at"))
+                if row_at and (high_water is None or row_at > high_water):
+                    high_water = row_at
+
+                shipment_id = row.get("shipment_id")
+                if not shipment_id:
+                    continue
+                order = (
+                    await db.execute(
+                        select(Order).where(Order.courier_shipment_id == shipment_id)
+                    )
+                ).scalar_one_or_none()
+                if order is None:
+                    # A shipment we did not book, or one whose order was
+                    # deleted. Not an error -- the sandbox and production share
+                    # a host, and ops can book manually.
+                    logger.debug(f"Sweep: no order for shipment {shipment_id}")
+                    continue
+                if await apply_shipment_payload(db, order, row, commit=False):
+                    applied += 1
+
+            await db.commit()
+            if len(rows) < limit:
+                break
+            offset += limit
+    return seen, applied, high_water
+
+
+async def sweep(db: AsyncSession) -> Tuple[int, int, int]:
     """
-    Reconciliation poll (contract section 7a). Returns (rows_seen, rows_applied).
+    Reconciliation poll (contract section 7a), across every SribeesExpress
+    account we book into. Returns (rows_seen, rows_applied, accounts_swept).
 
-    Pages ``GET /ecommerce/shipments?updated_since=<cursor>`` and applies every
-    row to the matching order. The cursor only advances on a clean pass: a
-    partial failure re-reads the same window next time, which is safe because
-    applying a payload is idempotent, and is much better than skipping a
-    ``delivered`` we never saw.
+    **Every account, not just the account key.** A branch holding its own key
+    is its own SribeesExpress client, and its shipments are invisible to any
+    other key. Sweeping only the account key would leave every branch-key
+    parcel stuck at "ready for pickup" forever unless a webhook happened to
+    arrive — and a COD ``delivered`` is exactly the push that can be lost.
 
-    **The cursor is the newest ``updated_at`` we actually saw**, which
-    SribeesExpress now serializes on every shipment row (they fixed the
-    missing field in round 2). That is deliberately *their* clock, not ours:
-    a row they update after this sweep is stamped later than anything we just
-    read, so it cannot slip through the boundary, and no assumption about two
-    machines agreeing on the time is involved.
+    Pages ``GET /ecommerce/shipments?updated_since=<cursor>`` for each account
+    and applies every row to the matching order. The cursor only advances on a
+    clean pass over every account: a partial failure re-reads the same window
+    next time, which is safe because applying a payload is idempotent, and is
+    much better than skipping a ``delivered`` we never saw.
 
-    ``updated_since`` is inclusive (``>=``), so replaying the cursor re-reads
-    exactly the boundary rows — cheap, and applying a payload twice is a
-    no-op.
+    **The cursor is the newest ``updated_at`` seen — the oldest of those
+    across accounts.** It is SribeesExpress's clock, not ours, so no assumption
+    about two machines agreeing on the time is involved; and taking the minimum
+    means a quiet account cannot drag the cursor past a busy one's rows.
+    ``updated_since`` is inclusive (``>=``), so the boundary is re-read, which
+    is cheap and idempotent.
 
     Two guards remain:
 
     * A short rewind on the next read. A row can be *stamped* before our query
-      runs but only become *visible* after it commits, and that row would
-      otherwise sit forever just behind the cursor. Re-reading a minute of
-      history each sweep is a trivial price for closing that.
-    * A fallback to our own start-of-run clock when a page carries no
-      ``updated_at`` at all. That should not happen any more, but if the field
-      ever disappears again the sweep degrades to the old clock-based
-      behaviour instead of freezing its cursor and re-reading the entire
-      account forever.
+      runs but only become *visible* after it commits.
+    * A fallback to our own start-of-run clock for an account whose pages carry
+      no ``updated_at`` at all, so the cursor cannot freeze.
     """
     # Captured BEFORE the first request, for the fallback path only: using the
     # time the sweep *finished* would silently skip anything updated mid-run.
     started_at = datetime.now(timezone.utc)
     cursor = await _get_cursor(db)
     since = (cursor - CURSOR_REWIND) if cursor else None
-    high_water: Optional[datetime] = None
 
-    seen = 0
-    applied = 0
-    offset = 0
-    limit = settings.courier_sync_batch_limit
+    targets = await courier_credentials.all_targets(db)
+    if not targets:
+        await _set_cursor(db, synced_at=None, error="No SribeesExpress account is configured")
+        return 0, 0, 0
 
-    try:
-        # Resolved once for the whole sweep rather than per page: this reads
-        # one account's shipments end to end, and re-deriving the credential
-        # on every page would be work with no answer that could change.
-        async with courier_credentials.for_account(db):
-            while True:
-                rows = await CourierService.list_shipments(
-                    updated_since=since, limit=limit, offset=offset
-                )
-                if not rows:
-                    break
+    seen = applied = 0
+    marks: list[datetime] = []
+    for target in targets:
+        try:
+            account_seen, account_applied, high_water = await _sweep_one_account(db, target, since)
+        except (CourierUnavailableError, CourierError) as exc:
+            await db.rollback()
+            logger.error(
+                f"Courier reconciliation sweep failed for the {target.key_source} account "
+                f"({target.environment}): {exc}"
+            )
+            await _set_cursor(db, synced_at=None, error=str(exc)[:500])
+            return seen, applied, len(targets)
+        seen += account_seen
+        applied += account_applied
+        marks.append(high_water or started_at)
 
-                for row in rows:
-                    seen += 1
-                    # Tracked over every row, including ones we do not own: an
-                    # unmatched shipment still proves the cursor can move past it.
-                    row_at = _parse_dt(row.get("updated_at"))
-                    if row_at and (high_water is None or row_at > high_water):
-                        high_water = row_at
-
-                    shipment_id = row.get("shipment_id")
-                    if not shipment_id:
-                        continue
-                    order = (
-                        await db.execute(
-                            select(Order).where(Order.courier_shipment_id == shipment_id)
-                        )
-                    ).scalar_one_or_none()
-                    if order is None:
-                        # A shipment we did not book, or one whose order was
-                        # deleted. Not an error -- the sandbox and production share
-                        # a host, and ops can book manually.
-                        logger.debug(f"Sweep: no order for shipment {shipment_id}")
-                        continue
-                    if await apply_shipment_payload(db, order, row, commit=False):
-                        applied += 1
-
-                await db.commit()
-                if len(rows) < limit:
-                    break
-                offset += limit
-    except (CourierUnavailableError, CourierError) as exc:
-        await db.rollback()
-        logger.error(f"Courier reconciliation sweep failed: {exc}")
-        await _set_cursor(db, synced_at=None, error=str(exc)[:500])
-        return seen, applied
-
-    await _set_cursor(db, synced_at=high_water or started_at, error=None)
-    logger.info(f"Courier reconciliation sweep: {seen} shipment(s) seen, {applied} applied")
-    return seen, applied
+    await _set_cursor(db, synced_at=min(marks), error=None)
+    logger.info(
+        f"Courier reconciliation sweep: {seen} shipment(s) seen, {applied} applied "
+        f"across {len(targets)} account(s)"
+    )
+    return seen, applied, len(targets)

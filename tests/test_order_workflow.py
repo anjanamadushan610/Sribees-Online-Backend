@@ -16,7 +16,8 @@ def test_all_statuses_matches_schema_enum():
         ("pending", "cancelled"),
         ("confirmed", "packing"),
         ("packing", "packed"),
-        ("packed", "handed_to_courier"),
+        ("packed", "ready_for_pickup"),
+        ("ready_for_pickup", "cancelled"),
         ("handed_to_courier", "shipped"),
         ("shipped", "out_for_delivery"),
         ("out_for_delivery", "delivered"),
@@ -37,7 +38,13 @@ def test_manager_allowed_transitions(current, target):
     [
         ("pending", "delivered"),       # skips the workflow
         ("confirmed", "shipped"),       # skips packing
-        ("packed", "delivered"),        # skips handover + ship
+        ("packed", "delivered"),        # skips pickup + ship
+        # The branch no longer hands over by hand: a packed parcel is booked
+        # (ready_for_pickup) and the courier's rider collecting it is what
+        # makes it handed_to_courier.
+        ("packed", "handed_to_courier"),
+        ("ready_for_pickup", "handed_to_courier"),
+        ("ready_for_pickup", "delivered"),
         ("delivered", "packing"),       # backwards from terminal
         ("cancelled", "confirmed"),     # un-cancel is override-only
     ],
@@ -61,6 +68,12 @@ def test_actions_carry_labels_and_kind():
     assert {a["status"] for a in actions} == {"delivered", "delivery_failed"}
     assert all({"status", "label", "kind"} <= a.keys() for a in actions)
     assert any(a["kind"] == "danger" for a in actions)
+
+
+def test_packed_offers_exactly_the_courier_pickup():
+    [action] = wf.allowed_actions("packed", "branch_manager")
+    assert action["status"] == "ready_for_pickup"
+    assert action["kind"] == "primary"
 
 
 def test_terminal_states_have_no_actions():

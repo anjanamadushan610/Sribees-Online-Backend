@@ -34,16 +34,16 @@ from app.schemas.branch import (
     # Triplet-based resolution
     LocationResolveRequest,
     LocationResolveResponse,
-    PostOfficeBranchMappingCreate,
-    PostOfficeBranchMappingListResponse,
-    PostOfficeBranchMappingResponse,
-    PostOfficeBranchMappingUpdate,
-    PostOfficeItem,
-    PostOfficeListResponse,
+    PostalCityBranchMappingCreate,
+    PostalCityBranchMappingListResponse,
+    PostalCityBranchMappingResponse,
+    PostalCityBranchMappingUpdate,
+    PostalCityItem,
+    PostalCityListResponse,
     # Location discovery
     ProvinceItem,
     ProvinceListResponse,
-    ServedPostOfficesResponse,
+    ServedPostalCitiesResponse,
 )
 
 __all__ = [
@@ -66,24 +66,24 @@ __all__ = [
     "BranchCreate",
     "BranchUpdate",
     "BranchResponse",
-    # Post Office mapping schemas
-    "PostOfficeBranchMappingCreate",
-    "PostOfficeBranchMappingUpdate",
-    "PostOfficeBranchMappingResponse",
-    "PostOfficeBranchMappingListResponse",
+    # Postal city mapping schemas
+    "PostalCityBranchMappingCreate",
+    "PostalCityBranchMappingUpdate",
+    "PostalCityBranchMappingResponse",
+    "PostalCityBranchMappingListResponse",
     # Branch resolution schemas
     "BranchResolveRequest",
     "BranchResolveResponse",
     "BranchContextResponse",
     "BranchContextClearedResponse",
-    "ServedPostOfficesResponse",
+    "ServedPostalCitiesResponse",
     # Location discovery schemas
     "ProvinceItem",
     "ProvinceListResponse",
     "DistrictItem",
     "DistrictListResponse",
-    "PostOfficeItem",
-    "PostOfficeListResponse",
+    "PostalCityItem",
+    "PostalCityListResponse",
     # Triplet-based resolution schemas
     "LocationResolveRequest",
     "LocationResolveResponse",

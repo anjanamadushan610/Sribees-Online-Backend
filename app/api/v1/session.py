@@ -23,16 +23,7 @@ from app.schemas.branch import BranchResolveRequest
 from app.services import branch_service
 
 router = APIRouter(tags=["Session"])
-
-
-def _context_payload(context: dict) -> dict:
-    return {
-        "branchId": context["branch_id"],
-        "branchName": context["branch_name"],
-        "postOffice": context["post_office"],
-        "deliveryInfo": context.get("delivery_info", {}),
-        "resolvedAt": context["resolved_at"],
-    }
+_context_payload = branch_service.context_payload
 
 
 @router.post(
@@ -41,7 +32,7 @@ def _context_payload(context: dict) -> dict:
     status_code=status.HTTP_200_OK,
     summary="Set the active delivery location from a saved address",
     description=(
-        "Resolves the given address's post office to its serving branch and "
+        "Resolves the given address's postal city to its serving branch and "
         "stores the branch in the customer's Redis session. All subsequent "
         "product/pricing calls are then scoped to this branch."
     ),

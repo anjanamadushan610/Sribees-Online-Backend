@@ -210,11 +210,11 @@ class LocationNotServedError(AppException):
 
     def __init__(
         self,
-        post_office: Optional[str] = None,
+        postal_city: Optional[str] = None,
         district: Optional[str] = None,
         province: Optional[str] = None,
     ):
-        parts = [v for v in (post_office, district, province) if v]
+        parts = [v for v in (postal_city, district, province) if v]
         location_label = ", ".join(parts) if parts else "selected location"
 
         super().__init__(
@@ -225,7 +225,9 @@ class LocationNotServedError(AppException):
             ),
             error_code="LOCATION_NOT_SERVED",
             details={
-                "post_office": post_office,
+                "postal_city": postal_city,
+                # Legacy key: installed app builds read it (see branch_service).
+                "post_office": postal_city,
                 "district": district,
                 "province": province,
             },

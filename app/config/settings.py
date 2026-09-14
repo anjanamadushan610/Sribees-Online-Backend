@@ -85,10 +85,18 @@ class Settings(BaseSettings):
     # =========================================================================
     # Order Pricing
     # =========================================================================
-    flat_delivery_fee: float = Field(
-        default=350.0,
-        ge=0.0,
-        description="Flat delivery fee applied to non-empty carts (LKR)",
+    # No delivery fee here: the delivery charge is SribeesExpress's quote for
+    # each parcel (app/services/pricing_service.py). A FLAT_DELIVERY_FEE left in
+    # an environment file is ignored, not an error.
+    cart_delivery_quote_cache_seconds: int = Field(
+        default=600,
+        ge=0,
+        le=1500,
+        description=(
+            "How long the cart screen reuses a SribeesExpress delivery quote for the same "
+            "account, postal city, weight and payment method. Kept under the courier's "
+            "30-minute quote lifetime; checkout always asks for a fresh one."
+        ),
     )
     order_tax_rate: float = Field(
         default=0.0,

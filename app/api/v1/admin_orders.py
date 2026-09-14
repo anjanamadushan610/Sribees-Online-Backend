@@ -13,8 +13,8 @@ under.
 Prefix "/admin/orders" is applied by app/api/v1/router.py.
 """
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 from decimal import Decimal
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -40,8 +40,8 @@ from app.models.user import User
 from app.schemas.escalation import EscalationCreate, EscalationUpdate
 from app.schemas.order import (
     OrderStatusEnum,
-    PaymentMethodEnum,
     OverrideOrderStatusRequest,
+    PaymentMethodEnum,
     RejectReturnRequest,
     ResolveReturnRequest,
     ReturnNoteRequest,
@@ -61,6 +61,7 @@ router = APIRouter(
 
 # Statuses whose transition triggers a customer notification.
 _NOTIFY_STATUSES = {
+    OrderStatusEnum.READY_FOR_PICKUP,
     OrderStatusEnum.HANDED_TO_COURIER,
     OrderStatusEnum.SHIPPED,
     OrderStatusEnum.OUT_FOR_DELIVERY,
@@ -112,6 +113,9 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
         "branch_name": branch_name,
         "created_at": order.created_at.isoformat() if order.created_at else None,
         "packed_at": order.packed_at.isoformat() if order.packed_at else None,
+        "ready_for_pickup_at": (
+            order.ready_for_pickup_at.isoformat() if order.ready_for_pickup_at else None
+        ),
         "handed_to_courier_at": (
             order.handed_to_courier_at.isoformat() if order.handed_to_courier_at else None
         ),
@@ -140,7 +144,7 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
         "delivery_address": {
             "address_line1": addr.address_line1,
             "address_line2": addr.address_line2,
-            "post_office": addr.post_office,
+            "postal_city": addr.postal_city,
             "district": addr.district,
             "province": addr.province,
             "postal_code": addr.postal_code,
@@ -232,28 +236,36 @@ async def _branch_name(db: AsyncSession, branch_id: Optional[UUID]) -> Optional[
 
 async def _branch_pickup_registered(db: AsyncSession, branch_id: Optional[UUID]) -> bool:
     """
-    Whether the fulfilling branch is registered as a SribeesExpress pickup
-    location (contract section 12).
+    Whether SribeesExpress knows where to collect this branch's parcels.
 
-    Unregistered is not a booking failure -- SribeesExpress silently falls back
-    to whatever default origin our account holds, which for a multi-branch
-    merchant is another branch's address. The rider then drives to the wrong
-    shop and the parcel is never collected, with nothing in the booking
-    response to say so. So the flag is surfaced to the operator before they
-    press Request Pickup, not discovered afterwards.
+    True when the branch books with its own key — it is its own SribeesExpress
+    client, collected at the address it registered with them — or when it is
+    registered as an outlet of the shared account (contract section 12).
+
+    Neither is not a booking failure: SribeesExpress falls back to the shared
+    account's own address, which for a multi-branch merchant is another
+    branch's. The rider drives to the wrong shop and nothing in the booking
+    response says so, so the flag is surfaced before the parcel is marked ready
+    for pickup, not discovered afterwards.
     """
     if branch_id is None:
         return False
+    from app.services import courier_credentials
+
+    try:
+        target = await courier_credentials.resolve(db, branch_id)
+    except (courier_credentials.CourierNotConfiguredError, courier_credentials.DecryptionError):
+        return False
+    if target.key_source == "branch":
+        return True
     return (
-        await db.execute(
-            select(Branch.courier_pickup_location_id).where(Branch.branch_id == branch_id)
-        )
+        await db.execute(select(Branch.courier_outlet_id).where(Branch.branch_id == branch_id))
     ).scalar_one_or_none() is not None
 
 
 # Order states before the parcel is picked (no rider yet) — QA spec B4 Module A.
 _RIDER_PENDING_STATES = {
-    "pending", "confirmed", "processing", "packing",
+    "pending", "confirmed", "processing", "packing", "packed", "ready_for_pickup",
 }
 
 
@@ -305,19 +317,39 @@ def _courier_block(order: Order, *, branch_pickup_registered: bool = False) -> d
     that decide what the operator is allowed to do next.
 
     ``can_request_pickup`` is the button's enablement: there is no shipment
-    yet, the order is past confirmation, and it has not been cancelled. A
-    booked order shows its waybill instead -- re-pressing must never create a
-    second parcel.
+    yet, and the order is either packed (pressing it marks the parcel ready for
+    pickup, which books it) or already marked ready by a path that did not
+    book it (pressing it retries the booking). A booked order shows its waybill
+    instead -- re-pressing must never create a second parcel.
 
     ``branch_pickup_registered`` is a warning, not a block: booking an
     unregistered branch's parcel succeeds and sends the rider to the account
     default address. Refusing the booking over it would be worse than letting
     it through with the address wrong, so the panel warns and still allows it.
+
+    ``quote_amount`` is what SribeesExpress agreed to bill for delivery;
+    ``shipping_amount`` on the order is what the customer paid. They differ only
+    when a booking had to re-quote after the price hold lapsed.
     """
     booked = bool(order.courier_shipment_id)
+    is_cod = (order.payment_method or "").upper() == PaymentMethodEnum.COD.value
     return {
         "shipment_id": order.courier_shipment_id,
         "waybill": order.courier_waybill_number,
+        "payment_method": "cod" if is_cod else "prepaid",
+        "cod_amount": float(order.total_amount or 0) if is_cod else 0.0,
+        "quote_id": order.courier_quote_id,
+        "quote_amount": (
+            float(order.courier_quote_amount) if order.courier_quote_amount is not None else None
+        ),
+        "quote_expires_at": (
+            order.courier_quote_expires_at.isoformat() if order.courier_quote_expires_at else None
+        ),
+        "quote_confirmed_at": (
+            order.courier_quote_confirmed_at.isoformat()
+            if order.courier_quote_confirmed_at
+            else None
+        ),
         "booking_status": order.courier_booking_status,
         "tracking_status": order.courier_tracking_status,
         "tracking_url": order.courier_tracking_url,
@@ -342,11 +374,7 @@ def _courier_block(order: Order, *, branch_pickup_registered: bool = False) -> d
         "can_request_pickup": (
             not booked
             and order.status
-            not in (
-                OrderStatusEnum.PENDING.value,
-                OrderStatusEnum.CANCELLED.value,
-                OrderStatusEnum.DELIVERED.value,
-            )
+            in (OrderStatusEnum.PACKED.value, OrderStatusEnum.READY_FOR_PICKUP.value)
         ),
         "can_refresh_tracking": booked,
         "branch_pickup_registered": branch_pickup_registered,
@@ -538,7 +566,7 @@ async def export_orders_csv(
     writer = csv.writer(output)
     writer.writerow([
         "Order Number", "Date", "Customer Name", "Customer Email", "Customer Phone",
-        "Branch", "Post Office", "Items Count", "Subtotal (LKR)", "Shipping (LKR)",
+        "Branch", "Postal City", "Items Count", "Subtotal (LKR)", "Shipping (LKR)",
         "Discount (LKR)", "Total (LKR)", "Payment Method", "Payment Status", "Order Status",
     ])
 
@@ -549,7 +577,7 @@ async def export_orders_csv(
         cust_phone = cust.phone if cust else ""
         branch_name = branch_map.get(o.branch_id, "Unassigned")
         addr = o.delivery_address
-        po = addr.post_office if addr else ""
+        po = addr.postal_city if addr else ""
 
         writer.writerow([
             o.order_number,
@@ -826,16 +854,18 @@ async def request_courier_pickup(
     """
     Ask SribeesExpress to collect this order — the dashboard's Request Pickup.
 
-    Checkout books automatically on confirmation, so this is the manual path
-    for what that leaves behind: a booking that failed during a courier
-    outage, an address corrected after the order was placed, or an order
-    older than the integration. Branch-scoped like every other write here —
-    a Branch Manager can only dispatch their own branch's parcels.
+    On a **packed** order this is the "ready for pickup" transition itself:
+    it books the parcel with the delivery price the customer agreed to at
+    checkout and how they pay (COD with the amount to collect, or prepaid),
+    then moves the order to ``ready_for_pickup``. On an order already marked
+    ready whose booking did not stick, it retries the booking. Branch-scoped
+    like every other write here — a Branch Manager can only dispatch their own
+    branch's parcels.
 
     Already booked returns 200 with the existing waybill, not an error:
     pressing twice is a double-click, not a fault, and must not produce a
-    second parcel. A courier refusal is a 502 carrying the reason, because
-    the operator is the one who can act on it.
+    second parcel. A refusal — payment not in, courier said no — is a 409
+    carrying the reason, because the operator is the one who can act on it.
 
     Held to FULFILMENT_ROLES for the same reason the status machine is
     (order_workflow §RBAC): dispatching a parcel is a branch-floor act, and
@@ -850,13 +880,41 @@ async def request_courier_pickup(
             detail="Only a Branch Manager or Super Admin can dispatch a parcel.",
         )
 
-    ok, message = await OrderService.book_courier_shipment_now(db, order)
     admin_name = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
+    if order.status == OrderStatusEnum.PACKED.value:
+        try:
+            await OrderService.update_status(
+                db,
+                order,
+                OrderStatusEnum.READY_FOR_PICKUP,
+                changed_by=f"Admin ({admin_name})",
+                notes="Packed and booked for courier pickup",
+                enforce=True,
+                actor_role=_actor_role(admin),
+            )
+        except ValueError as exc:
+            logger.warning(
+                f"[admin] Pickup request for {order.order_number} by {admin_name} refused: {exc}"
+            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        await _notify_customer(order, OrderStatusEnum.READY_FOR_PICKUP, db)
+        ok, message = True, f"Ready for pickup. SribeesExpress waybill {order.courier_shipment_id}."
+    elif order.status == OrderStatusEnum.READY_FOR_PICKUP.value or order.courier_shipment_id:
+        ok, message = await OrderService.book_courier_shipment_now(db, order)
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A parcel can be sent for once it is packed; this order is "
+                f"'{order.status.replace('_', ' ')}'."
+            ),
+        )
+
     if not ok:
         logger.warning(
             f"[admin] Pickup request for {order.order_number} by {admin_name} failed: {message}"
         )
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=message)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
 
     logger.info(f"[admin] Pickup requested for {order.order_number} by {admin_name}: {message}")
     branch_name = await _branch_name(db, order.branch_id)
@@ -931,7 +989,7 @@ async def get_courier_label(
     address_parts = [
         address.address_line1,
         address.address_line2,
-        address.post_office,
+        address.postal_city,
         address.district,
     ] if address else []
 
@@ -947,7 +1005,7 @@ async def get_courier_label(
             "recipient_name": (address.recipient_name if address else None) or "Customer",
             "recipient_phone": (address.phone if address else None) or "",
             "recipient_address": ", ".join([p for p in address_parts if p]),
-            "destination_city": address.courier_city_name if address else None,
+            "destination_city": address.postal_city if address else None,
             "destination_district": address.district if address else None,
             "postal_code": address.postal_code if address else None,
             "weight_kg": str(weight_kg),

@@ -7,7 +7,17 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func, text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
 
@@ -373,7 +383,7 @@ class Address(Base):
         index=True,
     )
     # Contact/label metadata for the saved address (nullable — the delivery
-    # branch is resolved from post_office, not from these).
+    # branch is resolved from postal_city, not from these).
     title: Optional[str] = Column(
         String(100),
         nullable=True,
@@ -394,7 +404,10 @@ class Address(Base):
         String(255),
         nullable=True,
     )
-    post_office: str = Column(
+    # Physically still the `post_office` column — see app/models/branch.py's
+    # module docstring for why the replayed migrations keep the old name.
+    postal_city: str = Column(
+        "post_office",
         String(100),
         nullable=False,
     )
@@ -415,16 +428,19 @@ class Address(Base):
         default=False,
         nullable=False,
     )
-    # Cached SribeesExpress city_id for this address (contract section 5a --
-    # "cache the result ... only when an address is first saved or changed").
-    # Every rate quote and every booking is keyed on this, so an address that
-    # never resolved cannot be quoted at all and checkout falls back to the
-    # flat platform fee. courier_resolve_reason is set only when resolution
-    # came back resolved: false, and says which of the four reasons it was.
-    courier_city_id: Optional[int] = Column(Integer, nullable=True)
-    courier_city_name: Optional[str] = Column(String(120), nullable=True)
-    courier_resolve_reason: Optional[str] = Column(String(40), nullable=True)
-    courier_resolved_at: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
+    # SribeesExpress's id for this address's postal city, matched from the
+    # synced directory by name and district when the address is saved
+    # (courier_location_service, migration 052). Every delivery quote is keyed
+    # on it. NULL = the postal city is not one SribeesExpress delivers to (or
+    # the directory has not been synced since), and such an address cannot be
+    # quoted — there is no flat fee to fall back to any more.
+    #
+    # The courier_city_id / _city_name / _resolve_reason / _resolved_at columns
+    # migration 050 added still exist in the table and are no longer mapped:
+    # the city ids they hold belong to a scheme SribeesExpress retired on
+    # 2026-09-13, and 050 is replayed on every deploy, so dropping them would
+    # only see them re-added.
+    courier_postal_city_id: Optional[int] = Column(Integer, nullable=True)
     created_at: datetime = Column(
         DateTime,
         server_default=func.now(),
@@ -450,7 +466,7 @@ class Address(Base):
             "userId": str(self.user_id),
             "addressLine1": self.address_line1,
             "addressLine2": self.address_line2,
-            "postOffice": self.post_office,
+            "postalCity": self.postal_city,
             "district": self.district,
             "postalCode": self.postal_code,
             "province": self.province,

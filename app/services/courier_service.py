@@ -2,11 +2,16 @@
 Courier Service — HTTP client for SribeesExpress's ``/api/v1/ecommerce/*`` API.
 
 Contract: ``docs/SRIBEESEXPRESS_ECOMMERCE_API.md``. SRIBEESonline is the
-client; SribeesExpress exposes the API. Every call sends ``X-Api-Key:
-the key of the enclosing ``courier_credentials`` scope.
+client; SribeesExpress exposes the API. Every call sends ``X-Api-Key``: the key
+of the enclosing ``courier_credentials`` scope.
 
-Three things about this contract shape the client:
+Four things about this contract shape the client:
 
+* **The key decides the price's origin.** A delivery is priced from the calling
+  account's registered postal city (or a named outlet's) to the destination's.
+  A branch holding its own key is its own SribeesExpress client, so quoting
+  inside that branch's scope prices from that branch — which is why every
+  quote must run inside the fulfilling branch's credential scope.
 * **Errors are an envelope**, ``{"error": {"code", "message"}}``, and the
   contract's section 4 guarantees ``code`` is stable across every response in
   the domain — including ``401`` and ``429``. So we branch on ``error.code``,
@@ -18,13 +23,13 @@ Three things about this contract shape the client:
   ``Retry-After`` sleep and one retry — anything longer is not worth blocking
   a checkout request for.
 * **Availability is not correctness**: callers distinguish "unreachable"
-  (``CourierUnavailableError`` — fall back to the flat delivery fee, we never
-  block a sale on a courier outage) from a real answer such as
+  (``CourierUnavailableError``) from a real answer such as
   ``CourierQuoteExpiredError`` (re-quote) or ``serviceable: false`` (a normal
-  UI state).
+  UI state). There is no flat delivery fee behind either any more: a delivery
+  we cannot price is a checkout we refuse, honestly, rather than a guess.
 """
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Union
@@ -45,10 +50,15 @@ API_PREFIX = "/api/v1/ecommerce"
 RECIPIENT_ADDRESS_MAX = 255
 RECIPIENT_NAME_MAX = 150
 RECIPIENT_PHONE_MAX = 30
+ADDRESS_LINE_MAX = 150
 
 # Section 7a caps `limit` at 200. Asking for more is rejected outright, so the
 # client clamps rather than letting a misconfigured setting break every sweep.
 SHIPMENT_LIST_LIMIT_MAX = 200
+
+#: The contract's two payment methods (sections 6 and 7).
+COD = "cod"
+PREPAID = "prepaid"
 
 
 class CourierUnavailableError(Exception):
@@ -85,29 +95,15 @@ class CourierQuoteAlreadyUsedError(CourierError):
 
 @dataclass
 class CourierQuote:
-    """Result of ``POST /ecommerce/rates`` (contract section 6)."""
+    """Result of ``POST /ecommerce/rates`` (contract section 6) or its confirm."""
 
     quote_id: Optional[str]
     amount_lkr: Decimal
     serviceable: bool
     expires_at: Optional[datetime] = None
     reason: Optional[str] = None
-
-
-@dataclass
-class LocationResolution:
-    """
-    Result of ``POST /ecommerce/locations/resolve`` (contract section 5a).
-
-    Never an error: an unresolvable location is a normal ``200`` answer, so
-    ``resolved=False`` carries a ``reason`` rather than raising.
-    """
-
-    resolved: bool
-    city_id: Optional[int] = None
-    city_name: Optional[str] = None
-    reason: Optional[str] = None
-    candidates: List[dict] = field(default_factory=list)
+    origin_postal_city_id: Optional[int] = None
+    confirmed: bool = False
 
 
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -128,10 +124,29 @@ def _decimal(value: Any) -> Optional[Decimal]:
         return None
 
 
+def _quote_from(data: dict) -> CourierQuote:
+    if not data.get("serviceable"):
+        return CourierQuote(
+            quote_id=None,
+            amount_lkr=Decimal("0"),
+            serviceable=False,
+            reason=data.get("reason"),
+            origin_postal_city_id=data.get("origin_postal_city_id"),
+        )
+    return CourierQuote(
+        quote_id=data.get("quote_id"),
+        amount_lkr=_decimal(data.get("amount_lkr")) or Decimal("0"),
+        serviceable=True,
+        expires_at=_parse_datetime(data.get("expires_at")),
+        origin_postal_city_id=data.get("origin_postal_city_id"),
+        confirmed=bool(data.get("confirmed")),
+    )
+
+
 def format_recipient_address(
     address_line1: Optional[str],
     address_line2: Optional[str] = None,
-    post_office: Optional[str] = None,
+    postal_city: Optional[str] = None,
     district: Optional[str] = None,
     postal_code: Optional[str] = None,
 ) -> str:
@@ -144,13 +159,17 @@ def format_recipient_address(
     actually reads if SribeesExpress ever falls back to the flat field, so it
     is built in the order a Sri Lankan address is normally written.
     """
-    parts = [p.strip() for p in (address_line1, address_line2, post_office, district, postal_code) if p and p.strip()]
+    parts = [
+        p.strip()
+        for p in (address_line1, address_line2, postal_city, district, postal_code)
+        if p and p.strip()
+    ]
     joined = ", ".join(parts)
     return joined[:RECIPIENT_ADDRESS_MAX]
 
 
 class CourierService:
-    """Client for SribeesExpress's rate/shipment/tracking/pickup endpoints."""
+    """Client for SribeesExpress's rate/shipment/tracking/outlet endpoints."""
 
     # ------------------------------------------------------------------
     # Transport
@@ -179,14 +198,6 @@ class CourierService:
                 "courier_credentials.for_branch(...) or .for_account(...)."
             )
         return target
-
-    @staticmethod
-    def _headers(api_key: Optional[str] = None) -> dict:
-        """Auth for one call, from the active scope unless overridden."""
-        return {
-            "X-Api-Key": api_key or CourierService._target().api_key,
-            "Content-Type": "application/json",
-        }
 
     @staticmethod
     def _raise_for_error(response: httpx.Response, path: str) -> None:
@@ -233,8 +244,7 @@ class CourierService:
         The host comes from the active credential scope. A call made outside
         one raises ``CourierUnavailableError`` before touching the network:
         an empty base URL would otherwise raise ``httpx.InvalidURL``, which
-        the except clause below does not catch, and that would break EVERY
-        checkout rather than falling back to the flat delivery fee.
+        the except clause below does not catch.
         """
         target = CourierService._target()
         url = f"{target.base_url.rstrip('/')}{API_PREFIX}{path}"
@@ -284,53 +294,25 @@ class CourierService:
         raise CourierUnavailableError(f"Courier {method} {path} unreachable: {last_exc}")
 
     # ------------------------------------------------------------------
-    # Section 5 — locations
+    # Section 5 — postal cities
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def resolve_location(
+    async def list_postal_cities(
         *,
-        post_office: str,
+        search: Optional[str] = None,
         district: Optional[str] = None,
         province: Optional[str] = None,
-    ) -> LocationResolution:
+    ) -> List[dict]:
         """
-        ``POST /ecommerce/locations/resolve`` (section 5a) — post office to
-        ``city_id``. Always a ``200``; an unresolvable address comes back as
-        ``resolved=False`` with a reason, not an exception.
+        ``GET /ecommerce/postal-cities`` (section 5) — every postal city
+        SribeesExpress delivers to today, ``{id, name, district, province}``.
 
-        ``district`` is sent whenever we have it: it is the practical
-        disambiguator for duplicate post-office names, and omitting it is what
-        produces ``ambiguous_post_office``.
+        The whole list in one response; synced daily into our directory by
+        ``courier_postal_city_service`` rather than called per checkout.
         """
-        payload: Dict[str, Any] = {"post_office": post_office}
-        if district:
-            payload["district"] = district
-        if province:
-            payload["province"] = province
-
-        data = await CourierService._request("POST", "/locations/resolve", json=payload)
-        if data.get("resolved"):
-            return LocationResolution(
-                resolved=True,
-                city_id=data.get("city_id"),
-                city_name=data.get("city_name"),
-            )
-        return LocationResolution(
-            resolved=False,
-            reason=data.get("reason"),
-            candidates=data.get("candidates") or [],
-        )
-
-    @staticmethod
-    async def get_coverage() -> List[dict]:
-        """
-        ``GET /ecommerce/coverage`` (section 5c) — every post office that
-        resolves serviceable right now. For the nightly sync that keeps our
-        own branch-coverage table from accepting orders SribeesExpress cannot
-        deliver.
-        """
-        data = await CourierService._request("GET", "/coverage")
+        params = {k: v for k, v in (("search", search), ("district", district), ("province", province)) if v}
+        data = await CourierService._request("GET", "/postal-cities", params=params or None)
         return data if isinstance(data, list) else []
 
     # ------------------------------------------------------------------
@@ -340,46 +322,51 @@ class CourierService:
     @staticmethod
     async def get_rate(
         *,
-        city_id: int,
+        postal_city_id: int,
         weight_kg: Decimal,
         payment_method: str,
         cod_amount: Decimal = Decimal("0"),
+        outlet_id: Optional[int] = None,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
     ) -> CourierQuote:
         """
         ``POST /ecommerce/rates`` (section 6). Side-effect-free.
 
+        Priced from the scope's account's registered postal city, or from
+        ``outlet_id``'s when given — the one a branch booking under the shared
+        account key must name, or it would be priced from the account's head
+        office.
+
         ``cod_amount``/``payment_method`` are inert for pricing today but are
         sent anyway — the contract asks for them and commits to advance notice
-        before they start affecting ``amount_lkr``, so sending them now means
-        that change lands without a code change here.
+        before they start affecting ``amount_lkr``.
         """
         payload: Dict[str, Any] = {
-            "city_id": city_id,
+            "postal_city_id": postal_city_id,
             "weight_kg": float(weight_kg),
             "cod_amount": float(cod_amount),
             "payment_method": payment_method,
         }
+        if outlet_id is not None:
+            payload["outlet_id"] = outlet_id
         if latitude is not None and longitude is not None:
             payload["latitude"] = latitude
             payload["longitude"] = longitude
 
-        data = await CourierService._request("POST", "/rates", json=payload)
+        return _quote_from(await CourierService._request("POST", "/rates", json=payload))
 
-        if not data.get("serviceable"):
-            return CourierQuote(
-                quote_id=None,
-                amount_lkr=Decimal("0"),
-                serviceable=False,
-                reason=data.get("reason"),
-            )
-        return CourierQuote(
-            quote_id=data.get("quote_id"),
-            amount_lkr=_decimal(data.get("amount_lkr")) or Decimal("0"),
-            serviceable=True,
-            expires_at=_parse_datetime(data.get("expires_at")),
-        )
+    @staticmethod
+    async def confirm_quote(quote_id: str) -> CourierQuote:
+        """
+        ``POST /ecommerce/rates/{quote_id}/confirm`` — hold the quoted price for
+        the fulfilment window, once the customer has committed to it.
+
+        Idempotent. Raises ``CourierQuoteExpiredError`` for a quote past its
+        thirty minutes; the caller re-quotes and asks the customer again rather
+        than holding a price nobody agreed to.
+        """
+        return _quote_from(await CourierService._request("POST", f"/rates/{quote_id}/confirm"))
 
     # ------------------------------------------------------------------
     # Section 7 / 7a / 8 / 8a / 9 — shipments
@@ -390,17 +377,18 @@ class CourierService:
         *,
         merchant_order_ref: str,
         quote_id: Optional[str],
+        payment_method: str,
         recipient_name: str,
         recipient_phone: str,
         address_line1: Optional[str] = None,
         address_line2: Optional[str] = None,
-        post_office: Optional[str] = None,
+        postal_city: Optional[str] = None,
         district: Optional[str] = None,
         province: Optional[str] = None,
         postal_code: Optional[str] = None,
         cod_amount: Decimal = Decimal("0"),
         handover_code: Optional[str] = None,
-        pickup_location_id: Optional[int] = None,
+        outlet_id: Optional[int] = None,
         requested_delivery_date: Optional[str] = None,
         requested_delivery_window: Optional[str] = None,
         handling: Optional[List[str]] = None,
@@ -410,43 +398,41 @@ class CourierService:
         ``merchant_order_ref`` — safe to retry after a network failure; a
         replay returns the existing shipment with ``200`` instead of ``201``.
 
-        We send both the flat ``recipient_address`` and the structured fields.
-        The structured ones win server-side, and sending the flat string too
-        costs nothing while keeping the payload readable in a support log.
+        ``payment_method`` is sent explicitly and must agree with
+        ``cod_amount``: SribeesExpress refuses a ``cod`` booking with nothing
+        to collect and a ``prepaid`` one with an amount. ``postal_city`` is
+        only used for the flat ``recipient_address`` rendering — the booked
+        destination is the quote's, by construction.
 
         ``handover_code`` is passed straight through: the caller decides
-        whether an order is eligible for one, since SribeesExpress accepts a
-        code on prepaid shipments only (section 7).
-
-        Name and phone are truncated to their documented maxima. Phone is NOT
-        normalized -- SribeesExpress neither validates nor reformats it, so
-        whatever our address book holds is what the rider sees.
+        whether an order is eligible for one, and a code on a COD booking is a
+        documented ``400``.
         """
         payload: Dict[str, Any] = {
             "merchant_order_ref": merchant_order_ref,
+            "payment_method": payment_method,
             "recipient_name": (recipient_name or "")[:RECIPIENT_NAME_MAX],
             "recipient_phone": (recipient_phone or "")[:RECIPIENT_PHONE_MAX],
             "recipient_address": format_recipient_address(
-                address_line1, address_line2, post_office, district, postal_code
+                address_line1, address_line2, postal_city, district, postal_code
             ),
             "cod_amount": float(cod_amount),
         }
         # Structured address (section 7) -- only the parts we actually have.
+        # The postal city itself is not one of them: SribeesExpress inserts the
+        # quote's postal city name after address_line2 on its side.
         for key, value in (
             ("address_line1", address_line1),
             ("address_line2", address_line2),
-            ("post_office", post_office),
             ("district", district),
             ("province", province),
             ("postal_code", postal_code),
         ):
             if value:
-                payload[key] = value
+                payload[key] = value[:ADDRESS_LINE_MAX] if key.startswith("address_line") else value
 
         # Omitted rather than sent as null when we have no quote: SribeesExpress
-        # types quote_id as a string and answers an explicit null with a 422
-        # validation_error, not with "priced at today's rate". Callers that
-        # cannot supply one are expected to fetch a rate first.
+        # types quote_id as a string and answers an explicit null with a 422.
         if quote_id:
             payload["quote_id"] = quote_id
 
@@ -455,8 +441,8 @@ class CourierService:
             # 400 (handover_code_required_without_code).
             payload["handover_code"] = handover_code
             payload["handover_code_required"] = True
-        if pickup_location_id is not None:
-            payload["pickup_location_id"] = pickup_location_id
+        if outlet_id is not None:
+            payload["outlet_id"] = outlet_id
         if requested_delivery_date:
             payload["requested_delivery_date"] = requested_delivery_date
         if requested_delivery_window:
@@ -483,16 +469,9 @@ class CourierService:
         ``GET /ecommerce/shipments`` (section 7a) -- the reconciliation poll.
 
         This, not per-shipment reads, is the fallback for SribeesExpress
-        having no webhook retry (section 10.4): 500 open parcels would be 500
-        requests against a 60/min limit, which does not fit. Same per-shipment
-        shape as section 7 -- ``handover``, ``cod`` and ``remittance_id``
-        included -- minus ``history``.
-
-        ``updated_since`` is **inclusive** (``>=``), so passing back the newest
-        ``updated_at`` seen re-reads exactly the boundary rows rather than
-        risking a skip. ``status_filter`` takes one value or several; several
-        are sent comma-separated, which is how "everything not yet terminal"
-        becomes one request instead of a full-table sweep.
+        having no webhook retry (section 10.4). Same per-shipment shape as
+        section 7 -- ``handover``, ``cod`` and ``remittance_id`` included --
+        minus ``history``. ``updated_since`` is **inclusive** (``>=``).
         """
         params: Dict[str, Any] = {
             "limit": min(limit, SHIPMENT_LIST_LIMIT_MAX),
@@ -536,25 +515,12 @@ class CourierService:
         """
         ``GET /ecommerce/cod-balance`` (section 14) -- cash collected from our
         customers that has not yet been paid out to us.
-
-        The one number that does not depend on SribeesExpress's payout policy:
-        it is arithmetic over collections they already hold. Safe to poll
-        often, and it is what tells us whether a remittance is overdue --
-        their runs are triggered by ops rather than a scheduler, so nothing
-        else would.
         """
         return await CourierService._request("GET", "/cod-balance")
 
     @staticmethod
     async def list_remittances(*, limit: int = 50, offset: int = 0) -> List[dict]:
-        """
-        ``GET /ecommerce/remittances`` (section 14).
-
-        ``status`` is ``pending`` until their ops confirms the bank transfer
-        landed, then ``paid`` with ``bank_reference``/``paid_at`` set. Read
-        only -- generating a run and marking it paid are staff actions on
-        their side and are not exposed to us.
-        """
+        """``GET /ecommerce/remittances`` (section 14)."""
         data = await CourierService._request(
             "GET", "/remittances", params={"limit": limit, "offset": offset}
         )
@@ -562,62 +528,53 @@ class CourierService:
 
     @staticmethod
     async def get_remittance_shipments(remittance_id: int) -> List[dict]:
-        """
-        ``GET /ecommerce/remittances/{id}/shipments`` (section 14) -- which
-        shipments a given payout covered, in section 7's shape.
-        """
+        """``GET /ecommerce/remittances/{id}/shipments`` (section 14)."""
         data = await CourierService._request("GET", f"/remittances/{remittance_id}/shipments")
         return data if isinstance(data, list) else []
 
     # ------------------------------------------------------------------
-    # Section 12 — pickup locations
+    # Section 12 — outlets
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def create_pickup_location(
+    async def create_outlet(
         *,
         name: str,
-        phone: Optional[str],
+        phone: str,
         address: str,
-        post_office: Optional[str],
-        district: Optional[str],
-        province: Optional[str],
+        postal_city_id: int,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
     ) -> dict:
         """
-        ``POST /ecommerce/pickup-locations`` (section 12) — register one of
-        our branches as a collection point. Returns the created location; its
-        ``id`` is what we send as ``pickup_location_id`` at booking time.
+        ``POST /ecommerce/outlets`` (section 12) — register one of our branches
+        as a collection point in the calling account. Its ``id`` is what a
+        branch without its own key sends as ``outlet_id``.
         """
-        payload: Dict[str, Any] = {"name": name, "address": address}
-        for key, value in (
-            ("phone", phone),
-            ("post_office", post_office),
-            ("district", district),
-            ("province", province),
-            ("latitude", latitude),
-            ("longitude", longitude),
-        ):
-            if value is not None:
-                payload[key] = value
-        return await CourierService._request("POST", "/pickup-locations", json=payload)
+        payload: Dict[str, Any] = {
+            "name": name,
+            "phone": phone,
+            "address": address,
+            "postal_city_id": postal_city_id,
+        }
+        if latitude is not None and longitude is not None:
+            payload["latitude"] = latitude
+            payload["longitude"] = longitude
+        return await CourierService._request("POST", "/outlets", json=payload)
 
     @staticmethod
-    async def update_pickup_location(location_id: int, **fields: Any) -> dict:
+    async def update_outlet(outlet_id: int, **fields: Any) -> dict:
         """
-        ``PATCH /ecommerce/pickup-locations/{id}`` (section 12).
-
-        Note this never affects shipments already booked — their pickup
-        address is a snapshot taken at booking time, not a live reference.
+        ``PATCH /ecommerce/outlets/{id}`` (section 12). Never affects shipments
+        already booked — their pickup address is a snapshot.
         """
         payload = {k: v for k, v in fields.items() if v is not None}
-        return await CourierService._request("PATCH", f"/pickup-locations/{location_id}", json=payload)
+        return await CourierService._request("PATCH", f"/outlets/{outlet_id}", json=payload)
 
     @staticmethod
-    async def list_pickup_locations() -> List[dict]:
-        """``GET /ecommerce/pickup-locations`` (section 12)."""
-        data = await CourierService._request("GET", "/pickup-locations")
+    async def list_outlets() -> List[dict]:
+        """``GET /ecommerce/outlets`` (section 12)."""
+        data = await CourierService._request("GET", "/outlets")
         return data if isinstance(data, list) else []
 
     # ------------------------------------------------------------------
@@ -630,9 +587,20 @@ class CourierService:
         ``POST /ecommerce/webhook-endpoints`` (section 10.1).
 
         The response's ``secret`` is shown **exactly once** — the caller must
-        persist it into ``courier_webhook_secret`` immediately; it can never
-        be read back, only rotated.
+        store it (encrypted) immediately; it can never be read back, only
+        rotated.
         """
         return await CourierService._request(
             "POST", "/webhook-endpoints", json={"url": url, "description": description}
         )
+
+    @staticmethod
+    async def list_webhook_endpoints() -> List[dict]:
+        """``GET /ecommerce/webhook-endpoints`` (section 10.1) — never includes a secret."""
+        data = await CourierService._request("GET", "/webhook-endpoints")
+        return data if isinstance(data, list) else []
+
+    @staticmethod
+    async def rotate_webhook_secret(endpoint_id: int) -> dict:
+        """``POST /ecommerce/webhook-endpoints/{id}/rotate-secret`` — the old secret dies at once."""
+        return await CourierService._request("POST", f"/webhook-endpoints/{endpoint_id}/rotate-secret")

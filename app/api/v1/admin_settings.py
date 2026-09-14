@@ -67,7 +67,10 @@ async def get_platform_settings(
     "",
     response_model=PlatformSettingsResponse,
     summary="Update platform settings",
-    description="Update any of: flat delivery fee, order tax rate (%), splash video URL.",
+    description=(
+        "Update any of: order tax rate (%), splash video URL. The delivery charge is "
+        "not a setting — SribeesExpress quotes it per parcel."
+    ),
 )
 async def update_platform_settings(
     data: PlatformSettingsUpdate,
@@ -77,7 +80,6 @@ async def update_platform_settings(
 ):
     values = await AppSettingsService.update_platform_settings(
         db,
-        flat_delivery_fee=data.flat_delivery_fee,
         order_tax_rate_percent=data.order_tax_rate_percent,
         splash_video_url=data.splash_video_url,
     )

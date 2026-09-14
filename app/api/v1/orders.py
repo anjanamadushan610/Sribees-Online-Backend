@@ -27,9 +27,8 @@ from app.schemas.order import (
 )
 from app.services import (
     branch_service,
-    courier_credentials,
-    courier_location_service,
     courier_sync_service,
+    delivery_quote_service,
 )
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
@@ -54,6 +53,7 @@ _STATUS_FLOW = [
     ("confirmed", "Confirmed"),
     ("packing", "Preparing Order"),
     ("packed", "Packed"),
+    ("ready_for_pickup", "Waiting for Courier"),
     ("handed_to_courier", "Handed to Courier"),
     ("shipped", "Shipped"),
     ("out_for_delivery", "Out for Delivery"),
@@ -64,6 +64,7 @@ _STATUS_FLOW = [
 _STATUS_TIMESTAMPS = {
     "pending": "created_at",
     "packed": "packed_at",
+    "ready_for_pickup": "ready_for_pickup_at",
     "handed_to_courier": "handed_to_courier_at",
     "shipped": "shipped_at",
     "delivered": "delivered_at",
@@ -223,7 +224,8 @@ def format_order(
             "address_id": str(addr.address_id),
             "address_line1": addr.address_line1,
             "address_line2": addr.address_line2,
-            "post_office": addr.post_office,
+            "postal_city": addr.postal_city,
+            "post_office": addr.postal_city,  # legacy key: installed app builds read it
             "district": addr.district,
             "province": addr.province,
             "postal_code": addr.postal_code,
@@ -347,39 +349,32 @@ async def quote_order(
     Preview the exact, server-authoritative order totals **without** creating
     an order or mutating any state.
 
-    Uses the same `PricingService` as order creation, so the returned figures
-    match precisely what the customer will be charged on checkout.
+    Uses the same `PricingService` as order creation, and the same SribeesExpress
+    delivery quote the cart shows, so the returned figures match what the
+    customer will be charged on checkout. ``delivery_available: false`` (with
+    ``delivery_status`` and ``delivery_message``) means checkout will be refused
+    until the reason is fixed — there is no flat delivery fee behind it.
     """
     try:
         cart = await CartService.get_cart(str(current_user.user_id))
         wallet_balance = await WalletService.get_balance(db, current_user.user_id)
         pricing_config = await AppSettingsService.get_pricing_config(db)
+        payment_method = to_courier_payment_method(data.payment_method)
 
-        # Resolve the fulfilling branch the SAME way create_from_cart does:
-        # from the chosen delivery address's post office. This also gives us
-        # the full address needed for the courier's rate quote. Falls back to
-        # the session shopping-branch-context only when no address is chosen
-        # yet (matches how the preview already degrades before an address
-        # exists) — previously this endpoint ignored delivery_address_id
-        # entirely and always used session context, which could disagree with
-        # create_from_cart's resolution and show a different delivery fee at
-        # checkout than what was actually charged.
-        address = None
-        branch_id = None
-        if data.delivery_address_id:
-            try:
-                address = await branch_service.get_address_for_user(
-                    db, UUID(data.delivery_address_id), current_user.user_id
-                )
-            except ValueError:
-                address = None
-            if address is not None and address.post_office:
-                mapping = await branch_service.resolve_branch_by_post_office(
-                    db, address.post_office
-                )
-                if mapping is not None:
-                    branch_id = mapping.branch_id
+        # The delivery quote and the fulfilling branch are resolved the SAME
+        # way create_from_cart resolves them: from the chosen delivery
+        # address's postal city (or the shopper's default address before one
+        # is chosen), priced in that branch's courier account.
+        delivery, destination = await delivery_quote_service.quote_for_cart(
+            db,
+            redis,
+            current_user.user_id,
+            cart.get("items", []),
+            address_id=data.delivery_address_id,
+            payment_method=payment_method,
+        )
 
+        branch_id = destination.branch_id
         if branch_id is None:
             context = await branch_service.get_branch_context(
                 redis, str(current_user.user_id)
@@ -393,37 +388,17 @@ async def quote_order(
         items = await OrderService._attach_cashback_rates(
             db, cart.get("items", []), branch_id
         )
-        items = await OrderService._attach_weights(db, items)
 
-        # Resolve the address's SribeesExpress city_id lazily: addresses saved
-        # before this integration shipped have no cached id, and a preview is
-        # the natural place to backfill one rather than making the customer
-        # re-save the address.
-        city_id = None
-        if address is not None:
-            city_id = address.courier_city_id
-            if city_id is None and courier_location_service.needs_resolution(
-                address, post_office_changed=False
-            ):
-                city_id = await courier_location_service.resolve_address(db, address)
-
-        # The courier quote inside this call is made on behalf of the
-        # fulfilling branch -- a branch with its own SribeesExpress account
-        # must be priced by that account. Without a scope the rate call has no
-        # host or key and PricingService would silently fall back to the flat
-        # fee, so the scope is opened here where the branch is known.
-        async with courier_credentials.optional_for_branch(db, branch_id):
-            breakdown = await PricingService.quote(
-                items=items,
-                coupon=cart.get("coupon"),
-                use_wallet=data.use_wallet,
-                wallet_balance=wallet_balance,
-                delivery_fee=pricing_config["delivery_fee"],
-                tax_rate=pricing_config["tax_rate"],
-                city_id=city_id,
-                payment_method=to_courier_payment_method(data.payment_method),
-                wallet_amount=data.wallet_amount,
-            )
+        breakdown = await PricingService.quote(
+            items=items,
+            coupon=cart.get("coupon"),
+            use_wallet=data.use_wallet,
+            wallet_balance=wallet_balance,
+            tax_rate=pricing_config["tax_rate"],
+            payment_method=payment_method,
+            wallet_amount=data.wallet_amount,
+            delivery=delivery,
+        )
 
         item_count = sum(i.get("quantity", 0) for i in cart.get("items", []))
 
@@ -443,6 +418,7 @@ async def quote_order(
                 "wallet_balance": float(wallet_balance),
                 "wallet_applied": breakdown.wallet_deduction > 0,
                 "item_count": item_count,
+                "delivery": delivery_quote_service.delivery_payload(delivery, destination),
             }
         )
     except Exception as e:

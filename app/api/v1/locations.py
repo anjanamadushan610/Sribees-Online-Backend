@@ -4,7 +4,10 @@ SRIBEESonline - Location Discovery API Endpoints
 Public / customer-facing endpoints for cascading address selection:
   GET /provinces           — all provinces with coverage metadata
   GET /districts           — districts within a province
-  GET /post-offices        — post offices within a district
+  GET /postal-cities       — postal cities within a district
+
+``GET /post-offices`` answers too, identically and hidden from the schema: it
+is the path app builds from before the postal-city rename call.
 """
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,20 +80,21 @@ async def list_districts(
 
 
 # ============================================================================
-# GET /post-offices?district=
+# GET /postal-cities?district=
 # ============================================================================
 
 @router.get(
-    "/post-offices",
+    "/postal-cities",
     response_model=dict,
-    summary="List post offices for a district",
+    summary="List postal cities for a district",
     description=(
-        "Given a district name, returns every active post office within it "
+        "Given a district name, returns every active postal city within it "
         "together with the mapped branch ID and name — ready for the final "
         "step of the cascading dropdown."
     ),
 )
-async def list_post_offices(
+@router.get("/post-offices", response_model=dict, include_in_schema=False)
+async def list_postal_cities(
     district: str = Query(
         ...,
         min_length=1,
@@ -99,10 +103,10 @@ async def list_post_offices(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user_optional),
 ):
-    post_offices = await branch_service.list_post_offices_for_district(db, district)
+    postal_cities = await branch_service.list_postal_cities_for_district(db, district)
 
     return {
         "success": True,
-        "data": post_offices,
-        "total": len(post_offices),
+        "data": postal_cities,
+        "total": len(postal_cities),
     }

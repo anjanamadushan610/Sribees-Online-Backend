@@ -46,6 +46,7 @@ _OPEN_STATUSES = {
     OrderStatus.PROCESSING.value,
     OrderStatus.PACKING.value,
     OrderStatus.PACKED.value,
+    OrderStatus.READY_FOR_PICKUP.value,
     OrderStatus.HANDED_TO_COURIER.value,
     OrderStatus.SHIPPED.value,
     OrderStatus.OUT_FOR_DELIVERY.value,

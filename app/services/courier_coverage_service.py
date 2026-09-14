@@ -1,46 +1,44 @@
 """
-Courier Coverage Sync — populate ``post_office_directory`` from SribeesExpress.
+Courier Coverage Sync — fill ``post_office_directory`` from SribeesExpress's
+postal city list.
 
-``post_office_directory`` was seeded by hand in migration 018 with three rows,
-two of which SribeesExpress cannot match: we typed ``Mathugama`` and
-``Meegahathanna``, their directory holds ``Matugama`` and ``Meegahatenna``.
-Matching on their side is exact and case-insensitive with no fuzzy fallback, so
-each mismatch surfaces at checkout as "that address is not serviceable" —
-indistinguishable from a genuinely uncovered area.
+``GET /ecommerce/postal-cities`` (contract section 5) returns every postal city
+SribeesExpress delivers to today, each with its id. That id is what every
+delivery quote is keyed on, so this sync is what makes a customer's address
+quotable at all: an address matches a directory row by name and district
+(``courier_location_service``), and the row carries the id.
 
-Hand-correcting those two names is the wrong fix, because it is the same
-keystroke-by-keystroke process that produced them. ``GET /ecommerce/coverage``
-exists for exactly this: it returns every post office SribeesExpress can
-deliver to, in their spelling, with the ``city_id`` each one resolves to.
+Three deliberate decisions:
 
-Two deliberate decisions in here:
+**Their spelling wins.** A row is matched on case-folded name *and* district,
+then adopts their exact casing. Name alone is not enough — four real postal
+cities share a name with one in another district — and hand-correcting
+spellings is how ``Mathugama`` and ``Matugama`` came to disagree in the first
+place.
 
-**Only districts SribeesExpress reports are reconciled.** Coverage today
-returns one district (Kalutara, 84 post offices) because that is all they have
-configured. Deactivating every directory row absent from that response would
-empty the directory for every district we serve with our own fleet. So a row
-is deactivated only when its own district appears in the response and its post
-office does not — inside a district they report on, absence is real.
+**Only districts they report are reconciled.** A row is switched off only when
+its own district appears in the response and its name does not; inside a
+district they report on, absence is real. Outside one we have no signal and
+leave the row alone.
 
-**A deactivated row that something still points at is reported, not hidden.**
-Branch coverage mappings and saved customer addresses reference post offices by
-name. Deactivating ``Mathugama`` without saying so would break those silently,
-so the sync counts and returns them for the caller to surface.
+**A name the directory cannot hold is reported, not forced.** The directory's
+postal city name is unique (branch mappings and addresses reference it by
+name), so a second same-named town in another district cannot be added. It is
+returned in ``skipped`` for an operator to see, rather than silently
+overwriting the first town's district and id.
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.branch import PostOfficeDirectory
+from app.models.branch import PostalCityDirectory
 from app.models.user import Address
 from app.services import courier_credentials
-from app.services.courier_service import (
-    CourierService,
-)
+from app.services.courier_service import CourierService
 
 
 @dataclass
@@ -52,10 +50,14 @@ class CoverageSyncResult:
     updated: int = 0
     reactivated: int = 0
     deactivated: int = 0
+    addresses_matched: int = 0
     districts_covered: List[str] = field(default_factory=list)
-    # Rows this run switched off that something still references by name.
-    # ``{"post_office": ..., "district": ..., "addresses": n}``
+    # Rows this run switched off that saved addresses still name.
+    # ``{"postal_city": ..., "district": ..., "addresses": n}``
     orphaned: List[dict] = field(default_factory=list)
+    # Postal cities this run could not add because the name is already taken
+    # by a row in another district. ``{"postal_city", "district", "held_by_district"}``
+    skipped: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -64,99 +66,134 @@ class CoverageSyncResult:
             "updated": self.updated,
             "reactivated": self.reactivated,
             "deactivated": self.deactivated,
+            "addresses_matched": self.addresses_matched,
             "districts_covered": self.districts_covered,
             "orphaned": self.orphaned,
+            "skipped": self.skipped,
         }
 
 
-def _normalize(name: Optional[str]) -> str:
+def _norm(value: Optional[str]) -> str:
     """Their matching key: trimmed and case-folded, never fuzzy."""
-    return (name or "").strip().casefold()
+    return (value or "").strip().casefold()
 
 
-async def _count_addresses_by_post_office(db: AsyncSession, names: List[str]) -> Dict[str, int]:
+async def _count_addresses_by_postal_city(db: AsyncSession, names: List[str]) -> Dict[str, int]:
     """How many saved addresses still name each of ``names`` (case-insensitive)."""
     if not names:
         return {}
     lowered = [n.casefold() for n in names]
     rows = (
         await db.execute(
-            select(func.lower(Address.post_office), func.count())
-            .where(func.lower(Address.post_office).in_(lowered))
-            .group_by(func.lower(Address.post_office))
+            select(func.lower(Address.postal_city), func.count())
+            .where(func.lower(Address.postal_city).in_(lowered))
+            .group_by(func.lower(Address.postal_city))
         )
     ).all()
     return dict(rows)
 
 
+async def _rematch_unmatched_addresses(db: AsyncSession) -> int:
+    """
+    Give every address that has no courier id another look after a sync.
+
+    One set-based UPDATE rather than a loop: a directory sync that adds a
+    district should make every customer already living there quotable in the
+    same breath, not one checkout at a time.
+    """
+    directory = (
+        select(PostalCityDirectory.courier_postal_city_id)
+        .where(
+            func.lower(PostalCityDirectory.postal_city) == func.lower(Address.postal_city),
+            func.lower(PostalCityDirectory.district) == func.lower(Address.district),
+            PostalCityDirectory.is_active.is_(True),
+            PostalCityDirectory.courier_postal_city_id.isnot(None),
+        )
+        .scalar_subquery()
+    )
+    result = await db.execute(
+        update(Address)
+        .where(Address.courier_postal_city_id.is_(None))
+        .where(directory.isnot(None))
+        .values(courier_postal_city_id=directory)
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
+
+
 async def sync(db: AsyncSession) -> CoverageSyncResult:
     """
-    Fetch ``GET /ecommerce/coverage`` and reconcile ``post_office_directory``.
+    Fetch ``GET /ecommerce/postal-cities`` and reconcile ``post_office_directory``.
 
-    Raises ``CourierUnavailableError`` / ``CourierError`` — unlike address
-    resolution, this is an operator-triggered action, so a failure is worth
-    surfacing as an error rather than swallowing into a partial sync.
+    Raises ``CourierUnavailableError`` / ``CourierError`` /
+    ``CourierNotConfiguredError`` — this is an operator-triggered action, so a
+    failure is surfaced rather than swallowed into a partial sync.
     """
-    # The account-wide key, deliberately: coverage describes one merchant
-    # account's serviceable area, and the directory it fills is shared by every
-    # branch. A branch key would rebuild that shared directory from a different
-    # account's view of the country.
-    async with courier_credentials.for_account(db):
-        rows = await CourierService.get_coverage()
+    # Any configured account will do: the postal city list describes where
+    # SribeesExpress delivers, which is the same answer for every merchant.
+    target = await courier_credentials.any_target(db)
+    async with courier_credentials.using(target):
+        rows = await CourierService.list_postal_cities()
     result = CoverageSyncResult(fetched=len(rows))
     if not rows:
         # An empty response means they have configured nothing at all. Treating
         # that as "deactivate everything" would take the whole directory
         # offline on a bad deploy of theirs, so it is a no-op instead.
-        logger.warning("Courier coverage returned no rows; leaving the directory untouched")
+        logger.warning("Courier postal-cities returned no rows; leaving the directory untouched")
         return result
 
     now = datetime.now(timezone.utc)
 
-    # Their spelling wins, so the response is keyed on the normalized name and
-    # our rows are matched against it -- not the other way round.
-    coverage: Dict[str, dict] = {}
+    offered: Dict[Tuple[str, str], dict] = {}
     covered_districts: set[str] = set()
     for row in rows:
-        post_office = (row.get("post_office") or "").strip()
-        if not post_office:
-            continue
-        coverage[_normalize(post_office)] = row
+        name = (row.get("name") or "").strip()
         district = (row.get("district") or "").strip()
+        if not name or row.get("id") is None:
+            continue
+        offered[(_norm(name), _norm(district))] = row
         if district:
-            covered_districts.add(_normalize(district))
+            covered_districts.add(_norm(district))
     result.districts_covered = sorted(
         {(r.get("district") or "").strip() for r in rows if (r.get("district") or "").strip()}
     )
 
-    existing = (await db.execute(select(PostOfficeDirectory))).scalars().all()
-    by_name = {_normalize(e.post_office): e for e in existing}
+    existing = (await db.execute(select(PostalCityDirectory))).scalars().all()
+    by_key = {(_norm(e.postal_city), _norm(e.district)): e for e in existing}
+    by_name = {_norm(e.postal_city): e for e in existing}
 
-    # 1. Upsert everything they cover.
-    for key, row in coverage.items():
-        entry = by_name.get(key)
+    # 1. Upsert everything they deliver to.
+    for key, row in offered.items():
+        name = (row.get("name") or "").strip()
         district = (row.get("district") or "").strip()
         province = (row.get("province") or "").strip()
-        city_id = row.get("city_id")
+        courier_id = row.get("id")
+        entry = by_key.get(key)
 
         if entry is None:
-            db.add(
-                PostOfficeDirectory(
-                    post_office=(row.get("post_office") or "").strip(),
-                    district=district,
-                    province=province,
-                    is_active=True,
-                    courier_city_id=city_id,
-                    courier_synced_at=now,
+            holder = by_name.get(key[0])
+            if holder is not None:
+                result.skipped.append(
+                    {"postal_city": name, "district": district, "held_by_district": holder.district}
                 )
+                continue
+            entry = PostalCityDirectory(
+                postal_city=name,
+                district=district,
+                province=province,
+                is_active=True,
+                courier_postal_city_id=courier_id,
+                courier_synced_at=now,
             )
+            db.add(entry)
+            by_key[key] = entry
+            by_name[key[0]] = entry
             result.created += 1
             continue
 
         changed = False
-        # Adopt their exact spelling, casing included -- ours is the copy.
-        if entry.post_office != (row.get("post_office") or "").strip():
-            entry.post_office = (row.get("post_office") or "").strip()
+        if entry.postal_city != name:
+            entry.postal_city = name
             changed = True
         if district and entry.district != district:
             entry.district = district
@@ -164,8 +201,8 @@ async def sync(db: AsyncSession) -> CoverageSyncResult:
         if province and entry.province != province:
             entry.province = province
             changed = True
-        if entry.courier_city_id != city_id:
-            entry.courier_city_id = city_id
+        if entry.courier_postal_city_id != courier_id:
+            entry.courier_postal_city_id = courier_id
             changed = True
         if not entry.is_active:
             entry.is_active = True
@@ -175,78 +212,54 @@ async def sync(db: AsyncSession) -> CoverageSyncResult:
         if changed:
             result.updated += 1
 
-    # 2. Deactivate rows inside a district they DO cover but did not list.
-    #    Outside those districts we have no signal, so we leave the row alone.
-    to_deactivate: List[PostOfficeDirectory] = [
+    # 2. Deactivate rows inside a district they DO report on but did not list.
+    to_deactivate: List[PostalCityDirectory] = [
         entry
-        for key, entry in by_name.items()
-        if key not in coverage
-        and _normalize(entry.district) in covered_districts
-        and entry.is_active
+        for key, entry in by_key.items()
+        if key not in offered and key[1] in covered_districts and entry.is_active
     ]
     for entry in to_deactivate:
         entry.is_active = False
         entry.courier_synced_at = now
         result.deactivated += 1
 
+    await db.flush()
+    result.addresses_matched = await _rematch_unmatched_addresses(db)
     await db.commit()
 
-    # 3. Report what we just switched off that is still referenced. Done after
-    #    the commit so the counts describe the state an operator will see.
+    # 3. Report what we just switched off that is still referenced.
     if to_deactivate:
-        names = [e.post_office for e in to_deactivate]
-        address_counts = await _count_addresses_by_post_office(db, names)
+        names = [e.postal_city for e in to_deactivate]
+        address_counts = await _count_addresses_by_postal_city(db, names)
         for entry in to_deactivate:
             result.orphaned.append(
                 {
-                    "post_office": entry.post_office,
+                    "postal_city": entry.postal_city,
                     "district": entry.district,
-                    "addresses": address_counts.get(entry.post_office.casefold(), 0),
+                    "addresses": address_counts.get(entry.postal_city.casefold(), 0),
                 }
             )
         logger.warning(
-            f"Coverage sync deactivated {len(to_deactivate)} post office(s) "
+            f"Postal city sync deactivated {len(to_deactivate)} row(s) "
             f"SribeesExpress does not serve: {', '.join(names)}"
         )
 
     logger.info(
-        f"Coverage sync: fetched={result.fetched} created={result.created} "
+        f"Postal city sync: fetched={result.fetched} created={result.created} "
         f"updated={result.updated} reactivated={result.reactivated} "
-        f"deactivated={result.deactivated} districts={result.districts_covered}"
+        f"deactivated={result.deactivated} addresses_matched={result.addresses_matched} "
+        f"skipped={len(result.skipped)} districts={result.districts_covered}"
     )
     return result
 
 
-async def city_id_for(db: AsyncSession, post_office: str, district: str) -> Optional[int]:
-    """
-    The ``city_id`` coverage last reported for a post office, or None.
-
-    Lets a quote skip ``POST /locations/resolve`` for an address whose post
-    office the last sync already priced. Address-level caching
-    (``courier_location_service``) stays the primary path; this is the
-    directory-level answer behind it.
-    """
-    row = (
-        await db.execute(
-            select(PostOfficeDirectory.courier_city_id).where(
-                func.lower(PostOfficeDirectory.post_office) == post_office.casefold(),
-                func.lower(PostOfficeDirectory.district) == district.casefold(),
-                PostOfficeDirectory.is_active.is_(True),
-            )
-        )
-    ).scalar_one_or_none()
-    return row
-
-
-async def unserviceable_post_offices(db: AsyncSession) -> List[Tuple[str, str]]:
+async def unserviceable_postal_cities(db: AsyncSession) -> List[Tuple[str, str]]:
     """Directory rows a sync switched off — what checkout must refuse honestly."""
     rows = (
         await db.execute(
-            select(PostOfficeDirectory.post_office, PostOfficeDirectory.district)
-            .where(PostOfficeDirectory.is_active.is_(False))
-            .order_by(PostOfficeDirectory.district, PostOfficeDirectory.post_office)
+            select(PostalCityDirectory.postal_city, PostalCityDirectory.district)
+            .where(PostalCityDirectory.is_active.is_(False))
+            .order_by(PostalCityDirectory.district, PostalCityDirectory.postal_city)
         )
     ).all()
-    # list(rows) rather than a pass-through comprehension: SQLAlchemy Row
-    # objects already unpack as (post_office, district) tuples.
     return list(rows)

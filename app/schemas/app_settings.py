@@ -35,8 +35,12 @@ class SplashVideoUploadResponse(BaseModel):
 # ============================================================================
 
 class PlatformSettings(BaseModel):
-    """Human-facing platform configuration values."""
-    flat_delivery_fee: float = Field(..., ge=0, description="Flat delivery fee (currency units)")
+    """
+    Human-facing platform configuration values.
+
+    No delivery fee: the delivery charge is SribeesExpress's quote per parcel
+    and is not an administrator setting (see PricingService).
+    """
     order_tax_rate_percent: float = Field(
         ..., ge=0, le=100, description="Order tax rate as a percentage (15 = 15%)"
     )
@@ -50,8 +54,15 @@ class PlatformSettingsResponse(BaseModel):
 
 
 class PlatformSettingsUpdate(BaseModel):
-    """PATCH /admin/settings — all fields optional (partial update)."""
-    flat_delivery_fee: Optional[float] = Field(None, ge=0)
+    """
+    PATCH /admin/settings — all fields optional (partial update).
+
+    ``extra="forbid"``: an admin screen or script still sending
+    ``flat_delivery_fee`` gets a 422 naming the field, instead of a 200 that
+    silently changed nothing and let someone believe the fee was set.
+    """
+    model_config = {"extra": "forbid"}
+
     order_tax_rate_percent: Optional[float] = Field(None, ge=0, le=100)
     splash_video_url: Optional[str] = Field(None, max_length=500)
 

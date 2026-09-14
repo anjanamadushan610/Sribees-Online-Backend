@@ -409,6 +409,7 @@ class NotificationService:
             "processing": "Your order is being prepared",
             "packing": "Your order is being prepared",
             "packed": "Your order is packed and ready to ship",
+            "ready_for_pickup": "Your order is packed and the courier is on the way to collect it",
             "handed_to_courier": "Your order has been handed to the courier",
             "shipped": "Your order has been shipped",
             "out_for_delivery": "Your order is out for delivery",
