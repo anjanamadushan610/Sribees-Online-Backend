@@ -2,10 +2,17 @@
 SRIBEESonline - Branch Resolution & Location Management Service
 
 Handles:
-  1. Hierarchical location discovery  (province → district → post_office)
+  1. Hierarchical location discovery  (province → district → postal city)
   2. Branch resolution via saved address  OR  location triplet
   3. Redis branch-context session management
-  4. Admin CRUD for PostOfficeBranchMapping
+  4. Admin CRUD for PostalCityBranchMapping
+
+**Legacy keys in customer-facing payloads.** The discovery and context payloads
+below carry ``postalCity`` / ``postal_city`` and, beside them, the ``postOffice``
+/ ``post_office`` keys the mobile app read before the rename. Installed builds
+parse those keys; dropping them would blank the address dropdowns for every
+customer who has not updated. Remove them once the minimum supported app
+version reads the new names.
 """
 import json
 from datetime import datetime, timezone
@@ -25,8 +32,8 @@ from app.core.exceptions import (
 )
 from app.models.branch import (
     Branch,
-    PostOfficeBranchMapping,
-    PostOfficeDirectory,
+    PostalCityBranchMapping,
+    PostalCityDirectory,
 )
 from app.models.user import Address
 from app.utils.logger import logger
@@ -42,30 +49,31 @@ async def list_provinces(db: AsyncSession) -> list[dict]:
     """
     rows = await db.execute(
         select(
-            PostOfficeBranchMapping.province,
-            func.count(distinct(PostOfficeBranchMapping.district)).label("district_count"),
-            func.count(PostOfficeBranchMapping.post_office).label("po_count"),
-            func.count(distinct(PostOfficeBranchMapping.branch_id)).label("branch_count"),
+            PostalCityBranchMapping.province,
+            func.count(distinct(PostalCityBranchMapping.district)).label("district_count"),
+            func.count(PostalCityBranchMapping.postal_city).label("postal_city_count"),
+            func.count(distinct(PostalCityBranchMapping.branch_id)).label("branch_count"),
         )
         .where(
-            PostOfficeBranchMapping.is_active.is_(True),
-            PostOfficeBranchMapping.province.isnot(None),
+            PostalCityBranchMapping.is_active.is_(True),
+            PostalCityBranchMapping.province.isnot(None),
         )
-        .group_by(PostOfficeBranchMapping.province)
-        .order_by(PostOfficeBranchMapping.province)
+        .group_by(PostalCityBranchMapping.province)
+        .order_by(PostalCityBranchMapping.province)
     )
 
     result = []
     for row in rows.all():
-        province, dist_ct, po_ct, br_ct = row
+        province, dist_ct, pc_ct, br_ct = row
         result.append({
             "province": province,
             "districtCount": dist_ct,
-            "postOfficeCount": po_ct,
+            "postalCityCount": pc_ct,
+            "postOfficeCount": pc_ct,  # legacy key, see module docstring
             "branchCount": br_ct,
             "coverageSummary": (
                 f"{province} is served by {br_ct} branch(es) covering "
-                f"{dist_ct} district(s) and {po_ct} post office(s)."
+                f"{dist_ct} district(s) and {pc_ct} postal city(ies)."
             ),
         })
     return result
@@ -77,64 +85,65 @@ async def list_districts(db: AsyncSession, province: str) -> list[dict]:
     """
     normalized = province.strip().title()
 
-    # Sub-query for branch names aggregated per district
     rows = await db.execute(
         select(
-            PostOfficeBranchMapping.district,
-            PostOfficeBranchMapping.province,
-            func.count(PostOfficeBranchMapping.post_office).label("po_count"),
-            func.array_agg(distinct(PostOfficeBranchMapping.branch_name)).label("branch_names"),
+            PostalCityBranchMapping.district,
+            PostalCityBranchMapping.province,
+            func.count(PostalCityBranchMapping.postal_city).label("postal_city_count"),
+            func.array_agg(distinct(PostalCityBranchMapping.branch_name)).label("branch_names"),
         )
         .where(
-            PostOfficeBranchMapping.is_active.is_(True),
-            PostOfficeBranchMapping.province == normalized,
-            PostOfficeBranchMapping.district.isnot(None),
+            PostalCityBranchMapping.is_active.is_(True),
+            PostalCityBranchMapping.province == normalized,
+            PostalCityBranchMapping.district.isnot(None),
         )
-        .group_by(PostOfficeBranchMapping.district, PostOfficeBranchMapping.province)
-        .order_by(PostOfficeBranchMapping.district)
+        .group_by(PostalCityBranchMapping.district, PostalCityBranchMapping.province)
+        .order_by(PostalCityBranchMapping.district)
     )
 
     result = []
     for row in rows.all():
-        district, prov, po_ct, branch_names = row
+        district, prov, pc_ct, branch_names = row
         names_list = sorted(branch_names) if branch_names else []
         result.append({
             "district": district,
             "province": prov,
-            "postOfficeCount": po_ct,
+            "postalCityCount": pc_ct,
+            "postOfficeCount": pc_ct,  # legacy key, see module docstring
             "branchNames": names_list,
             "coverageSummary": (
-                f"{district} district in {prov} has {po_ct} post office(s) "
+                f"{district} district in {prov} has {pc_ct} postal city(ies) "
                 f"served by: {', '.join(names_list)}."
             ),
         })
     return result
 
 
-async def list_post_offices_for_district(
+async def list_postal_cities_for_district(
     db: AsyncSession,
     district: str,
 ) -> list[dict]:
     """
-    Return post offices within a district with branch details.
+    Return postal cities within a district with branch details.
     Uses ``joinedload`` on Branch for optimized fetching.
     """
     normalized = district.strip().title()
 
     result = await db.execute(
-        select(PostOfficeBranchMapping)
-        .options(joinedload(PostOfficeBranchMapping.branch))
+        select(PostalCityBranchMapping)
+        .options(joinedload(PostalCityBranchMapping.branch))
         .where(
-            PostOfficeBranchMapping.is_active.is_(True),
-            PostOfficeBranchMapping.district == normalized,
+            PostalCityBranchMapping.is_active.is_(True),
+            PostalCityBranchMapping.district == normalized,
         )
-        .order_by(PostOfficeBranchMapping.post_office)
+        .order_by(PostalCityBranchMapping.postal_city)
     )
 
     mappings = result.unique().scalars().all()
     return [
         {
-            "postOffice": m.post_office,
+            "postalCity": m.postal_city,
+            "postOffice": m.postal_city,  # legacy key, see module docstring
             "district": m.district,
             "province": m.province,
             "branchId": str(m.branch_id),
@@ -164,18 +173,18 @@ async def get_address_for_user(
     return result.scalar_one_or_none()
 
 
-async def resolve_branch_by_post_office(
+async def resolve_branch_by_postal_city(
     db: AsyncSession,
-    post_office_name: str,
-) -> Optional[PostOfficeBranchMapping]:
-    """Look up which branch serves the given Post Office (active only)."""
-    normalized = post_office_name.strip().title()
+    postal_city_name: str,
+) -> Optional[PostalCityBranchMapping]:
+    """Look up which branch serves the given postal city (active only)."""
+    normalized = postal_city_name.strip().title()
     result = await db.execute(
-        select(PostOfficeBranchMapping)
-        .options(joinedload(PostOfficeBranchMapping.branch))
+        select(PostalCityBranchMapping)
+        .options(joinedload(PostalCityBranchMapping.branch))
         .where(
-            PostOfficeBranchMapping.post_office == normalized,
-            PostOfficeBranchMapping.is_active.is_(True),
+            PostalCityBranchMapping.postal_city == normalized,
+            PostalCityBranchMapping.is_active.is_(True),
         )
     )
     return result.unique().scalar_one_or_none()
@@ -185,32 +194,32 @@ async def resolve_branch_by_location_triplet(
     db: AsyncSession,
     province: str,
     district: str,
-    post_office: str,
-) -> Optional[PostOfficeBranchMapping]:
+    postal_city: str,
+) -> Optional[PostalCityBranchMapping]:
     """
-    Resolve a branch using the full ``{province, district, post_office}`` triplet.
+    Resolve a branch using the full ``{province, district, postal_city}`` triplet.
 
     Leverages the composite B-tree index ``idx_po_branch_mapping_location_triplet``.
     """
     result = await db.execute(
-        select(PostOfficeBranchMapping)
-        .options(joinedload(PostOfficeBranchMapping.branch))
+        select(PostalCityBranchMapping)
+        .options(joinedload(PostalCityBranchMapping.branch))
         .where(
-            PostOfficeBranchMapping.province == province.strip().title(),
-            PostOfficeBranchMapping.district == district.strip().title(),
-            PostOfficeBranchMapping.post_office == post_office.strip().title(),
-            PostOfficeBranchMapping.is_active.is_(True),
+            PostalCityBranchMapping.province == province.strip().title(),
+            PostalCityBranchMapping.district == district.strip().title(),
+            PostalCityBranchMapping.postal_city == postal_city.strip().title(),
+            PostalCityBranchMapping.is_active.is_(True),
         )
     )
     return result.unique().scalar_one_or_none()
 
 
-async def list_served_post_offices(db: AsyncSession) -> list[str]:
-    """Return a sorted list of all actively-served Post Office names."""
+async def list_served_postal_cities(db: AsyncSession) -> list[str]:
+    """Return a sorted list of all actively-served postal city names."""
     result = await db.execute(
-        select(PostOfficeBranchMapping.post_office)
-        .where(PostOfficeBranchMapping.is_active.is_(True))
-        .order_by(PostOfficeBranchMapping.post_office)
+        select(PostalCityBranchMapping.postal_city)
+        .where(PostalCityBranchMapping.is_active.is_(True))
+        .order_by(PostalCityBranchMapping.postal_city)
     )
     return [row[0] for row in result.all()]
 
@@ -229,7 +238,7 @@ async def set_branch_context(
     user_id: UUID,
     branch_id: UUID,
     branch_name: str,
-    post_office: str,
+    postal_city: str,
     delivery_info: Optional[dict] = None,
 ) -> dict:
     """
@@ -246,7 +255,7 @@ async def set_branch_context(
         session_id=_branch_session_id(user_id),
         branch_id=branch_id,
         branch_name=branch_name,
-        post_office=post_office,
+        postal_city=postal_city,
         delivery_info=delivery_info,
     )
 
@@ -254,7 +263,7 @@ async def set_branch_context(
 def _build_branch_context(
     branch_id: UUID,
     branch_name: str,
-    post_office: str,
+    postal_city: str,
     delivery_info: Optional[dict] = None,
 ) -> dict:
     """Build the branch context dict (same shape as stored in Redis)."""
@@ -262,9 +271,42 @@ def _build_branch_context(
     return {
         "branch_id": str(branch_id),
         "branch_name": branch_name,
-        "post_office": post_office,
+        "postal_city": postal_city,
         "delivery_info": delivery_info or {},
         "resolved_at": now.isoformat(),
+    }
+
+
+def context_postal_city(context: dict) -> Optional[str]:
+    """
+    The postal city stored in a branch context.
+
+    A context written before the rename lives in Redis for up to thirty days
+    under the old ``post_office`` key; reading only the new key would make every
+    such customer look as if they had never chosen a location.
+    """
+    return context.get("postal_city") or context.get("post_office")
+
+
+def context_payload(context: dict) -> dict:
+    """The wire shape of a branch context, shared by every route that returns one."""
+    postal_city = context_postal_city(context)
+    return {
+        "branchId": context["branch_id"],
+        "branchName": context["branch_name"],
+        "postalCity": postal_city,
+        "postOffice": postal_city,  # legacy key, see module docstring
+        "deliveryInfo": context.get("delivery_info", {}),
+        "resolvedAt": context["resolved_at"],
+    }
+
+
+def _delivery_info(mapping: PostalCityBranchMapping) -> dict:
+    return {
+        "province": mapping.province,
+        "district": mapping.district,
+        "postal_city": mapping.postal_city,
+        "post_office": mapping.postal_city,  # legacy key, see module docstring
     }
 
 
@@ -273,7 +315,7 @@ async def set_branch_context_for_session(
     session_id: str,
     branch_id: UUID,
     branch_name: str,
-    post_office: str,
+    postal_city: str,
     delivery_info: Optional[dict] = None,
 ) -> dict:
     """
@@ -283,14 +325,14 @@ async def set_branch_context_for_session(
     context = _build_branch_context(
         branch_id=branch_id,
         branch_name=branch_name,
-        post_office=post_office,
+        postal_city=postal_city,
         delivery_info=delivery_info,
     )
     key = RedisKeys.branch_context(session_id)
     await redis.set(key, json.dumps(context), ex=RedisTTL.BRANCH_CONTEXT)
     logger.info(
         f"Branch context set for session {session_id}: "
-        f"{post_office} → {branch_name} ({branch_id})"
+        f"{postal_city} → {branch_name} ({branch_id})"
     )
     return context
 
@@ -338,8 +380,8 @@ async def resolve_address_to_branch(
     """
     Full resolution flow via saved address:
       1. Validate address ownership.
-      2. Extract ``post_office`` (+ district, province).
-      3. Look up ``PostOfficeBranchMapping``.
+      2. Extract ``postal_city`` (+ district, province).
+      3. Look up ``PostalCityBranchMapping``.
       4. Store branch context (with delivery_info) in Redis.
     """
     address = await get_address_for_user(db, address_id, user_id)
@@ -350,34 +392,28 @@ async def resolve_address_to_branch(
             message="Address not found or does not belong to this user",
         )
 
-    post_office = address.post_office
-    if not post_office:
+    postal_city = address.postal_city
+    if not postal_city:
         raise NotFoundError(
-            resource="Post Office",
-            message="The selected address does not have a Post Office field set",
+            resource="Postal City",
+            message="The selected address does not have a postal city set",
         )
 
-    mapping = await resolve_branch_by_post_office(db, post_office)
+    mapping = await resolve_branch_by_postal_city(db, postal_city)
     if mapping is None:
         raise LocationNotServedError(
-            post_office=post_office,
+            postal_city=postal_city,
             district=getattr(address, "district", None),
             province=getattr(address, "province", None),
         )
-
-    delivery_info = {
-        "province": mapping.province,
-        "district": mapping.district,
-        "post_office": mapping.post_office,
-    }
 
     context = await set_branch_context(
         redis,
         user_id=user_id,
         branch_id=mapping.branch_id,
         branch_name=mapping.branch_name,
-        post_office=mapping.post_office,
-        delivery_info=delivery_info,
+        postal_city=mapping.postal_city,
+        delivery_info=_delivery_info(mapping),
     )
     return context
 
@@ -392,11 +428,11 @@ async def resolve_location_to_branch(
     user_id: UUID,
     province: str,
     district: str,
-    post_office: str,
+    postal_city: str,
 ) -> dict:
     """Resolve location triplet and optionally store branch context for a user."""
     return await resolve_location_to_branch_for_session(
-        db, redis, _branch_session_id(user_id), province, district, post_office,
+        db, redis, _branch_session_id(user_id), province, district, postal_city,
     )
 
 
@@ -406,7 +442,7 @@ async def resolve_location_to_branch_for_session(
     session_id: str,
     province: str,
     district: str,
-    post_office: str,
+    postal_city: str,
 ) -> dict:
     """
     Resolve a branch using a manually-selected location triplet
@@ -415,25 +451,20 @@ async def resolve_location_to_branch_for_session(
     If Redis is None or storage fails, still returns the resolved context (no 500).
     """
     mapping = await resolve_branch_by_location_triplet(
-        db, province, district, post_office,
+        db, province, district, postal_city,
     )
     if mapping is None:
         raise LocationNotServedError(
-            post_office=post_office,
+            postal_city=postal_city,
             district=district,
             province=province,
         )
 
-    delivery_info = {
-        "province": mapping.province,
-        "district": mapping.district,
-        "post_office": mapping.post_office,
-    }
-
+    delivery_info = _delivery_info(mapping)
     context = _build_branch_context(
         branch_id=mapping.branch_id,
         branch_name=mapping.branch_name,
-        post_office=mapping.post_office,
+        postal_city=mapping.postal_city,
         delivery_info=delivery_info,
     )
 
@@ -444,7 +475,7 @@ async def resolve_location_to_branch_for_session(
                 session_id=session_id,
                 branch_id=mapping.branch_id,
                 branch_name=mapping.branch_name,
-                post_office=mapping.post_office,
+                postal_city=mapping.postal_city,
                 delivery_info=delivery_info,
             )
         except Exception as e:
@@ -459,18 +490,18 @@ async def resolve_location_to_branch_for_session(
 
 
 # ============================================================================
-# Admin CRUD for PostOfficeBranchMapping
+# Admin CRUD for PostalCityBranchMapping
 # ============================================================================
 
 async def get_mapping_by_id(
     db: AsyncSession,
     mapping_id: UUID,
-) -> Optional[PostOfficeBranchMapping]:
+) -> Optional[PostalCityBranchMapping]:
     """Fetch a single mapping by its primary key (with branch eager-loaded)."""
     result = await db.execute(
-        select(PostOfficeBranchMapping)
-        .options(joinedload(PostOfficeBranchMapping.branch))
-        .where(PostOfficeBranchMapping.mapping_id == mapping_id)
+        select(PostalCityBranchMapping)
+        .options(joinedload(PostalCityBranchMapping.branch))
+        .where(PostalCityBranchMapping.mapping_id == mapping_id)
     )
     return result.unique().scalar_one_or_none()
 
@@ -480,24 +511,24 @@ async def list_all_mappings(
     province: Optional[str] = None,
     district: Optional[str] = None,
     active_only: bool = False,
-) -> list[PostOfficeBranchMapping]:
+) -> list[PostalCityBranchMapping]:
     """Return mappings with optional province/district filters (admin use)."""
     stmt = (
-        select(PostOfficeBranchMapping)
-        .options(joinedload(PostOfficeBranchMapping.branch))
+        select(PostalCityBranchMapping)
+        .options(joinedload(PostalCityBranchMapping.branch))
         .order_by(
-            PostOfficeBranchMapping.province,
-            PostOfficeBranchMapping.district,
-            PostOfficeBranchMapping.post_office,
+            PostalCityBranchMapping.province,
+            PostalCityBranchMapping.district,
+            PostalCityBranchMapping.postal_city,
         )
     )
 
     if province:
-        stmt = stmt.where(PostOfficeBranchMapping.province == province.strip().title())
+        stmt = stmt.where(PostalCityBranchMapping.province == province.strip().title())
     if district:
-        stmt = stmt.where(PostOfficeBranchMapping.district == district.strip().title())
+        stmt = stmt.where(PostalCityBranchMapping.district == district.strip().title())
     if active_only:
-        stmt = stmt.where(PostOfficeBranchMapping.is_active.is_(True))
+        stmt = stmt.where(PostalCityBranchMapping.is_active.is_(True))
 
     result = await db.execute(stmt)
     return list(result.unique().scalars().all())
@@ -506,40 +537,38 @@ async def list_all_mappings(
 async def create_mapping(
     db: AsyncSession,
     *,
-    post_office: str,
+    postal_city: str,
     branch_id: UUID,
     branch_name: str,
     district: str,
     province: str,
     is_active: bool = True,
-) -> PostOfficeBranchMapping:
+) -> PostalCityBranchMapping:
     """
-    Create a new PostOfficeBranchMapping.
+    Create a new PostalCityBranchMapping.
 
-    Raises ``DuplicateError`` if the post_office already exists.
+    Raises ``DuplicateError`` if the postal city already exists.
     Raises ``NotFoundError`` if the referenced branch doesn't exist.
     """
-    # Validate branch exists
     branch_result = await db.execute(
         select(Branch).where(Branch.branch_id == branch_id)
     )
     if branch_result.scalar_one_or_none() is None:
         raise NotFoundError(resource="Branch", identifier=str(branch_id))
 
-    # Check for duplicate post office
     dup = await db.execute(
-        select(PostOfficeBranchMapping.mapping_id).where(
-            PostOfficeBranchMapping.post_office == post_office.strip().title()
+        select(PostalCityBranchMapping.mapping_id).where(
+            PostalCityBranchMapping.postal_city == postal_city.strip().title()
         )
     )
     if dup.scalar_one_or_none() is not None:
         raise DuplicateError(
-            field="post_office",
-            message=f"A mapping for Post Office '{post_office}' already exists",
+            field="postal_city",
+            message=f"A mapping for postal city '{postal_city}' already exists",
         )
 
-    mapping = PostOfficeBranchMapping(
-        post_office=post_office.strip().title(),
+    mapping = PostalCityBranchMapping(
+        postal_city=postal_city.strip().title(),
         branch_id=branch_id,
         branch_name=branch_name,
         district=district.strip().title(),
@@ -550,7 +579,7 @@ async def create_mapping(
     await db.commit()
     await db.refresh(mapping)
 
-    logger.info(f"Mapping created: {mapping.post_office} → {mapping.branch_name}")
+    logger.info(f"Mapping created: {mapping.postal_city} → {mapping.branch_name}")
     return mapping
 
 
@@ -558,7 +587,7 @@ async def update_mapping(
     db: AsyncSession,
     mapping_id: UUID,
     **fields,
-) -> PostOfficeBranchMapping:
+) -> PostalCityBranchMapping:
     """
     Update an existing mapping.
 
@@ -598,7 +627,7 @@ async def delete_mapping(
 
 
 # ============================================================================
-# Post Office Directory (Master List / "Delivery Zones") CRUD
+# Postal City Directory (Master List / "Delivery Zones") CRUD
 # ============================================================================
 
 async def list_directory(
@@ -606,19 +635,19 @@ async def list_directory(
     province: Optional[str] = None,
     district: Optional[str] = None,
     active_only: bool = False,
-) -> list[PostOfficeDirectory]:
-    """Return master Post Office directory entries with optional filters."""
-    stmt = select(PostOfficeDirectory).order_by(
-        PostOfficeDirectory.province,
-        PostOfficeDirectory.district,
-        PostOfficeDirectory.post_office,
+) -> list[PostalCityDirectory]:
+    """Return master postal city directory entries with optional filters."""
+    stmt = select(PostalCityDirectory).order_by(
+        PostalCityDirectory.province,
+        PostalCityDirectory.district,
+        PostalCityDirectory.postal_city,
     )
     if province:
-        stmt = stmt.where(PostOfficeDirectory.province == province.strip().title())
+        stmt = stmt.where(PostalCityDirectory.province == province.strip().title())
     if district:
-        stmt = stmt.where(PostOfficeDirectory.district == district.strip().title())
+        stmt = stmt.where(PostalCityDirectory.district == district.strip().title())
     if active_only:
-        stmt = stmt.where(PostOfficeDirectory.is_active.is_(True))
+        stmt = stmt.where(PostalCityDirectory.is_active.is_(True))
 
     result = await db.execute(stmt)
     return list(result.scalars().all())
@@ -627,10 +656,10 @@ async def list_directory(
 async def get_directory_entry(
     db: AsyncSession,
     location_id: UUID,
-) -> Optional[PostOfficeDirectory]:
+) -> Optional[PostalCityDirectory]:
     """Fetch a single directory entry by primary key."""
     result = await db.execute(
-        select(PostOfficeDirectory).where(PostOfficeDirectory.id == location_id)
+        select(PostalCityDirectory).where(PostalCityDirectory.id == location_id)
     )
     return result.scalar_one_or_none()
 
@@ -638,29 +667,29 @@ async def get_directory_entry(
 async def create_directory_entry(
     db: AsyncSession,
     *,
-    post_office: str,
+    postal_city: str,
     district: str,
     province: str,
     is_active: bool = True,
-) -> PostOfficeDirectory:
+) -> PostalCityDirectory:
     """
-    Add a Post Office to the master directory.
+    Add a postal city to the master directory.
 
-    Raises ``DuplicateError`` if the post office already exists (names are
-    unique across Sri Lanka).
+    Raises ``DuplicateError`` if the postal city already exists (names are
+    unique in this directory).
     """
-    po = post_office.strip().title()
+    name = postal_city.strip().title()
     dup = await db.execute(
-        select(PostOfficeDirectory.id).where(PostOfficeDirectory.post_office == po)
+        select(PostalCityDirectory.id).where(PostalCityDirectory.postal_city == name)
     )
     if dup.scalar_one_or_none() is not None:
         raise DuplicateError(
-            field="post_office",
-            message=f"Post Office '{po}' already exists in the directory",
+            field="postal_city",
+            message=f"Postal city '{name}' already exists in the directory",
         )
 
-    entry = PostOfficeDirectory(
-        post_office=po,
+    entry = PostalCityDirectory(
+        postal_city=name,
         district=district.strip().title(),
         province=province.strip().title(),
         is_active=is_active,
@@ -668,7 +697,7 @@ async def create_directory_entry(
     db.add(entry)
     await db.commit()
     await db.refresh(entry)
-    logger.info(f"Directory entry created: {entry.post_office} ({entry.district})")
+    logger.info(f"Directory entry created: {entry.postal_city} ({entry.district})")
     return entry
 
 
@@ -676,28 +705,28 @@ async def update_directory_entry(
     db: AsyncSession,
     location_id: UUID,
     **fields,
-) -> PostOfficeDirectory:
+) -> PostalCityDirectory:
     """Update a directory entry. Only non-``None`` fields are applied.
 
-    If the post office name changes, guards against colliding with another
+    If the postal city name changes, guards against colliding with another
     existing entry.
     """
     entry = await get_directory_entry(db, location_id)
     if entry is None:
-        raise NotFoundError(resource="Post Office", identifier=str(location_id))
+        raise NotFoundError(resource="Postal City", identifier=str(location_id))
 
-    new_po = fields.get("post_office")
-    if new_po and new_po != entry.post_office:
+    new_name = fields.get("postal_city")
+    if new_name and new_name != entry.postal_city:
         dup = await db.execute(
-            select(PostOfficeDirectory.id).where(
-                PostOfficeDirectory.post_office == new_po,
-                PostOfficeDirectory.id != location_id,
+            select(PostalCityDirectory.id).where(
+                PostalCityDirectory.postal_city == new_name,
+                PostalCityDirectory.id != location_id,
             )
         )
         if dup.scalar_one_or_none() is not None:
             raise DuplicateError(
-                field="post_office",
-                message=f"Post Office '{new_po}' already exists in the directory",
+                field="postal_city",
+                message=f"Postal city '{new_name}' already exists in the directory",
             )
 
     for key, value in fields.items():
@@ -717,7 +746,7 @@ async def delete_directory_entry(
     """Hard-delete a directory entry. Returns ``True`` if a row was removed."""
     entry = await get_directory_entry(db, location_id)
     if entry is None:
-        raise NotFoundError(resource="Post Office", identifier=str(location_id))
+        raise NotFoundError(resource="Postal City", identifier=str(location_id))
 
     await db.delete(entry)
     await db.commit()
@@ -726,89 +755,86 @@ async def delete_directory_entry(
 
 
 # ============================================================================
-# Branch coverage sync (Post Office → Branch mappings)
+# Branch coverage sync (Postal City → Branch mappings)
 # ============================================================================
 
 async def get_branch_coverage(db: AsyncSession, branch_id: UUID) -> list[str]:
-    """Return the sorted Post Office names currently mapped to a branch."""
+    """Return the sorted postal city names currently mapped to a branch."""
     result = await db.execute(
-        select(PostOfficeBranchMapping.post_office)
-        .where(PostOfficeBranchMapping.branch_id == branch_id)
-        .order_by(PostOfficeBranchMapping.post_office)
+        select(PostalCityBranchMapping.postal_city)
+        .where(PostalCityBranchMapping.branch_id == branch_id)
+        .order_by(PostalCityBranchMapping.postal_city)
     )
     return [row[0] for row in result.all()]
 
 
 async def get_coverage_map(db: AsyncSession) -> dict[UUID, list[str]]:
-    """Return {branch_id: [post_office, ...]} for all mappings (batch, for lists)."""
+    """Return {branch_id: [postal_city, ...]} for all mappings (batch, for lists)."""
     result = await db.execute(
         select(
-            PostOfficeBranchMapping.branch_id,
-            PostOfficeBranchMapping.post_office,
-        ).order_by(PostOfficeBranchMapping.post_office)
+            PostalCityBranchMapping.branch_id,
+            PostalCityBranchMapping.postal_city,
+        ).order_by(PostalCityBranchMapping.postal_city)
     )
     coverage: dict[UUID, list[str]] = {}
-    for branch_id, post_office in result.all():
-        coverage.setdefault(branch_id, []).append(post_office)
+    for branch_id, postal_city in result.all():
+        coverage.setdefault(branch_id, []).append(postal_city)
     return coverage
 
 
 async def sync_branch_coverage(
     db: AsyncSession,
     branch: Branch,
-    post_offices: list[str],
+    postal_cities: list[str],
 ) -> None:
     """
-    Make ``PostOfficeBranchMapping`` reflect exactly *post_offices* for *branch*.
+    Make ``PostalCityBranchMapping`` reflect exactly *postal_cities* for *branch*.
 
     Idempotent set-reconciliation, executed **inside the caller's transaction**
     (no commit here — the branch create/update endpoint commits once so the
     branch row and its coverage move together):
 
-      * A post office already mapped to this branch → kept / refreshed.
-      * A post office mapped to a *different* branch → reassigned to this branch
-        (post_office is globally unique, so the latest branch to claim it wins).
-      * A post office in the branch's old coverage but not in the new set → its
+      * A postal city already mapped to this branch → kept / refreshed.
+      * A postal city mapped to a *different* branch → reassigned to this branch
+        (the name is globally unique, so the latest branch to claim it wins).
+      * A postal city in the branch's old coverage but not in the new set → its
         mapping is removed.
 
     District/Province for each mapping are looked up from the master directory,
     falling back to the branch's own district/province.
     """
-    desired = {po.strip().title() for po in post_offices if po and po.strip()}
+    desired = {pc.strip().title() for pc in postal_cities if pc and pc.strip()}
 
-    # Directory lookup for the desired post offices (for district/province).
-    directory: dict[str, PostOfficeDirectory] = {}
+    directory: dict[str, PostalCityDirectory] = {}
     if desired:
         rows = await db.execute(
-            select(PostOfficeDirectory).where(
-                PostOfficeDirectory.post_office.in_(desired)
+            select(PostalCityDirectory).where(
+                PostalCityDirectory.postal_city.in_(desired)
             )
         )
-        directory = {e.post_office: e for e in rows.scalars().all()}
+        directory = {e.postal_city: e for e in rows.scalars().all()}
 
-    # Existing mappings for the desired POs (may belong to other branches) …
-    existing_by_po: dict[str, PostOfficeBranchMapping] = {}
+    existing_by_name: dict[str, PostalCityBranchMapping] = {}
     if desired:
         rows = await db.execute(
-            select(PostOfficeBranchMapping).where(
-                PostOfficeBranchMapping.post_office.in_(desired)
+            select(PostalCityBranchMapping).where(
+                PostalCityBranchMapping.postal_city.in_(desired)
             )
         )
-        existing_by_po = {m.post_office: m for m in rows.scalars().all()}
+        existing_by_name = {m.postal_city: m for m in rows.scalars().all()}
 
-    # … and all mappings currently owned by this branch (to prune removed POs).
     owned_rows = await db.execute(
-        select(PostOfficeBranchMapping).where(
-            PostOfficeBranchMapping.branch_id == branch.branch_id
+        select(PostalCityBranchMapping).where(
+            PostalCityBranchMapping.branch_id == branch.branch_id
         )
     )
     owned = list(owned_rows.scalars().all())
 
-    for po in desired:
-        entry = directory.get(po)
+    for name in desired:
+        entry = directory.get(name)
         district = entry.district if entry else branch.district
         province = entry.province if entry else branch.province
-        mapping = existing_by_po.get(po)
+        mapping = existing_by_name.get(name)
         if mapping is not None:
             mapping.branch_id = branch.branch_id
             mapping.branch_name = branch.name
@@ -817,8 +843,8 @@ async def sync_branch_coverage(
             mapping.is_active = True
         else:
             db.add(
-                PostOfficeBranchMapping(
-                    post_office=po,
+                PostalCityBranchMapping(
+                    postal_city=name,
                     branch_id=branch.branch_id,
                     branch_name=branch.name,
                     district=district,
@@ -827,13 +853,12 @@ async def sync_branch_coverage(
                 )
             )
 
-    # Remove this branch's mappings that are no longer in the desired set.
     for mapping in owned:
-        if mapping.post_office not in desired:
+        if mapping.postal_city not in desired:
             await db.delete(mapping)
 
     await db.flush()
     logger.info(
         f"Synced coverage for branch {branch.branch_id}: "
-        f"{len(desired)} post office(s)."
+        f"{len(desired)} postal city(ies)."
     )

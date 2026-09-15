@@ -55,9 +55,14 @@ ENVIRONMENTS = (TEST, LIVE)
 ENVIRONMENT_KEY = "courier_environment"
 BASE_URL_KEY = {TEST: "courier_base_url_test", LIVE: "courier_base_url_live"}
 API_KEY_KEY = {TEST: "courier_api_key_test", LIVE: "courier_api_key_live"}
+WEBHOOK_SECRET_KEY = {TEST: "courier_webhook_secret_test", LIVE: "courier_webhook_secret_live"}
 
 #: branches columns, by environment.
 BRANCH_KEY_COLUMN = {TEST: "courier_api_key_test", LIVE: "courier_api_key_live"}
+BRANCH_WEBHOOK_SECRET_COLUMN = {
+    TEST: "courier_webhook_secret_test",
+    LIVE: "courier_webhook_secret_live",
+}
 
 
 class CourierNotConfiguredError(Exception):
@@ -73,6 +78,8 @@ class CourierTarget:
     environment: str
     #: Where the key came from: branch | account. For the UI and the logs.
     key_source: str = "account"
+    #: The branch whose own key this is; None for the account key.
+    branch_id: Optional[UUID] = None
 
 
 def mask(key: Optional[str]) -> Optional[str]:
@@ -221,8 +228,157 @@ async def resolve(db: AsyncSession, branch_id: Optional[UUID] = None) -> Courier
         )
 
     return CourierTarget(
-        base_url=base_url, api_key=key, environment=environment, key_source=source
+        base_url=base_url,
+        api_key=key,
+        environment=environment,
+        key_source=source,
+        branch_id=branch_id if source == "branch" else None,
     )
+
+
+async def all_targets(db: AsyncSession) -> list[CourierTarget]:
+    """
+    Every distinct SribeesExpress account this deployment books into.
+
+    The account key, plus each branch that holds its own key, each in the
+    environment it currently books in. A branch holding its own key is its own
+    SribeesExpress client: its parcels, webhooks and COD ledger are invisible to
+    the account key, so anything that reads "all our shipments" — the
+    reconciliation sweep above all — has to walk every one of these, or a
+    delivered COD parcel booked under a branch key is never seen.
+
+    Targets that cannot be built (no host, a key that will not decrypt) are
+    skipped with a warning rather than failing the caller: one misconfigured
+    branch must not stop the sweep reconciling everyone else.
+    """
+    targets: list[CourierTarget] = []
+    seen: set[tuple[str, str]] = set()
+
+    try:
+        account = await resolve(db, None)
+    except (CourierNotConfiguredError, DecryptionError) as exc:
+        logger.info(f"No account-wide courier target: {exc}")
+    else:
+        targets.append(account)
+        seen.add((account.base_url, account.api_key))
+
+    branch_ids = (
+        await db.execute(
+            select(Branch.branch_id).where(
+                (Branch.courier_api_key_test.isnot(None)) | (Branch.courier_api_key_live.isnot(None))
+            )
+        )
+    ).scalars().all()
+    for branch_id in branch_ids:
+        try:
+            target = await resolve(db, branch_id)
+        except (CourierNotConfiguredError, DecryptionError) as exc:
+            logger.warning(f"Skipping courier target for branch {branch_id}: {exc}")
+            continue
+        # A branch with a key only in the other environment resolves to the
+        # account key here; that account is already in the list.
+        if (target.base_url, target.api_key) in seen:
+            continue
+        seen.add((target.base_url, target.api_key))
+        targets.append(target)
+    return targets
+
+
+async def any_target(db: AsyncSession) -> CourierTarget:
+    """
+    Some usable account, for calls whose answer is the same whichever account
+    asks — the postal city directory above all.
+
+    The account key when there is one, else the first branch with its own. A
+    deployment where every branch signs with SribeesExpress separately has no
+    account key at all, and must still be able to sync the directory.
+    """
+    targets = await all_targets(db)
+    if not targets:
+        raise CourierNotConfiguredError(
+            "No SribeesExpress account is set up: enter an account key or a branch key "
+            "under Settings -> Courier."
+        )
+    return targets[0]
+
+
+# ---------------------------------------------------------------------------
+# Webhook signing secrets
+# ---------------------------------------------------------------------------
+
+
+async def store_webhook_secret(
+    db: AsyncSession, target: CourierTarget, secret: str, *, actor: str
+) -> None:
+    """
+    Keep the signing secret SribeesExpress issued to ``target``'s account.
+
+    Encrypted and never returned, exactly like the keys. Stored the moment
+    registration succeeds, because SribeesExpress shows it once: an operator
+    copying it out of a response into an environment file is how it ends up in
+    a chat log, and a redeploy they forget is a week of rejected webhooks.
+    """
+    if target.branch_id is None:
+        await AppSettingsService.upsert(
+            db,
+            key=WEBHOOK_SECRET_KEY[target.environment],
+            value=encrypt(secret),
+            description=(
+                f"Webhook signing secret for the account-wide SribeesExpress "
+                f"{target.environment} account, encrypted at rest."
+            ),
+            is_active=True,
+        )
+    else:
+        branch = (
+            await db.execute(select(Branch).where(Branch.branch_id == target.branch_id))
+        ).scalar_one()
+        setattr(branch, BRANCH_WEBHOOK_SECRET_COLUMN[target.environment], encrypt(secret))
+        await db.commit()
+    logger.warning(
+        f"Courier webhook secret stored for {target.key_source} account "
+        f"({target.environment}) by {actor}"
+    )
+
+
+async def account_webhook_secret_set(db: AsyncSession, environment: str) -> bool:
+    """Whether the account-wide signing secret for ``environment`` is stored. Never the value."""
+    return bool(await _setting(db, WEBHOOK_SECRET_KEY[environment]))
+
+
+async def webhook_secrets(db: AsyncSession) -> list[str]:
+    """
+    Every secret an inbound push may be signed with, decrypted.
+
+    One per registered account and environment. A push does not say which of
+    our accounts it belongs to before its signature is checked, so the verifier
+    tries each — a few HMACs, compared in constant time. Unreadable entries are
+    skipped (and logged): a broken branch secret must not reject every other
+    account's pushes.
+    """
+    stored: list[Optional[str]] = []
+    for environment in ENVIRONMENTS:
+        stored.append(await _setting(db, WEBHOOK_SECRET_KEY[environment]))
+    rows = (
+        await db.execute(
+            select(Branch.courier_webhook_secret_test, Branch.courier_webhook_secret_live)
+        )
+    ).all()
+    for test_secret, live_secret in rows:
+        stored.extend([test_secret, live_secret])
+
+    secrets: list[str] = []
+    for value in stored:
+        if not value:
+            continue
+        try:
+            plain = decrypt(value)
+        except DecryptionError:
+            logger.error("A stored courier webhook secret will not decrypt -- re-register that endpoint")
+            continue
+        if plain:
+            secrets.append(plain)
+    return secrets
 
 
 # ---------------------------------------------------------------------------

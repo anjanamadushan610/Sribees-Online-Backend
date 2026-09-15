@@ -16,10 +16,13 @@ from app.models.app_settings import AppSetting
 
 # Well-known setting keys
 SPLASH_VIDEO_KEY = "splash_video_url"
-FLAT_DELIVERY_FEE_KEY = "flat_delivery_fee"
 # Stored as a human-friendly percentage (e.g. "15" = 15%). Converted to a
 # fraction for PricingService in get_pricing_config().
 ORDER_TAX_RATE_PERCENT_KEY = "order_tax_rate_percent"
+# There is deliberately no delivery fee setting. The delivery charge is
+# SribeesExpress's quote for each parcel (see PricingService); migration 052
+# deleted the `flat_delivery_fee` / `delivery_fee` rows an administrator used
+# to set, so nothing can quietly reintroduce a guessed price.
 
 
 def _to_float(value: Optional[str], fallback: float) -> float:
@@ -113,14 +116,10 @@ class AppSettingsService:
         ``order_tax_rate_percent`` is a percentage (15.0 = 15%); the config
         default ``order_tax_rate`` is a fraction, so it is scaled ×100 here.
         """
-        fee_row = await AppSettingsService.get_by_key(db, FLAT_DELIVERY_FEE_KEY)
         tax_row = await AppSettingsService.get_by_key(db, ORDER_TAX_RATE_PERCENT_KEY)
         splash_row = await AppSettingsService.get_by_key(db, SPLASH_VIDEO_KEY)
 
         return {
-            "flat_delivery_fee": _to_float(
-                fee_row.value if fee_row else None, float(settings.flat_delivery_fee)
-            ),
             "order_tax_rate_percent": _to_float(
                 tax_row.value if tax_row else None, float(settings.order_tax_rate) * 100
             ),
@@ -139,7 +138,6 @@ class AppSettingsService:
         except (InvalidOperation, TypeError):
             tax_fraction = Decimal(str(settings.order_tax_rate))
         return {
-            "delivery_fee": Decimal(str(ps["flat_delivery_fee"])),
             "tax_rate": tax_fraction,
         }
 
@@ -147,18 +145,10 @@ class AppSettingsService:
     async def update_platform_settings(
         db: AsyncSession,
         *,
-        flat_delivery_fee: Optional[float] = None,
         order_tax_rate_percent: Optional[float] = None,
         splash_video_url: Optional[str] = None,
     ) -> dict:
         """Upsert any provided platform settings; returns the fresh values."""
-        if flat_delivery_fee is not None:
-            await AppSettingsService.upsert(
-                db,
-                key=FLAT_DELIVERY_FEE_KEY,
-                value=str(flat_delivery_fee),
-                description="Flat delivery fee applied to non-empty carts (currency units)",
-            )
         if order_tax_rate_percent is not None:
             await AppSettingsService.upsert(
                 db,

@@ -1,13 +1,31 @@
 """
-SRIBEESonline - Branch & Post Office Mapping Schemas
+SRIBEESonline - Branch & Postal City Mapping Schemas
 
 Pydantic schemas for branch routing request/response validation.
+
+**Wire compatibility.** The place an address is written in is a *postal city*
+(see app/models/branch.py). Requests still accept the old ``post_office`` /
+``postOffice`` spellings through ``AliasChoices``: mobile builds already on
+customers' phones send them, and refusing those would break address saving
+and branch selection for everyone who has not updated. Responses carry the new
+names, alongside the old ones where an installed client reads them — see the
+routes that build those payloads.
 """
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+#: Every spelling a client may send for a postal city, newest first.
+POSTAL_CITY_ALIASES = AliasChoices("postal_city", "postalCity", "post_office", "postOffice")
 
 # =============================================================================
 # Branch Schemas
@@ -15,10 +33,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class BranchBase(BaseModel):
     """Base branch fields."""
+    model_config = ConfigDict(populate_by_name=True)
+
     name: str = Field(..., min_length=1, max_length=255)
     code: str = Field(..., min_length=2, max_length=50)
     address: Optional[str] = None
-    post_office: Optional[str] = Field(None, max_length=100)
+    postal_city: Optional[str] = Field(None, max_length=100, validation_alias=POSTAL_CITY_ALIASES)
     district: Optional[str] = Field(None, max_length=100)
     province: str = Field(..., max_length=100)
     phone: Optional[str] = Field(None, max_length=20)
@@ -27,31 +47,35 @@ class BranchBase(BaseModel):
 class BranchCreate(BranchBase):
     """Create branch request."""
     manager_id: Optional[UUID] = None
-    coverage_post_offices: Optional[list[str]] = Field(
+    coverage_postal_cities: Optional[list[str]] = Field(
         None,
+        validation_alias=AliasChoices("coverage_postal_cities", "coverage_post_offices"),
         description=(
-            "Post Office names this branch serves. Synced to "
-            "PostOfficeBranchMapping in the same transaction."
+            "Postal city names this branch serves. Synced to "
+            "PostalCityBranchMapping in the same transaction."
         ),
     )
 
 
 class BranchUpdate(BaseModel):
     """Update branch request — all fields optional."""
+    model_config = ConfigDict(populate_by_name=True)
+
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     code: Optional[str] = Field(None, min_length=2, max_length=50)
     address: Optional[str] = None
-    post_office: Optional[str] = Field(None, max_length=100)
+    postal_city: Optional[str] = Field(None, max_length=100, validation_alias=POSTAL_CITY_ALIASES)
     district: Optional[str] = Field(None, max_length=100)
     province: Optional[str] = Field(None, max_length=100)
     phone: Optional[str] = Field(None, max_length=20)
     manager_id: Optional[UUID] = None
     is_active: Optional[bool] = None
-    coverage_post_offices: Optional[list[str]] = Field(
+    coverage_postal_cities: Optional[list[str]] = Field(
         None,
+        validation_alias=AliasChoices("coverage_postal_cities", "coverage_post_offices"),
         description=(
-            "Full replacement set of Post Offices this branch serves. When "
-            "provided, the branch's PostOfficeBranchMapping rows are synced to "
+            "Full replacement set of postal cities this branch serves. When "
+            "provided, the branch's PostalCityBranchMapping rows are synced to "
             "exactly this list. Omit to leave coverage unchanged."
         ),
     )
@@ -93,11 +117,13 @@ class DeliveryRunsUpdate(BaseModel):
 
 class BranchResponse(BaseModel):
     """Branch response."""
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
     branch_id: UUID = Field(..., alias="branchId")
     name: str
     code: str
     address: Optional[str] = None
-    post_office: Optional[str] = Field(None, alias="postOffice")
+    postal_city: Optional[str] = Field(None, alias="postalCity")
     district: Optional[str] = None
     province: str
     phone: Optional[str] = None
@@ -106,22 +132,21 @@ class BranchResponse(BaseModel):
     created_at: datetime = Field(..., alias="createdAt")
     updated_at: datetime = Field(..., alias="updatedAt")
 
-    class Config:
-        from_attributes = True
-        populate_by_name = True
-
 
 # =============================================================================
-# Post Office → Branch Mapping Schemas
+# Postal City → Branch Mapping Schemas
 # =============================================================================
 
-class PostOfficeBranchMappingBase(BaseModel):
+class PostalCityBranchMappingBase(BaseModel):
     """Base mapping fields."""
-    post_office: str = Field(
+    model_config = ConfigDict(populate_by_name=True)
+
+    postal_city: str = Field(
         ...,
         min_length=1,
         max_length=100,
-        description="Post Office name (must match addresses.post_office)",
+        validation_alias=POSTAL_CITY_ALIASES,
+        description="Postal city name (must match an address's postal city)",
     )
     branch_id: UUID = Field(..., description="Serving branch UUID")
     branch_name: str = Field(
@@ -133,39 +158,45 @@ class PostOfficeBranchMappingBase(BaseModel):
     district: Optional[str] = Field(None, max_length=100)
     province: Optional[str] = Field(None, max_length=100)
 
-    @field_validator("post_office")
+    @field_validator("postal_city")
     @classmethod
-    def normalize_post_office(cls, v: str) -> str:
-        """Normalize post office name: strip whitespace, title case."""
+    def normalize_postal_city(cls, v: str) -> str:
+        """Normalize postal city name: strip whitespace, title case."""
         return v.strip().title()
 
 
-class PostOfficeBranchMappingCreate(PostOfficeBranchMappingBase):
+class PostalCityBranchMappingCreate(PostalCityBranchMappingBase):
     """Create mapping request."""
     is_active: bool = True
 
 
-class PostOfficeBranchMappingUpdate(BaseModel):
+class PostalCityBranchMappingUpdate(BaseModel):
     """Update mapping request — all fields optional."""
-    post_office: Optional[str] = Field(None, min_length=1, max_length=100)
+    model_config = ConfigDict(populate_by_name=True)
+
+    postal_city: Optional[str] = Field(
+        None, min_length=1, max_length=100, validation_alias=POSTAL_CITY_ALIASES
+    )
     branch_id: Optional[UUID] = None
     branch_name: Optional[str] = Field(None, min_length=1, max_length=255)
     district: Optional[str] = Field(None, max_length=100)
     province: Optional[str] = Field(None, max_length=100)
     is_active: Optional[bool] = None
 
-    @field_validator("post_office")
+    @field_validator("postal_city")
     @classmethod
-    def normalize_post_office(cls, v: Optional[str]) -> Optional[str]:
+    def normalize_postal_city(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
             return v.strip().title()
         return v
 
 
-class PostOfficeBranchMappingResponse(BaseModel):
+class PostalCityBranchMappingResponse(BaseModel):
     """Mapping response."""
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
     mapping_id: UUID = Field(..., alias="mappingId")
-    post_office: str = Field(..., alias="postOffice")
+    postal_city: str = Field(..., alias="postalCity")
     branch_id: UUID = Field(..., alias="branchId")
     branch_name: str = Field(..., alias="branchName")
     district: Optional[str] = None
@@ -174,15 +205,11 @@ class PostOfficeBranchMappingResponse(BaseModel):
     created_at: datetime = Field(..., alias="createdAt")
     updated_at: datetime = Field(..., alias="updatedAt")
 
-    class Config:
-        from_attributes = True
-        populate_by_name = True
 
-
-class PostOfficeBranchMappingListResponse(BaseModel):
+class PostalCityBranchMappingListResponse(BaseModel):
     """List of mappings response."""
     success: bool = True
-    mappings: list[PostOfficeBranchMappingResponse]
+    mappings: list[PostalCityBranchMappingResponse]
     total: int
 
 
@@ -192,34 +219,31 @@ class PostOfficeBranchMappingListResponse(BaseModel):
 
 class BranchResolveRequest(BaseModel):
     """Request to resolve a delivery address to a branch."""
-    address_id: UUID = Field(..., alias="addressId", description="User's saved address UUID")
+    model_config = ConfigDict(populate_by_name=True)
 
-    class Config:
-        populate_by_name = True
+    address_id: UUID = Field(..., alias="addressId", description="User's saved address UUID")
 
 
 class BranchResolveResponse(BaseModel):
     """Response after resolving an address to a branch."""
+    model_config = ConfigDict(populate_by_name=True)
+
     success: bool = True
     branch_id: UUID = Field(..., alias="branchId")
     branch_name: str = Field(..., alias="branchName")
-    post_office: str = Field(..., alias="postOffice")
+    postal_city: str = Field(..., alias="postalCity")
     resolved_at: datetime = Field(..., alias="resolvedAt")
-
-    class Config:
-        populate_by_name = True
 
 
 class BranchContextResponse(BaseModel):
     """Current branch context from session."""
+    model_config = ConfigDict(populate_by_name=True)
+
     success: bool = True
     branch_id: UUID = Field(..., alias="branchId")
     branch_name: str = Field(..., alias="branchName")
-    post_office: str = Field(..., alias="postOffice")
+    postal_city: str = Field(..., alias="postalCity")
     resolved_at: datetime = Field(..., alias="resolvedAt")
-
-    class Config:
-        populate_by_name = True
 
 
 class BranchContextClearedResponse(BaseModel):
@@ -228,10 +252,10 @@ class BranchContextClearedResponse(BaseModel):
     message: str = "Branch context cleared. Please select a delivery address."
 
 
-class ServedPostOfficesResponse(BaseModel):
-    """List of all served post offices."""
+class ServedPostalCitiesResponse(BaseModel):
+    """List of all served postal cities."""
     success: bool = True
-    post_offices: list[str]
+    postal_cities: list[str]
     total: int
 
 
@@ -241,18 +265,17 @@ class ServedPostOfficesResponse(BaseModel):
 
 class ProvinceItem(BaseModel):
     """Single province with AI-friendly coverage summary."""
+    model_config = ConfigDict(populate_by_name=True)
+
     province: str
     district_count: int = Field(..., alias="districtCount")
-    post_office_count: int = Field(..., alias="postOfficeCount")
+    postal_city_count: int = Field(..., alias="postalCityCount")
     branch_count: int = Field(..., alias="branchCount")
     coverage_summary: str = Field(
         ...,
         alias="coverageSummary",
         description="AI-readable summary of branch coverage in this province",
     )
-
-    class Config:
-        populate_by_name = True
 
 
 class ProvinceListResponse(BaseModel):
@@ -264,18 +287,17 @@ class ProvinceListResponse(BaseModel):
 
 class DistrictItem(BaseModel):
     """Single district with coverage metadata."""
+    model_config = ConfigDict(populate_by_name=True)
+
     district: str
     province: str
-    post_office_count: int = Field(..., alias="postOfficeCount")
+    postal_city_count: int = Field(..., alias="postalCityCount")
     branch_names: list[str] = Field(..., alias="branchNames")
     coverage_summary: str = Field(
         ...,
         alias="coverageSummary",
         description="AI-readable summary of branch coverage in this district",
     )
-
-    class Config:
-        populate_by_name = True
 
 
 class DistrictListResponse(BaseModel):
@@ -285,23 +307,22 @@ class DistrictListResponse(BaseModel):
     total: int
 
 
-class PostOfficeItem(BaseModel):
-    """Single post office with its mapped branch details."""
-    post_office: str = Field(..., alias="postOffice")
+class PostalCityItem(BaseModel):
+    """Single postal city with its mapped branch details."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    postal_city: str = Field(..., alias="postalCity")
     district: str
     province: str
     branch_id: UUID = Field(..., alias="branchId")
     branch_name: str = Field(..., alias="branchName")
     is_active: bool = Field(..., alias="isActive")
 
-    class Config:
-        populate_by_name = True
 
-
-class PostOfficeListResponse(BaseModel):
-    """Response for GET /locations/post-offices."""
+class PostalCityListResponse(BaseModel):
+    """Response for GET /locations/postal-cities."""
     success: bool = True
-    data: list[PostOfficeItem]
+    data: list[PostalCityItem]
     total: int
 
 
@@ -310,22 +331,21 @@ class PostOfficeListResponse(BaseModel):
 # =============================================================================
 
 class LocationResolveRequest(BaseModel):
-    """Resolve branch using a province / district / post_office triplet."""
+    """Resolve branch using a province / district / postal city triplet."""
+    model_config = ConfigDict(populate_by_name=True)
+
     province: str = Field(..., min_length=1, max_length=100)
     district: str = Field(..., min_length=1, max_length=100)
-    post_office: str = Field(
+    postal_city: str = Field(
         ...,
         min_length=1,
         max_length=100,
-        alias="postOffice",
+        validation_alias=POSTAL_CITY_ALIASES,
     )
 
-    class Config:
-        populate_by_name = True
-
-    @field_validator("post_office")
+    @field_validator("postal_city")
     @classmethod
-    def normalize_po(cls, v: str) -> str:
+    def normalize_postal_city(cls, v: str) -> str:
         return v.strip().title()
 
     @field_validator("province", "district")
@@ -348,7 +368,7 @@ class LocationResolveResponse(BaseModel):
 # Admin Mapping Management Schemas
 # =============================================================================
 
-class AdminMappingCreateRequest(PostOfficeBranchMappingBase):
+class AdminMappingCreateRequest(PostalCityBranchMappingBase):
     """Admin request to create a new mapping — province & district required."""
     province: str = Field(..., min_length=1, max_length=100)
     district: str = Field(..., min_length=1, max_length=100)
@@ -360,21 +380,8 @@ class AdminMappingCreateRequest(PostOfficeBranchMappingBase):
         return v.strip().title()
 
 
-class AdminMappingUpdateRequest(BaseModel):
+class AdminMappingUpdateRequest(PostalCityBranchMappingUpdate):
     """Admin request to update an existing mapping — all fields optional."""
-    post_office: Optional[str] = Field(None, min_length=1, max_length=100)
-    branch_id: Optional[UUID] = None
-    branch_name: Optional[str] = Field(None, min_length=1, max_length=255)
-    district: Optional[str] = Field(None, max_length=100)
-    province: Optional[str] = Field(None, max_length=100)
-    is_active: Optional[bool] = None
-
-    @field_validator("post_office")
-    @classmethod
-    def normalize_post_office(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None:
-            return v.strip().title()
-        return v
 
     @field_validator("province", "district")
     @classmethod
@@ -385,30 +392,36 @@ class AdminMappingUpdateRequest(BaseModel):
 
 
 # =============================================================================
-# Post Office Directory (Master List / "Delivery Zones") Schemas
+# Postal City Directory (Master List / "Delivery Zones") Schemas
 # =============================================================================
 
-class PostOfficeDirectoryCreate(BaseModel):
-    """Create a master Post Office directory entry — Super Admin only."""
-    post_office: str = Field(..., min_length=1, max_length=100)
+class PostalCityDirectoryCreate(BaseModel):
+    """Create a master postal city directory entry — Super Admin only."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    postal_city: str = Field(..., min_length=1, max_length=100, validation_alias=POSTAL_CITY_ALIASES)
     district: str = Field(..., min_length=1, max_length=100)
     province: str = Field(..., min_length=1, max_length=100)
     is_active: bool = True
 
-    @field_validator("post_office", "district", "province")
+    @field_validator("postal_city", "district", "province")
     @classmethod
     def normalize(cls, v: str) -> str:
         return v.strip().title()
 
 
-class PostOfficeDirectoryUpdate(BaseModel):
-    """Update a master Post Office directory entry — all fields optional."""
-    post_office: Optional[str] = Field(None, min_length=1, max_length=100)
+class PostalCityDirectoryUpdate(BaseModel):
+    """Update a master postal city directory entry — all fields optional."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    postal_city: Optional[str] = Field(
+        None, min_length=1, max_length=100, validation_alias=POSTAL_CITY_ALIASES
+    )
     district: Optional[str] = Field(None, min_length=1, max_length=100)
     province: Optional[str] = Field(None, min_length=1, max_length=100)
     is_active: Optional[bool] = None
 
-    @field_validator("post_office", "district", "province")
+    @field_validator("postal_city", "district", "province")
     @classmethod
     def normalize(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:

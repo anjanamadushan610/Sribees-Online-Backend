@@ -1,20 +1,29 @@
 """
 Pricing Service - Single Authoritative Source for Order Totals
 
-Both the order-quote preview (POST /orders/quote) and the actual order
-creation (POST /orders) compute their financial breakdown here, so the number
-the customer previews is guaranteed to equal the number they are charged.
+The cart (GET /cart), the checkout preview (POST /orders/quote) and order
+creation (POST /orders) all compute their financial breakdown here, so the
+number the customer previews is the number they are charged.
+
+**The delivery fee is SribeesExpress's quote, and nothing else.** There used
+to be a flat platform fee an administrator could set, used whenever the courier
+could not be asked. It is gone (2026-09-13): a fee nobody priced is a fee the
+merchant either over-charges or silently pays the difference on. When the
+courier cannot price a parcel — no address yet, a postal city they do not
+serve, the courier unreachable — the breakdown says so in ``delivery_status``,
+carries no delivery fee, and checkout refuses to place the order.
 
 All money is computed with ``Decimal`` and quantized to 2 places.
 """
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
 from app.config.settings import settings
+from app.services import courier_credentials
 from app.services.courier_service import (
     CourierError,
     CourierService,
@@ -23,10 +32,52 @@ from app.services.courier_service import (
 
 _CENTS = Decimal("0.01")
 
+#: Why a breakdown does or does not carry a delivery fee.
+DELIVERY_QUOTED = "quoted"
+DELIVERY_EMPTY_CART = "empty_cart"
+DELIVERY_NO_ADDRESS = "no_address"
+DELIVERY_NOT_SERVICEABLE = "not_serviceable"
+DELIVERY_UNAVAILABLE = "unavailable"
+
+#: The customer-facing sentence for each non-quoted state. Short enough for a
+#: cart row; the mobile app shows it in place of the fee.
+DELIVERY_MESSAGES = {
+    DELIVERY_NO_ADDRESS: "Add a delivery address to see the delivery charge.",
+    DELIVERY_NOT_SERVICEABLE: "We don't deliver to this postal city yet.",
+    DELIVERY_UNAVAILABLE: "The delivery charge can't be calculated right now. Please try again shortly.",
+}
+
 
 def _money(value) -> Decimal:
     """Coerce to a 2dp Decimal (bankers-safe half-up rounding)."""
     return Decimal(str(value)).quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+
+def cart_weight_kg(items: List[dict]) -> Decimal:
+    """The parcel weight a quote is priced on: each line's DB weight times its quantity."""
+    return sum(
+        (Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"])) for i in items),
+        Decimal("0"),
+    )
+
+
+@dataclass
+class DeliveryQuote:
+    """The delivery half of a price: a courier quote, or the reason there is none."""
+
+    status: str
+    fee: Optional[Decimal] = None
+    quote_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    reason: Optional[str] = None
+
+    @property
+    def available(self) -> bool:
+        return self.status == DELIVERY_QUOTED
+
+    @property
+    def message(self) -> Optional[str]:
+        return None if self.available else DELIVERY_MESSAGES.get(self.status)
 
 
 @dataclass
@@ -39,11 +90,17 @@ class PriceBreakdown:
     wallet_deduction: Decimal
     cashback_earned: Decimal
     total: Decimal
-    # Set when delivery_fee came from a live courier quote (see
-    # CourierService), so booking can reference the exact quote that produced
-    # it. None on the flat-fee fallback path.
+    # quoted | empty_cart | no_address | not_serviceable | unavailable. Only
+    # `quoted` (or an empty cart) may be checked out; see OrderService.
+    delivery_status: str = DELIVERY_QUOTED
+    # Set when delivery_fee came from a live courier quote, so booking can
+    # reference the exact quote that produced it.
     courier_quote_id: Optional[str] = None
     courier_quote_expires_at: Optional[datetime] = None
+
+    @property
+    def delivery_available(self) -> bool:
+        return self.delivery_status == DELIVERY_QUOTED
 
     def as_dict(self) -> Dict[str, Any]:
         """JSON-friendly float representation for API responses."""
@@ -55,65 +112,66 @@ class PriceBreakdown:
             "wallet_deduction": float(self.wallet_deduction),
             "cashback_earned": float(self.cashback_earned),
             "total": float(self.total),
+            "delivery_status": self.delivery_status,
+            "delivery_available": self.delivery_available,
+            "delivery_message": DELIVERY_MESSAGES.get(self.delivery_status),
             "courier_quote_id": self.courier_quote_id,
         }
 
 
 class PricingService:
-    """Computes order totals from cart items, coupon and wallet state."""
+    """Computes order totals from cart items, coupon, wallet state and a courier quote."""
 
     @staticmethod
-    async def _delivery_fee(
+    async def quote_delivery(
         items: List[dict],
-        flat_fee: Decimal,
         *,
-        city_id: Optional[int] = None,
+        postal_city_id: Optional[int],
         payment_method: str = "cod",
         cod_amount: Decimal = Decimal("0"),
-    ) -> Tuple[Decimal, Optional[str], Optional[datetime]]:
+        outlet_id: Optional[int] = None,
+    ) -> DeliveryQuote:
         """
-        Resolve the delivery fee: (fee, courier_quote_id, courier_quote_expires_at).
+        Ask SribeesExpress what delivering this cart costs.
 
-        Calls ``POST /ecommerce/rates`` (contract section 6) when the delivery
-        address has a resolved SribeesExpress ``city_id``. Falls back to the
-        flat platform fee — with no ``courier_quote_id``, so booking knows it
-        has no quote to reference — when: the cart is empty, no address is
-        chosen yet, the address never resolved to a city_id (contract section
-        5a), SribeesExpress is unreachable, or the city comes back
-        ``serviceable: false``.
-
-        That fallback is the contract's own instruction: an unserviceable area
-        is "a normal answer, not an error", and we do not block a sale on a
-        courier outage. It does mean we can quote a fee for a parcel
-        SribeesExpress will later refuse to book — which is why
-        ``OrderService._book_courier_shipment`` records a booking failure on
-        the order rather than failing the order itself.
+        Calls ``POST /ecommerce/rates`` (contract section 6) inside the caller's
+        courier credential scope — the fulfilling branch's, which is what makes
+        the quote priced from that branch. Never raises: every way a quote can
+        fail to exist is a ``DeliveryQuote`` status the caller renders or
+        refuses on.
         """
         if not items:
-            return Decimal("0"), None, None
-        if city_id is None:
-            return _money(flat_fee), None, None
-
-        weight_kg = sum(
-            Decimal(str(i.get("weight_kg") or 0)) * Decimal(str(i["quantity"])) for i in items
-        )
+            return DeliveryQuote(status=DELIVERY_EMPTY_CART, fee=Decimal("0.00"))
+        if postal_city_id is None:
+            return DeliveryQuote(status=DELIVERY_NO_ADDRESS)
+        if courier_credentials.active_target() is None:
+            # No credential scope means nobody has entered a key for the branch
+            # (optional_for_branch yielded nothing). To a shopper that is the
+            # same as the courier being down, and it must not look like a price.
+            return DeliveryQuote(status=DELIVERY_UNAVAILABLE, reason="courier not configured")
 
         try:
             quote = await CourierService.get_rate(
-                city_id=city_id,
-                weight_kg=weight_kg,
+                postal_city_id=postal_city_id,
+                weight_kg=cart_weight_kg(items),
                 payment_method=payment_method,
                 cod_amount=cod_amount,
+                outlet_id=outlet_id,
             )
         except (CourierUnavailableError, CourierError) as exc:
-            logger.warning(f"Courier /rates unavailable, falling back to flat fee: {exc}")
-            return _money(flat_fee), None, None
+            logger.warning(f"Courier /rates failed for postal_city_id={postal_city_id}: {exc}")
+            return DeliveryQuote(status=DELIVERY_UNAVAILABLE, reason=str(exc)[:200])
 
         if not quote.serviceable:
-            logger.warning(f"Courier reports city_id={city_id} not serviceable: {quote.reason}")
-            return _money(flat_fee), None, None
+            logger.info(f"Courier reports postal_city_id={postal_city_id} not serviceable: {quote.reason}")
+            return DeliveryQuote(status=DELIVERY_NOT_SERVICEABLE, reason=quote.reason)
 
-        return _money(quote.amount_lkr), quote.quote_id, quote.expires_at
+        return DeliveryQuote(
+            status=DELIVERY_QUOTED,
+            fee=_money(quote.amount_lkr),
+            quote_id=quote.quote_id,
+            expires_at=quote.expires_at,
+        )
 
     @staticmethod
     def _discount(subtotal: Decimal, coupon: Optional[Dict[str, Any]]) -> Decimal:
@@ -183,12 +241,13 @@ class PricingService:
         coupon: Optional[Dict[str, Any]] = None,
         use_wallet: bool = False,
         wallet_balance: Decimal = Decimal("0"),
-        delivery_fee: Optional[Decimal] = None,
         tax_rate: Optional[Decimal] = None,
         *,
-        city_id: Optional[int] = None,
+        postal_city_id: Optional[int] = None,
         payment_method: str = "cod",
         wallet_amount: Optional[Decimal] = None,
+        outlet_id: Optional[int] = None,
+        delivery: Optional[DeliveryQuote] = None,
     ) -> PriceBreakdown:
         """
         Build the authoritative price breakdown.
@@ -203,26 +262,18 @@ class PricingService:
             wallet_amount: Customer-chosen amount to deduct instead of the full
                 balance (ignored if not use_wallet). The server clamps this to
                 ``[0, min(wallet_balance, gross)]`` regardless of what the
-                client sends — a negative or over-balance value never reaches
-                the order, closing the gap a tampered request could exploit.
-            delivery_fee: Flat delivery fee override (from platform settings),
-                used as the fallback when the courier is unavailable or the
-                address has no resolved city_id yet. Falls back to the static
-                config default when None.
+                client sends.
             tax_rate: Tax rate as a fraction override (from platform settings).
                 Falls back to the static config default when None.
-            city_id: The delivery address's cached SribeesExpress city_id
-                (``Address.courier_city_id``). None skips the courier call
-                entirely — no address chosen yet, or the address never
-                resolved (contract section 5a).
-            payment_method: ``"cod"`` or ``"prepaid"``. Sent to SribeesExpress
-                but currently inert for pricing — they have committed to
-                advance notice before it starts affecting the quote.
+            postal_city_id: The delivery address's SribeesExpress postal city
+                id. None prices no delivery (``no_address``).
+            payment_method: ``"cod"`` or ``"prepaid"`` — sent to SribeesExpress,
+                currently inert for pricing.
+            outlet_id: The SribeesExpress outlet the parcel leaves from, for a
+                branch booking under the shared account key.
+            delivery: A delivery quote the caller already holds (the cart's
+                cached one). Skips the courier call when given.
         """
-        # Dynamic platform settings win; otherwise use the static config default.
-        effective_fee = (
-            delivery_fee if delivery_fee is not None else Decimal(str(settings.flat_delivery_fee))
-        )
         effective_tax_rate = (
             tax_rate if tax_rate is not None else Decimal(str(settings.order_tax_rate))
         )
@@ -234,34 +285,28 @@ class PricingService:
         discount = PricingService._discount(subtotal, coupon)
         taxable = subtotal - discount
         tax = _money(taxable * effective_tax_rate)
-        # COD collects the full order total at the door. The gross is not
-        # known until the delivery fee lands, so the courier is told the
-        # pre-delivery payable -- it is inert for pricing today, and quoting
-        # it any other way would need the fee we are asking them for.
-        delivery_fee, courier_quote_id, courier_quote_expires_at = await PricingService._delivery_fee(
-            items,
-            effective_fee,
-            city_id=city_id,
-            payment_method=payment_method,
-            cod_amount=(taxable + tax) if payment_method == "cod" else Decimal("0"),
-        )
 
-        # Gross payable before any wallet balance is applied.
+        if delivery is None:
+            # COD collects the full order total at the door. The gross is not
+            # known until the delivery fee lands, so the courier is told the
+            # pre-delivery payable -- it is inert for pricing today.
+            delivery = await PricingService.quote_delivery(
+                items,
+                postal_city_id=postal_city_id,
+                payment_method=payment_method,
+                cod_amount=(taxable + tax) if payment_method == "cod" else Decimal("0"),
+                outlet_id=outlet_id,
+            )
+        delivery_fee = delivery.fee if delivery.fee is not None else Decimal("0.00")
+
         gross = _money(taxable + tax + delivery_fee)
 
-        # Cashback is earned per line at that product's own rate, then summed —
-        # a 25% item and a 5% item in the same cart must not be averaged into
-        # one blended rate. Independent of the wallet, as before.
         cashback_earned = PricingService._cashback(items)
 
         wallet_deduction = Decimal("0")
         if use_wallet and wallet_balance and wallet_balance > 0:
             max_deduction = _money(min(_money(wallet_balance), gross))
             if wallet_amount is not None:
-                # Clamp, never trust: a client-supplied amount outside
-                # [0, max_deduction] is capped rather than rejected, so a
-                # stale quote (balance dropped since the field was typed)
-                # still produces a sane, safe order instead of an error.
                 wallet_deduction = _money(max(Decimal("0"), min(Decimal(str(wallet_amount)), max_deduction)))
             else:
                 wallet_deduction = max_deduction
@@ -276,6 +321,7 @@ class PricingService:
             wallet_deduction=wallet_deduction,
             cashback_earned=cashback_earned,
             total=total,
-            courier_quote_id=courier_quote_id,
-            courier_quote_expires_at=courier_quote_expires_at,
+            delivery_status=delivery.status,
+            courier_quote_id=delivery.quote_id,
+            courier_quote_expires_at=delivery.expires_at,
         )

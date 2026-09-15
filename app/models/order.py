@@ -30,17 +30,20 @@ class OrderStatus(str, enum.Enum):
     members here needs no ``ALTER TYPE`` migration — only the app-side guards
     in ``app/services/order_workflow.py``.
 
-    PACKING / PACKED / HANDED_TO_COURIER are the branch-floor fulfilment steps
+    PACKING / PACKED / READY_FOR_PICKUP are the branch-floor fulfilment steps
     driven from the admin Order Details panel (Branch Manager or Super Admin).
-    PROCESSING is the legacy pre-workflow equivalent of PACKING, still accepted
-    for orders placed before this shipped. DELIVERY_FAILED / RTO_INITIATED are
-    the last-mile exception path.
+    READY_FOR_PICKUP is the moment the parcel is booked with SribeesExpress —
+    "packed, come and collect it" — and from HANDED_TO_COURIER on, the courier
+    drives the status. PROCESSING is the legacy pre-workflow equivalent of
+    PACKING, still accepted for orders placed before this shipped.
+    DELIVERY_FAILED / RTO_INITIATED are the last-mile exception path.
     """
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"
     PACKING = "packing"
     PACKED = "packed"
+    READY_FOR_PICKUP = "ready_for_pickup"
     HANDED_TO_COURIER = "handed_to_courier"
     SHIPPED = "shipped"
     OUT_FOR_DELIVERY = "out_for_delivery"
@@ -125,6 +128,13 @@ class Order(Base):
     # because GET /orders already returns it and the mobile app reads it.
     courier_quote_id = Column(String(64), nullable=True)
     courier_quote_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # The delivery charge SribeesExpress quoted and held for this order
+    # (POST /ecommerce/rates/{id}/confirm, migration 052). shipping_amount is
+    # what the customer was charged; this is what the courier agreed to bill.
+    # They are equal at checkout; they differ only if a booking had to re-quote
+    # after the hold lapsed, which is the number finance needs to see.
+    courier_quote_amount = Column(Numeric(10, 2), nullable=True)
+    courier_quote_confirmed_at = Column(DateTime(timezone=True), nullable=True)
     courier_shipment_id = Column(String(64), nullable=True)
     courier_waybill_number = Column(String(64), nullable=True)
     courier_tracking_status = Column(String(20), nullable=True)
@@ -193,6 +203,7 @@ class Order(Base):
     # Fulfilment milestones — set by OrderService.update_status on the transition
     # into each state (mirror the shipped_at / delivered_at pattern).
     packed_at = Column(DateTime(timezone=True), nullable=True)
+    ready_for_pickup_at = Column(DateTime(timezone=True), nullable=True)
     handed_to_courier_at = Column(DateTime(timezone=True), nullable=True)
     shipped_at = Column(DateTime(timezone=True), nullable=True)
     delivered_at = Column(DateTime(timezone=True), nullable=True)

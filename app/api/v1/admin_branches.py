@@ -6,7 +6,7 @@ restricted to Super Admins. Branch Managers get one narrower power on top of
 that: listing (scoped to their own branch) and flipping their own branch's
 ``is_active`` status via ``PATCH /{branch_id}/status`` — see that route's
 docstring for why. Delete is guarded: a branch that still has admins,
-inventory or post-office mappings attached cannot be removed — deactivate it
+inventory or postal-city mappings attached cannot be removed — deactivate it
 instead.
 
 Note on fields: the branch model uses Sri-Lankan location columns
@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.core.dependencies import get_current_admin, require_roles
 from app.models.admin import Admin, AdminRole
-from app.models.branch import Branch, PostOfficeBranchMapping
+from app.models.branch import Branch, PostalCityBranchMapping
 from app.models.product import BranchInventory
 from app.schemas.branch import BranchCreate, BranchUpdate, DeliveryRunsUpdate
 from app.services import branch_service
@@ -41,7 +41,7 @@ router = APIRouter(
 )
 
 
-def _format_branch(b: Branch, coverage_post_offices: list[str] | None = None) -> dict:
+def _format_branch(b: Branch, coverage_postal_cities: list[str] | None = None) -> dict:
     return {
         "branch_id": str(b.branch_id),
         "name": b.name,
@@ -49,12 +49,12 @@ def _format_branch(b: Branch, coverage_post_offices: list[str] | None = None) ->
         "address": b.address,
         "district": b.district,
         "province": b.province,
-        "post_office": b.post_office,
+        "postal_city": b.postal_city,
         "phone": b.phone,
         "manager_id": str(b.manager_id) if b.manager_id else None,
         "is_active": b.is_active,
         "delivery_runs": b.delivery_runs or [],
-        "coverage_post_offices": coverage_post_offices or [],
+        "coverage_postal_cities": coverage_postal_cities or [],
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "updated_at": b.updated_at.isoformat() if b.updated_at else None,
     }
@@ -135,7 +135,7 @@ async def create_branch(
         name=data.name.strip(),
         code=data.code.strip(),
         address=data.address,
-        post_office=data.post_office,
+        postal_city=data.postal_city,
         district=data.district,
         province=data.province,
         phone=data.phone,
@@ -146,9 +146,9 @@ async def create_branch(
     # and per-category rows are written, then commit once so everything moves
     # together.
     await db.flush()
-    if data.coverage_post_offices is not None:
+    if data.coverage_postal_cities is not None:
         await branch_service.sync_branch_coverage(
-            db, branch, data.coverage_post_offices
+            db, branch, data.coverage_postal_cities
         )
     # Every existing category gets a hidden row for this branch — same
     # "starts dark until the branch manager turns it on" rule as the branch
@@ -182,8 +182,8 @@ async def update_branch(
     """
     branch = await _get_branch_or_404(db, branch_id)
     fields = data.model_dump(exclude_unset=True)
-    # coverage_post_offices is not a Branch column — sync it separately.
-    coverage_post_offices = fields.pop("coverage_post_offices", None)
+    # coverage_postal_cities is not a Branch column — sync it separately.
+    coverage_postal_cities = fields.pop("coverage_postal_cities", None)
 
     new_code = fields.get("code")
     if new_code and await _code_taken(db, new_code, exclude_id=branch_id):
@@ -198,14 +198,14 @@ async def update_branch(
             setattr(branch, key, value)
     await db.flush()
 
-    # If coverage was supplied, reconcile the branch's Post Office mappings.
-    if coverage_post_offices is not None:
-        await branch_service.sync_branch_coverage(db, branch, coverage_post_offices)
+    # If coverage was supplied, reconcile the branch's postal city mappings.
+    if coverage_postal_cities is not None:
+        await branch_service.sync_branch_coverage(db, branch, coverage_postal_cities)
     elif name_changed:
         # Keep the denormalized branch_name on existing mappings in sync.
         await db.execute(
-            update(PostOfficeBranchMapping)
-            .where(PostOfficeBranchMapping.branch_id == branch.branch_id)
+            update(PostalCityBranchMapping)
+            .where(PostalCityBranchMapping.branch_id == branch.branch_id)
             .values(branch_name=branch.name)
         )
 
@@ -231,7 +231,7 @@ async def delete_branch(
 ):
     """
     Delete a branch. Blocked while it still has admins, inventory rows or
-    post-office mappings attached (deactivate it via PUT instead).
+    postal-city mappings attached (deactivate it via PUT instead).
     """
     branch = await _get_branch_or_404(db, branch_id)
 
@@ -249,8 +249,8 @@ async def delete_branch(
     ).scalar() or 0
     mapping_count = (
         await db.execute(
-            select(func.count(PostOfficeBranchMapping.mapping_id)).where(
-                PostOfficeBranchMapping.branch_id == branch_id
+            select(func.count(PostalCityBranchMapping.mapping_id)).where(
+                PostalCityBranchMapping.branch_id == branch_id
             )
         )
     ).scalar() or 0
@@ -260,7 +260,7 @@ async def delete_branch(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"Cannot delete: branch still has {admin_count} admin(s), "
-                f"{inv_count} inventory row(s) and {mapping_count} post-office "
+                f"{inv_count} inventory row(s) and {mapping_count} postal-city "
                 f"mapping(s). Deactivate the branch instead."
             ),
         )

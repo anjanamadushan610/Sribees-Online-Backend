@@ -33,13 +33,14 @@ class CartService:
         """
         Calculate cart totals.
 
-        Delegates to the shared ``PricingService`` (the single source of truth)
-        so the totals returned by GET /cart match the checkout quote and the
-        final order exactly. Wallet deduction is a checkout-only concept and is
-        never applied here. No delivery address is known yet at the cart stage,
-        so this always prices delivery at the flat fallback fee (no
-        origin/destination to quote the courier with) — the courier-quoted fee
-        appears once checkout resolves a delivery address (POST /orders/quote).
+        Delegates to the shared ``PricingService`` (the single source of truth).
+        Wallet deduction is a checkout-only concept and is never applied here.
+
+        These are the *goods* totals only: this service is Redis-only and knows
+        no address, so delivery is left unpriced (``shipping`` 0). Every cart
+        route replaces them with totals that include the shopper's
+        SribeesExpress delivery charge before responding — see
+        ``app/api/v1/cart.py::_priced``.
         """
         breakdown = await PricingService.quote(items=items, coupon=coupon, use_wallet=False)
         return {

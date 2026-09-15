@@ -17,6 +17,16 @@ and delegated ``staff`` are read-only for status and get an empty action list.
 Every non-admin caller of ``OrderService.update_status`` (courier webhook/sync,
 payment confirmation, cancellation helpers) passes ``enforce=False`` and is not
 touched by this module.
+
+**Where the courier takes over.** ``packed -> ready_for_pickup`` ("packed, come
+and collect it") is the branch's last step: it books the parcel with
+SribeesExpress, with the delivery price the customer agreed to and how they pay,
+and is refused if the booking is. From there the courier drives the status —
+``picked_up`` becomes ``handed_to_courier`` and so on, through
+``courier_sync_service`` — so this machine offers no forward buttons past it,
+only cancellation while no rider has collected the parcel. The later buttons
+remain for orders shipped outside SribeesExpress and for ops correcting a
+status the courier failed to push.
 """
 from __future__ import annotations
 
@@ -33,6 +43,7 @@ ALL_STATUSES: tuple[str, ...] = (
     "processing",
     "packing",
     "packed",
+    "ready_for_pickup",
     "handed_to_courier",
     "shipped",
     "out_for_delivery",
@@ -65,7 +76,13 @@ _ACTIONS: dict[str, list[dict[str, str]]] = {
         {"status": "packed", "label": "Mark as Packed", "kind": "primary"},
     ],
     "packed": [
-        {"status": "handed_to_courier", "label": "Handover to Courier", "kind": "primary"},
+        {"status": "ready_for_pickup", "label": "Ready for Courier Pickup", "kind": "primary"},
+    ],
+    # Booked with SribeesExpress and waiting for their rider. Cancelling here
+    # also cancels the courier booking (OrderService.update_status); once the
+    # rider has collected it, cancellation is a support conversation.
+    "ready_for_pickup": [
+        {"status": "cancelled", "label": "Cancel Order", "kind": "danger"},
     ],
     "handed_to_courier": [
         {"status": "shipped", "label": "Mark as Shipped", "kind": "primary"},

@@ -161,7 +161,7 @@ class InvoiceService:
         if addr is not None:
             addr_text = ", ".join(
                 str(p) for p in [
-                    addr.address_line1, addr.address_line2, addr.post_office,
+                    addr.address_line1, addr.address_line2, addr.postal_city,
                     addr.district, addr.province, addr.postal_code,
                 ] if p
             )
@@ -385,14 +385,17 @@ class InvoiceService:
 
             addr = getattr(o, "delivery_address", None)
             if addr:
-                po = getattr(addr, "post_office", "") or ""
+                pc = getattr(addr, "postal_city", "") or ""
                 dist = getattr(addr, "district", "") or ""
                 l1 = getattr(addr, "address_line1", "") or ""
-                addr_str = f"{l1}, {po} ({dist})" if po else l1
+                addr_str = f"{l1}, {pc} ({dist})" if pc else l1
             else:
                 addr_str = getattr(o, "address_summary", "—")
 
-            is_cod = getattr(o, "payment_method", "") in ("cash_on_delivery", "CASH_ON_DELIVERY")
+            # Orders store "COD" (PaymentMethodEnum). Matching only the
+            # "cash_on_delivery" spelling printed every COD parcel on the
+            # manifest as PREPAID — a rider reading it would not collect cash.
+            is_cod = (getattr(o, "payment_method", "") or "").upper() in ("COD", "CASH_ON_DELIVERY")
             pm_str = "COD" if is_cod else "PREPAID"
             p_status = getattr(o, "payment_status", "pending").upper()
             pay_str = f"<b>{pm_str}</b> ({p_status})"

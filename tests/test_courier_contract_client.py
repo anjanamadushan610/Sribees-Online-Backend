@@ -70,7 +70,7 @@ def test_an_unparseable_error_body_is_treated_as_an_outage():
     """
     A 4xx we cannot read means we do not actually know what happened. Calling
     that a real answer would let checkout act on a guess; calling it an outage
-    falls back to the flat fee, which is always safe.
+    makes the delivery charge "unavailable", which checkout refuses honestly.
     """
     response = httpx.Response(
         400, content=b"<html>gateway</html>", request=httpx.Request("POST", "https://x.test/y")
@@ -86,10 +86,10 @@ async def test_call_outside_a_credential_scope_fails_fast_without_a_network_call
     outside one has nowhere to go. It must raise before touching the network:
     an empty base URL would otherwise surface as httpx.InvalidURL from deep
     inside the client, which the retry logic does not catch, and that would
-    break every checkout instead of falling back to the flat delivery fee.
+    500 every checkout instead of reporting delivery as unavailable.
     """
     with pytest.raises(CourierUnavailableError):
-        await CourierService.get_rate(city_id=42, weight_kg=Decimal("1"), payment_method="cod")
+        await CourierService.get_rate(postal_city_id=42, weight_kg=Decimal("1"), payment_method="cod")
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +136,25 @@ class _FakeRequest:
         return self._body
 
 
+_NO_DB = object()
+
+
 @pytest.fixture
-def webhook_secret(monkeypatch):
+def stored_secrets(monkeypatch):
+    """The per-account secrets kept in the database, as the verifier reads them."""
+    from app.services import courier_credentials
+
+    secrets: list[str] = []
+
+    async def _webhook_secrets(db):
+        return list(secrets)
+
+    monkeypatch.setattr(courier_credentials, "webhook_secrets", _webhook_secrets)
+    return secrets
+
+
+@pytest.fixture
+def webhook_secret(monkeypatch, stored_secrets):
     from app.config.settings import settings
 
     monkeypatch.setattr(settings, "courier_webhook_secret", _SECRET, raising=False)
@@ -150,7 +167,26 @@ async def test_a_correctly_signed_body_verifies(webhook_secret):
     from app.api.v1.courier_webhooks import verify_signature
 
     body = b'{"event_id":"abc","shipment_id":"SXP1","status":"delivered"}'
-    assert await verify_signature(_FakeRequest(body), _sign(body)) == body
+    assert await verify_signature(_FakeRequest(body), _sign(body), _NO_DB) == body
+
+
+@pytest.mark.asyncio
+async def test_a_push_signed_by_any_of_our_accounts_verifies(monkeypatch, stored_secrets):
+    """
+    A branch with its own SribeesExpress key has its own endpoint and secret.
+    A push does not say which account sent it before it is verified, so each
+    stored secret must be able to verify its own account's pushes.
+    """
+    from app.api.v1.courier_webhooks import verify_signature
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "courier_webhook_secret", "", raising=False)
+    monkeypatch.setattr(settings, "courier_webhook_tolerance_seconds", 300, raising=False)
+    stored_secrets.extend(["account-secret", "galle-branch-secret"])
+
+    body = b'{"shipment_id":"SXP9","status":"picked_up"}'
+    for secret in stored_secrets:
+        assert await verify_signature(_FakeRequest(body), _sign(body, secret=secret), _NO_DB) == body
 
 
 @pytest.mark.asyncio
@@ -161,19 +197,20 @@ async def test_a_tampered_body_is_rejected(webhook_secret):
 
     signature = _sign(b'{"status":"failed"}')
     with pytest.raises(HTTPException) as exc_info:
-        await verify_signature(_FakeRequest(b'{"status":"delivered"}'), signature)
+        await verify_signature(_FakeRequest(b'{"status":"delivered"}'), signature, _NO_DB)
     assert exc_info.value.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_a_signature_from_the_wrong_secret_is_rejected(webhook_secret):
+async def test_a_signature_from_the_wrong_secret_is_rejected(webhook_secret, stored_secrets):
     from fastapi import HTTPException
 
     from app.api.v1.courier_webhooks import verify_signature
 
+    stored_secrets.append("another-account-secret")
     body = b'{"status":"delivered"}'
     with pytest.raises(HTTPException):
-        await verify_signature(_FakeRequest(body), _sign(body, secret="not-our-secret"))
+        await verify_signature(_FakeRequest(body), _sign(body, secret="not-our-secret"), _NO_DB)
 
 
 @pytest.mark.asyncio
@@ -189,13 +226,13 @@ async def test_a_replayed_signature_outside_the_tolerance_is_rejected(webhook_se
     body = b'{"status":"delivered"}'
     stale = _sign(body, timestamp=int(time.time()) - 3600)
     with pytest.raises(HTTPException) as exc_info:
-        await verify_signature(_FakeRequest(body), stale)
+        await verify_signature(_FakeRequest(body), stale, _NO_DB)
     assert exc_info.value.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_verification_fails_closed_when_no_secret_is_configured(monkeypatch):
-    """An unconfigured secret must never mean 'accept everything'."""
+async def test_verification_fails_closed_when_no_secret_is_configured(monkeypatch, stored_secrets):
+    """No secret anywhere must never mean 'accept everything'."""
     from fastapi import HTTPException
 
     from app.api.v1.courier_webhooks import verify_signature
@@ -204,7 +241,7 @@ async def test_verification_fails_closed_when_no_secret_is_configured(monkeypatc
     monkeypatch.setattr(settings, "courier_webhook_secret", "", raising=False)
     body = b'{"status":"delivered"}'
     with pytest.raises(HTTPException) as exc_info:
-        await verify_signature(_FakeRequest(body), _sign(body))
+        await verify_signature(_FakeRequest(body), _sign(body), _NO_DB)
     assert exc_info.value.status_code == 503
 
 
@@ -216,7 +253,7 @@ async def test_a_malformed_signature_header_is_rejected(webhook_secret):
 
     for header in ("garbage", "t=abc,v1=def", "v1=deadbeef"):
         with pytest.raises(HTTPException):
-            await verify_signature(_FakeRequest(b"{}"), header)
+            await verify_signature(_FakeRequest(b"{}"), header, _NO_DB)
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +271,7 @@ class _FakeDB:
 
 class _FakeOrder:
     order_number = "FC-20260828-TEST01"
+    user_id = "00000000-0000-0000-0000-000000000001"
     status = "shipped"
     courier_tracking_status = "in_transit"
     courier_tracking_updated_at = None
@@ -259,13 +297,18 @@ def stub_status_transition(monkeypatch):
     session (it writes status history and fires notifications). These tests
     are about the courier->order field mapping, not about that machinery.
     """
+    from app.services.notification_service import NotificationService
     from app.services.order_service import OrderService
 
     async def _update_status(db, order, status, changed_by="Admin", notes=None):
         order.status = status.value
         return order
 
+    async def _notify(db, **kwargs):
+        return None
+
     monkeypatch.setattr(OrderService, "update_status", staticmethod(_update_status))
+    monkeypatch.setattr(NotificationService, "notify_order_status", staticmethod(_notify))
 
 
 @pytest.mark.asyncio
@@ -352,7 +395,7 @@ async def test_absent_keys_are_left_alone_rather_than_nulled():
 
 
 @pytest.mark.asyncio
-async def test_failure_note_is_recorded_when_present():
+async def test_failure_note_is_recorded_and_the_order_shows_the_failed_attempt(stub_status_transition):
     from app.services import courier_sync_service
 
     order = _FakeOrder()
@@ -367,9 +410,77 @@ async def test_failure_note_is_recorded_when_present():
         commit=True,
     )
     assert order.courier_failure_note == "Called 3 times, no answer"
-    # `failed` is deliberately absent from STATUS_MAP -- a courier failure is
-    # not an order status change we make without an ops decision.
-    assert order.status == "shipped"
+    # A failed attempt is shown to the customer as delivery_failed -- it is not
+    # a cancellation or a refund, which stay ops decisions.
+    assert order.status == "delivery_failed"
+
+
+@pytest.mark.asyncio
+async def test_courier_returned_never_moves_our_order(stub_status_transition):
+    """A return has refund consequences; `returned` is an ops signal only."""
+    from app.services import courier_sync_service
+
+    order = _FakeOrder()
+    order.status = "delivery_failed"
+    await courier_sync_service.apply_shipment_payload(
+        _FakeDB(), order, {"status": "returned", "at": "2026-08-29T16:00:00+00:00"}, commit=True
+    )
+    assert order.courier_tracking_status == "returned"
+    assert order.status == "delivery_failed"
+
+
+@pytest.mark.asyncio
+async def test_the_riders_pickup_is_our_handed_to_courier(stub_status_transition):
+    from app.services import courier_sync_service
+
+    order = _FakeOrder()
+    order.status = "ready_for_pickup"
+    await courier_sync_service.apply_shipment_payload(
+        _FakeDB(), order, {"status": "picked_up", "at": "2026-09-13T10:00:00+00:00"}, commit=True
+    )
+    assert order.status == "handed_to_courier"
+
+
+@pytest.mark.asyncio
+async def test_a_late_courier_event_never_moves_an_order_backwards(stub_status_transition):
+    """
+    Webhooks arrive out of order and the sweep replays history. A `picked_up`
+    that lands after `out_for_delivery` must not pull the order back.
+    """
+    from app.services import courier_sync_service
+
+    order = _FakeOrder()
+    order.status = "out_for_delivery"
+    await courier_sync_service.apply_shipment_payload(
+        _FakeDB(), order, {"status": "picked_up", "at": "2026-09-13T09:00:00+00:00"}, commit=True
+    )
+    assert order.status == "out_for_delivery"
+    assert order.courier_tracking_status == "picked_up"
+
+
+@pytest.mark.parametrize(
+    "current,target,expected",
+    [
+        ("ready_for_pickup", "handed_to_courier", True),
+        ("handed_to_courier", "shipped", True),
+        ("shipped", "out_for_delivery", True),
+        ("out_for_delivery", "delivered", True),
+        ("ready_for_pickup", "delivered", True),        # a missed push in between
+        ("out_for_delivery", "delivery_failed", True),
+        ("delivery_failed", "out_for_delivery", True),  # redispatch
+        ("delivery_failed", "delivered", True),
+        ("out_for_delivery", "handed_to_courier", False),
+        ("delivered", "out_for_delivery", False),
+        ("cancelled", "handed_to_courier", False),
+        ("return_requested", "delivered", False),
+        ("delivered", "delivery_failed", False),
+        ("delivery_failed", "shipped", False),
+    ],
+)
+def test_courier_status_mirroring_is_forward_only(current, target, expected):
+    from app.services.courier_sync_service import should_mirror
+
+    assert should_mirror(current, target) is expected
 
 
 @pytest.mark.asyncio
@@ -393,7 +504,7 @@ async def test_courier_cancelled_never_cancels_our_order():
 
 
 @pytest.mark.asyncio
-async def test_will_retry_is_recorded_on_a_failed_shipment():
+async def test_will_retry_is_recorded_on_a_failed_shipment(stub_status_transition):
     """
     The machine-readable half of a failure. `failure_note` is free text by
     design, so this is the only part of a failure we branch on: it decides
@@ -418,7 +529,7 @@ async def test_will_retry_is_recorded_on_a_failed_shipment():
 
 
 @pytest.mark.asyncio
-async def test_will_retry_false_is_recorded_not_treated_as_absent():
+async def test_will_retry_false_is_recorded_not_treated_as_absent(stub_status_transition):
     """False and None mean different things -- False is 'heading for returned'."""
     from app.services import courier_sync_service
 
@@ -543,9 +654,101 @@ async def test_recipient_name_and_phone_are_truncated_to_their_maxima(monkeypatc
     await CS.book_shipment(
         merchant_order_ref="FC-TEST",
         quote_id="qt_x",
+        payment_method="prepaid",
         recipient_name="N" * 400,
         recipient_phone="0" * 90,
         address_line1="1 Main St",
     )
     assert len(captured["json"]["recipient_name"]) == RECIPIENT_NAME_MAX
     assert len(captured["json"]["recipient_phone"]) == RECIPIENT_PHONE_MAX
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-13 contract: postal cities, origin pricing, confirmed quotes
+# ---------------------------------------------------------------------------
+
+
+def _capture_requests(monkeypatch, response=None):
+    from app.services.courier_service import CourierService as CS
+
+    calls: list[dict] = []
+
+    async def _fake_request(method, path, *, json=None, params=None):
+        calls.append({"method": method, "path": path, "json": json, "params": params})
+        return response if response is not None else {}
+
+    monkeypatch.setattr(CS, "_request", staticmethod(_fake_request))
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_a_rate_is_asked_for_by_postal_city_and_names_the_outlet(monkeypatch):
+    from app.services.courier_service import CourierService as CS
+
+    calls = _capture_requests(
+        monkeypatch,
+        {
+            "serviceable": True,
+            "quote_id": "qt_1",
+            "amount_lkr": "555.00",
+            "expires_at": "2026-09-13T10:30:00+00:00",
+            "origin_postal_city_id": 98,
+        },
+    )
+    quote = await CS.get_rate(
+        postal_city_id=812, weight_kg=Decimal("2.5"), payment_method="cod", cod_amount=Decimal("4000"), outlet_id=7
+    )
+    [call] = calls
+    assert call["path"] == "/rates"
+    assert call["json"]["postal_city_id"] == 812
+    assert call["json"]["outlet_id"] == 7
+    assert "city_id" not in call["json"]
+    assert quote.amount_lkr == Decimal("555.00")
+    assert quote.origin_postal_city_id == 98
+
+
+@pytest.mark.asyncio
+async def test_confirming_a_quote_posts_to_its_confirm_route(monkeypatch):
+    from app.services.courier_service import CourierService as CS
+
+    calls = _capture_requests(
+        monkeypatch,
+        {
+            "serviceable": True,
+            "quote_id": "qt_1",
+            "amount_lkr": "555.00",
+            "expires_at": "2026-09-20T10:00:00+00:00",
+            "confirmed": True,
+        },
+    )
+    quote = await CS.confirm_quote("qt_1")
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["path"] == "/rates/qt_1/confirm"
+    assert quote.confirmed is True
+
+
+@pytest.mark.asyncio
+async def test_a_booking_says_how_the_customer_pays_and_never_sends_the_retired_post_office(monkeypatch):
+    from app.services.courier_service import CourierService as CS
+
+    calls = _capture_requests(monkeypatch)
+    await CS.book_shipment(
+        merchant_order_ref="FC-COD",
+        quote_id="qt_1",
+        payment_method="cod",
+        recipient_name="A. Perera",
+        recipient_phone="0771234567",
+        address_line1="7 Beach Road",
+        postal_city="Galle",
+        district="Galle",
+        cod_amount=Decimal("4820.00"),
+        outlet_id=7,
+    )
+    body = calls[0]["json"]
+    assert body["payment_method"] == "cod"
+    assert body["cod_amount"] == 4820.0
+    assert body["outlet_id"] == 7
+    assert "post_office" not in body
+    assert "handover_code" not in body
+    # The flat rendering still reads naturally, postal city included.
+    assert body["recipient_address"] == "7 Beach Road, Galle, Galle"

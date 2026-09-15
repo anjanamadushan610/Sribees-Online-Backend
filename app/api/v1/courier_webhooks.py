@@ -3,9 +3,13 @@ Courier Webhooks — inbound endpoints SribeesExpress calls INTO us.
 
 Authenticated by **HMAC signature**, not a shared API key: the contract
 (``docs/SRIBEESEXPRESS_ECOMMERCE_API.md`` section 10.3) signs every push with
-the secret issued once at ``POST /ecommerce/webhook-endpoints`` registration,
-which lives in ``settings.courier_webhook_secret``. The old
-``courier_inbound_api_key`` scheme is gone with the old contract.
+the secret issued once at ``POST /ecommerce/webhook-endpoints`` registration.
+Each SribeesExpress account we book into — the account key and every branch
+with its own — has its own endpoint and its own secret, stored encrypted by
+``POST /admin/courier/webhook-endpoint``; ``settings.courier_webhook_secret``
+is still honoured for a deployment registered before that existed. A push
+does not say which account sent it until it is verified, so every stored
+secret is tried.
 
 Two properties matter here and neither is optional:
 
@@ -35,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.settings import settings
-from app.services import courier_sync_service
+from app.services import courier_credentials, courier_sync_service
 from app.services.order_service import OrderService
 
 # Prefix "/courier/webhooks" is applied by app/api/v1/router.py.
@@ -54,9 +58,26 @@ def _parse_signature(header: str) -> tuple[Optional[str], Optional[str]]:
     return timestamp, signature
 
 
+def signature_matches(secrets: list[str], timestamp: str, raw_body: bytes, provided: str) -> bool:
+    """
+    Whether ``provided`` is the HMAC of ``"{t}.{raw body}"`` under any secret.
+
+    Every secret is checked, and each comparison is constant-time, so neither
+    the answer's timing nor an early exit says which account's secret — or
+    whether any — came close.
+    """
+    matched = False
+    message = f"{timestamp}.".encode() + raw_body
+    for secret in secrets:
+        expected = hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+        matched = hmac.compare_digest(expected, provided) or matched
+    return matched
+
+
 async def verify_signature(
     request: Request,
     x_sribees_signature: str = Header(..., alias="X-Sribees-Signature"),
+    db: AsyncSession = Depends(get_db),
 ) -> bytes:
     """
     Verify ``X-Sribees-Signature`` over ``"{t}.{raw body}"`` and return the raw
@@ -66,10 +87,14 @@ async def verify_signature(
     before the HMAC: a valid signature replayed days later is still a replay,
     and the signed timestamp is the only thing that distinguishes it.
     """
-    if not settings.courier_webhook_secret:
-        # Fail closed. An unconfigured secret must never mean "accept
-        # everything" -- this endpoint writes to orders.
-        logger.error("Courier webhook received but courier_webhook_secret is not configured")
+    secrets = await courier_credentials.webhook_secrets(db)
+    legacy = (settings.courier_webhook_secret or "").strip()
+    if legacy:
+        secrets.append(legacy)
+    if not secrets:
+        # Fail closed. No secret must never mean "accept everything" -- this
+        # endpoint writes to orders.
+        logger.error("Courier webhook received but no webhook secret is configured")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Webhook verification is not configured",
@@ -87,13 +112,7 @@ async def verify_signature(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Signature expired")
 
     raw_body = await request.body()
-    expected = hmac.new(
-        settings.courier_webhook_secret.encode(),
-        f"{timestamp}.".encode() + raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-
-    if not hmac.compare_digest(expected, provided):
+    if not signature_matches(secrets, timestamp, raw_body, provided):
         logger.warning("Courier webhook signature mismatch -- payload rejected")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
 

@@ -1,25 +1,35 @@
 """
 Cart API Endpoints (Redis-based)
+
+Every response that returns the cart returns it priced the same way: goods
+totals plus the SribeesExpress delivery charge for the shopper's address, and a
+``delivery`` block saying whether that charge exists (see
+app/services/delivery_quote_service.py). ``totals.shipping`` is the delivery
+charge when one was quoted and ``0`` when it was not — ``delivery.available``
+is what tells those apart, never the number.
 """
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.config.redis import get_redis
+from app.config.redis import get_redis, get_redis_optional
 from app.core.dependencies import get_current_user
 from app.schemas.cart import (
     AddToCartRequest,
     ApplyCouponRequest,
     UpdateCartItemRequest,
 )
+from app.services import delivery_quote_service
+from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.coupon_service import CouponService, CouponValidationError
+from app.services.pricing_service import PricingService
 
 # Prefix "/cart" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Cart"])
@@ -45,23 +55,69 @@ async def _optional_branch_id(redis: Redis, current_user) -> Optional[UUID]:
     return None
 
 
+async def _priced(
+    db: AsyncSession,
+    redis: Optional[Redis],
+    current_user,
+    cart: dict,
+    address_id: Optional[str] = None,
+) -> dict:
+    """
+    The cart with delivery priced in.
+
+    A delivery failure never fails the cart: the shopper can still see and edit
+    what they are buying, and the ``delivery`` block explains why there is no
+    charge. Checkout is where an unpriced delivery stops the order.
+    """
+    items = cart.get("items", [])
+    try:
+        quote, destination = await delivery_quote_service.quote_for_cart(
+            db, redis, current_user.user_id, items, address_id=address_id
+        )
+        pricing_config = await AppSettingsService.get_pricing_config(db)
+        breakdown = await PricingService.quote(
+            items=items,
+            coupon=cart.get("coupon"),
+            tax_rate=pricing_config["tax_rate"],
+            delivery=quote,
+        )
+    except Exception as exc:  # pragma: no cover - defensive, never break the cart
+        logger.error(f"Pricing delivery into the cart failed: {exc}")
+        return cart
+
+    cart["totals"] = {
+        "subtotal": float(breakdown.subtotal),
+        "discount": float(breakdown.discount),
+        "tax": float(breakdown.tax),
+        "shipping": float(breakdown.delivery_fee),
+        "total": float(breakdown.total),
+    }
+    cart["delivery"] = delivery_quote_service.delivery_payload(quote, destination)
+    return cart
+
+
 # ============================================================================
 # Cart Endpoints
 # ============================================================================
 
 @router.get("", response_model=dict)
 async def get_cart(
+    address_id: Optional[str] = Query(
+        None, description="Price delivery to this saved address instead of the default one"
+    ),
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
     current_user = Depends(get_current_user)
 ):
     """
-    Get current user's cart.
+    Get current user's cart, with the delivery charge for their address.
     """
     try:
         cart = await CartService.get_cart(str(current_user.user_id))
 
         return {
             "success": True,
-            "data": cart
+            "data": await _priced(db, redis, current_user, cart, address_id)
         }
     except Exception as e:
         logger.error(f"Error getting cart: {e}")
@@ -74,6 +130,8 @@ async def get_cart(
 @router.post("/items", response_model=dict)
 async def add_to_cart(
     data: AddToCartRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
     current_user = Depends(get_current_user)
 ):
     """
@@ -93,7 +151,7 @@ async def add_to_cart(
 
         return {
             "success": True,
-            "data": cart,
+            "data": await _priced(db, redis, current_user, cart),
             "message": "Item added to cart"
         }
     except Exception as e:
@@ -109,6 +167,8 @@ async def update_cart_item(
     product_id: str,
     data: UpdateCartItemRequest,
     variant_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
     current_user = Depends(get_current_user)
 ):
     """
@@ -124,7 +184,7 @@ async def update_cart_item(
 
         return {
             "success": True,
-            "data": cart,
+            "data": await _priced(db, redis, current_user, cart),
             "message": "Cart updated"
         }
     except ValueError as e:
@@ -144,6 +204,8 @@ async def update_cart_item(
 async def remove_from_cart(
     product_id: str,
     variant_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
     current_user = Depends(get_current_user)
 ):
     """
@@ -158,7 +220,7 @@ async def remove_from_cart(
 
         return {
             "success": True,
-            "data": cart,
+            "data": await _priced(db, redis, current_user, cart),
             "message": "Item removed from cart"
         }
     except Exception as e:
@@ -272,7 +334,7 @@ async def apply_coupon(
 
         return {
             "success": True,
-            "data": updated_cart,
+            "data": await _priced(db, redis, current_user, updated_cart),
             "message": "Coupon applied successfully",
         }
     except CouponValidationError as e:
@@ -289,6 +351,8 @@ async def apply_coupon(
 
 @router.delete("/coupon", response_model=dict)
 async def remove_coupon(
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
     current_user = Depends(get_current_user)
 ):
     """
@@ -299,7 +363,7 @@ async def remove_coupon(
 
         return {
             "success": True,
-            "data": cart,
+            "data": await _priced(db, redis, current_user, cart),
             "message": "Coupon removed"
         }
     except Exception as e:
@@ -341,6 +405,8 @@ async def get_cart_count(
 @router.post("/merge", response_model=dict)
 async def merge_cart(
     guest_cart: dict,
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
     current_user = Depends(get_current_user)
 ):
     """
@@ -356,7 +422,7 @@ async def merge_cart(
 
         return {
             "success": True,
-            "data": cart,
+            "data": await _priced(db, redis, current_user, cart),
             "message": "Cart merged successfully"
         }
     except Exception as e:
@@ -370,6 +436,8 @@ async def merge_cart(
 @router.post("/sync", response_model=dict)
 async def sync_cart(
     local_cart: dict,
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
     current_user = Depends(get_current_user)
 ):
     """
@@ -385,7 +453,7 @@ async def sync_cart(
 
         return {
             "success": True,
-            "data": cart,
+            "data": await _priced(db, redis, current_user, cart),
             "message": "Cart synced successfully"
         }
     except Exception as e:
@@ -425,22 +493,37 @@ async def get_sync_status(
 @router.post("/validate", response_model=dict)
 async def validate_cart(
     current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
 ):
     """
     Validate cart before checkout.
 
-    Checks stock availability and prices for all items.
+    Checks stock availability and prices for all items, and whether delivery to
+    the shopper's address can be priced — a cart that cannot be delivered is
+    not ready for checkout.
     """
     try:
-        cart = await CartService.get_cart(str(current_user.user_id))
+        cart = await _priced(
+            db, redis, current_user, await CartService.get_cart(str(current_user.user_id))
+        )
+        delivery = cart.get("delivery") or {}
+        issues = []
+        if cart.get("items") and not delivery.get("available"):
+            issues.append(
+                {
+                    "code": f"delivery_{delivery.get('status', 'unavailable')}",
+                    "message": delivery.get("message") or "Delivery can't be priced right now.",
+                }
+            )
 
         # TODO: Add actual product validation against database
         validation_result = {
-            "valid": True,
+            "valid": not issues,
             "items": cart.get("items", []),
-            "issues": [],
-            "totals": cart.get("totals", {})
+            "issues": issues,
+            "totals": cart.get("totals", {}),
+            "delivery": delivery,
         }
 
         return {

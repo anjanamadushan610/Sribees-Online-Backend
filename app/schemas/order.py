@@ -54,6 +54,7 @@ class OrderStatusEnum(str, Enum):
     PROCESSING = "processing"
     PACKING = "packing"
     PACKED = "packed"
+    READY_FOR_PICKUP = "ready_for_pickup"
     HANDED_TO_COURIER = "handed_to_courier"
     SHIPPED = "shipped"
     OUT_FOR_DELIVERY = "out_for_delivery"
@@ -113,7 +114,7 @@ class DeliveryAddressSchema(BaseModel):
     address_id: str
     address_line1: str
     address_line2: Optional[str] = None
-    post_office: str
+    postal_city: str
     district: str
     postal_code: str
     province: str
@@ -352,8 +353,16 @@ class OrderQuoteBreakdown(BaseModel):
     wallet_deduction: float
     cashback_earned: float
     total: float
-    # Set when the delivery fee came from a live courier quote (None on
-    # flat-fee fallback) -- echoed back so booking can reference it.
+    # Whether delivery could be priced. `delivery_fee` is the SribeesExpress
+    # quote when `delivery_available`, and 0 otherwise -- never a flat fee.
+    # `delivery_status` is quoted | empty_cart | no_address | not_serviceable |
+    # unavailable, and `delivery_message` the sentence to show in its place.
+    # Checkout refuses an order whose delivery is not available.
+    delivery_status: str = "quoted"
+    delivery_available: bool = True
+    delivery_message: Optional[str] = None
+    delivery: Optional[dict] = None
+    # Set when the delivery fee came from a live courier quote.
     courier_quote_id: Optional[str] = None
     # Context so the client can render wallet UI without a second call.
     currency: str = "LKR"

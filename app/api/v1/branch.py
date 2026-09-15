@@ -2,11 +2,14 @@
 SRIBEESonline - Branch Resolution API Endpoints
 
 Routes for address-to-branch routing:
-  POST /resolve              — resolve a saved address to a branch & store context
-  POST /resolve-by-location  — resolve using a province/district/post_office triplet
-  GET  /context              — retrieve the current branch context from Redis
-  POST /clear                — clear the branch context (force re-selection)
-  GET  /served-post-offices  — list all Post Offices served by any branch
+  POST /resolve                 — resolve a saved address to a branch & store context
+  POST /resolve-by-location     — resolve using a province/district/postal city triplet
+  GET  /context                 — retrieve the current branch context from Redis
+  POST /clear                   — clear the branch context (force re-selection)
+  GET  /served-postal-cities    — list all postal cities served by any branch
+
+Payloads carry ``postalCity`` and, for installed app builds, the ``postOffice``
+key they read before the rename (see app/services/branch_service.py).
 """
 from typing import Optional
 
@@ -28,6 +31,7 @@ from app.services import branch_service
 from app.utils.logger import logger
 
 router = APIRouter()
+context_payload = branch_service.context_payload
 
 
 # ============================================================================
@@ -40,9 +44,9 @@ router = APIRouter()
     status_code=status.HTTP_200_OK,
     summary="Resolve address to serving branch",
     description=(
-        "Receives a saved address ID, extracts the post_office field, "
-        "looks up which branch serves that area, stores the branch in the "
-        "user's Redis session, and returns the branch details."
+        "Receives a saved address ID, reads its postal city, looks up which "
+        "branch serves that area, stores the branch in the user's Redis "
+        "session, and returns the branch details."
     ),
 )
 async def resolve_branch(
@@ -55,8 +59,8 @@ async def resolve_branch(
     Full address-to-branch resolution flow.
 
     - Validates address ownership.
-    - Extracts ``post_office`` from the address.
-    - Finds the ``PostOfficeBranchMapping`` row.
+    - Reads ``postal_city`` from the address.
+    - Finds the ``PostalCityBranchMapping`` row.
     - Caches the result in Redis under ``session:{userId}:branch_context``.
     """
     context = await branch_service.resolve_address_to_branch(
@@ -68,13 +72,7 @@ async def resolve_branch(
 
     return {
         "success": True,
-        "data": {
-            "branchId": context["branch_id"],
-            "branchName": context["branch_name"],
-            "postOffice": context["post_office"],
-            "deliveryInfo": context.get("delivery_info", {}),
-            "resolvedAt": context["resolved_at"],
-        },
+        "data": context_payload(context),
         "message": f"Branch resolved: {context['branch_name']}",
     }
 
@@ -89,7 +87,7 @@ async def resolve_branch(
     status_code=status.HTTP_200_OK,
     summary="Resolve location triplet to serving branch",
     description=(
-        "Receives a {province, district, postOffice} triplet from the "
+        "Receives a {province, district, postalCity} triplet from the "
         "cascading dropdown UI, resolves the branch, stores the context "
         "in Redis, and returns the branch details.  "
         "Works for authenticated users or guests (send X-Device-Id header). "
@@ -116,7 +114,7 @@ async def resolve_branch_by_location(
                 user_id=current_user.user_id,
                 province=body.province,
                 district=body.district,
-                post_office=body.post_office,
+                postal_city=body.postal_city,
             )
         else:
             device_id = request.headers.get("X-Device-Id") or request.headers.get("x-device-id")
@@ -132,18 +130,12 @@ async def resolve_branch_by_location(
                 session_id=session_id,
                 province=body.province,
                 district=body.district,
-                post_office=body.post_office,
+                postal_city=body.postal_city,
             )
 
         return {
             "success": True,
-            "data": {
-                "branchId": context["branch_id"],
-                "branchName": context["branch_name"],
-                "postOffice": context["post_office"],
-                "deliveryInfo": context.get("delivery_info", {}),
-                "resolvedAt": context["resolved_at"],
-            },
+            "data": context_payload(context),
             "message": f"Branch resolved: {context['branch_name']}",
         }
     except HTTPException:
@@ -192,13 +184,7 @@ async def get_branch_context(
 
     return {
         "success": True,
-        "data": {
-            "branchId": context["branch_id"],
-            "branchName": context["branch_name"],
-            "postOffice": context["post_office"],
-            "deliveryInfo": context.get("delivery_info", {}),
-            "resolvedAt": context["resolved_at"],
-        },
+        "data": context_payload(context),
     }
 
 
@@ -229,26 +215,28 @@ async def clear_branch_context(
 
 
 # ============================================================================
-# GET /served-post-offices — list all served post offices
+# GET /served-postal-cities — list all served postal cities
 # ============================================================================
 
 @router.get(
-    "/served-post-offices",
+    "/served-postal-cities",
     response_model=dict,
-    summary="List served Post Offices",
-    description="Returns an alphabetical list of every Post Office that is actively served by a branch.",
+    summary="List served postal cities",
+    description="Returns an alphabetical list of every postal city that is actively served by a branch.",
 )
-async def list_served_post_offices(
+@router.get("/served-post-offices", response_model=dict, include_in_schema=False)
+async def list_served_postal_cities(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Return all actively-served Post Office names (sorted)."""
-    post_offices = await branch_service.list_served_post_offices(db)
+    """Return all actively-served postal city names (sorted)."""
+    postal_cities = await branch_service.list_served_postal_cities(db)
 
     return {
         "success": True,
         "data": {
-            "postOffices": post_offices,
-            "total": len(post_offices),
+            "postalCities": postal_cities,
+            "postOffices": postal_cities,  # legacy key
+            "total": len(postal_cities),
         },
     }

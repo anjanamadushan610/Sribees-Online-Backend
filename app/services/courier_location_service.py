@@ -1,105 +1,79 @@
 """
-Courier Location Resolution — post office to SribeesExpress ``city_id``.
+Courier Location — an address's SribeesExpress ``postal_city_id``.
 
-Every rate quote and every booking is keyed on a ``city_id``
-(``docs/SRIBEESEXPRESS_ECOMMERCE_API.md`` sections 5a, 6, 7), and that id is
-not something our addresses carry: it is an internal SribeesExpress grouping
-of post offices onto a branch coverage area. So it has to be resolved once and
-cached, which is what the contract itself asks for — "cache the result per
-address ... only when an address is first saved or changed."
+Every delivery quote is keyed on a ``postal_city_id``
+(``docs/SRIBEESEXPRESS_ECOMMERCE_API.md`` sections 5 and 6): SribeesExpress's
+own id for the Sri Lanka Post office town an address is written in. Their
+contract asks us to match an address against their postal city list **by name
+and district** and store the id, rather than sending a name for them to match.
 
-Resolution is **best-effort and never blocks the customer**. A saved address
-that cannot be resolved still saves; checkout then falls back to the flat
-platform delivery fee, exactly as it does during a courier outage. The reason
-is stored so support (and a later re-resolve sweep) can tell "SribeesExpress
-has never heard of this post office" apart from "they know it but haven't
-configured a delivery area for it yet" — the first is the customer's typo, the
-second is a SribeesExpress ops ticket.
+That list is synced into ``post_office_directory`` by
+``courier_postal_city_service.sync``, so resolving an address is a local
+lookup — no network call on address save, and nothing a courier outage can
+break. Matching is case-insensitive and exact, with district as the tiebreaker
+for the handful of towns that share a name.
+
+An address that does not match keeps ``courier_postal_city_id`` NULL. That is
+an honest "we cannot price delivery here": checkout refuses it rather than
+guessing a fee, and the next quote attempt looks again, so a directory sync
+that adds the town makes the address quotable without the customer re-saving it.
 """
-from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.branch import PostalCityDirectory
 from app.models.user import Address
-from app.services import courier_credentials
-from app.services.courier_service import (
-    CourierError,
-    CourierService,
-    CourierUnavailableError,
-)
 
-# resolved: false reasons that can flip to resolved: true later without the
-# customer changing anything -- SribeesExpress ops just has to configure the
-# area. Worth re-trying on a sweep; the others are not.
-RETRYABLE_REASONS = {"not_yet_configured", "no_delivery_to_this_area"}
+
+async def postal_city_id_for(
+    db: AsyncSession, postal_city: Optional[str], district: Optional[str]
+) -> Optional[int]:
+    """The SribeesExpress id for a postal city, from the synced directory, or None."""
+    if not postal_city or not district:
+        return None
+    return (
+        await db.execute(
+            select(PostalCityDirectory.courier_postal_city_id).where(
+                func.lower(PostalCityDirectory.postal_city) == postal_city.strip().casefold(),
+                func.lower(PostalCityDirectory.district) == district.strip().casefold(),
+                PostalCityDirectory.is_active.is_(True),
+                PostalCityDirectory.courier_postal_city_id.isnot(None),
+            )
+        )
+    ).scalar_one_or_none()
 
 
 async def resolve_address(db: AsyncSession, address: Address, *, commit: bool = True) -> Optional[int]:
     """
-    Resolve ``address`` to a ``city_id`` and cache it on the row.
+    Match ``address`` against the directory and store the result on the row.
 
-    Returns the ``city_id``, or ``None`` if it could not be resolved. Never
-    raises: a courier outage here must not fail an address save.
-
-    ``district`` is always sent when we have it — it is the disambiguator for
-    duplicate post-office names, and omitting it is precisely what produces
-    ``ambiguous_post_office``. Every address in our schema has a district
-    (it is NOT NULL), so in practice we should never see that reason.
+    Returns the ``postal_city_id``, or None. Clears a stale id when the address
+    no longer matches — an address edited to a town the courier does not serve
+    must not keep quoting at its old town's price.
     """
-    try:
-        # The account scope, not a branch one: city ids are an account-level
-        # notion, and a saved address does not belong to a branch yet.
-        async with courier_credentials.for_account(db):
-            result = await CourierService.resolve_location(
-                post_office=address.post_office,
-                district=address.district,
-                province=address.province,
-            )
-    except (
-        CourierUnavailableError,
-        CourierError,
-        courier_credentials.CourierNotConfiguredError,
-    ) as exc:
-        # Deliberately leaves courier_resolved_at untouched: this is "we don't
-        # know yet", not "we asked and the answer was no". A later sweep
-        # should retry it, and a NULL resolved_at is how it finds it.
-        logger.warning(f"Could not resolve city_id for address {address.address_id}: {exc}")
-        return None
-
-    address.courier_resolved_at = datetime.now(timezone.utc)
-    if result.resolved:
-        address.courier_city_id = result.city_id
-        address.courier_city_name = result.city_name
-        address.courier_resolve_reason = None
+    postal_city_id = await postal_city_id_for(db, address.postal_city, address.district)
+    if postal_city_id != address.courier_postal_city_id:
+        address.courier_postal_city_id = postal_city_id
+        if commit:
+            await db.commit()
+    if postal_city_id is None:
         logger.info(
-            f"Address {address.address_id} ({address.post_office}) resolved to "
-            f"city_id={result.city_id} ({result.city_name})"
+            f"Address {address.address_id} ({address.postal_city}, {address.district}) "
+            f"does not match a SribeesExpress postal city"
         )
-    else:
-        address.courier_city_id = None
-        address.courier_city_name = None
-        address.courier_resolve_reason = result.reason
-        logger.warning(
-            f"Address {address.address_id} ({address.post_office}) unresolvable: {result.reason}"
-        )
-
-    if commit:
-        await db.commit()
-    return address.courier_city_id
+    return postal_city_id
 
 
-def needs_resolution(address: Address, *, post_office_changed: bool) -> bool:
+async def postal_city_id_for_address(db: AsyncSession, address: Address) -> Optional[int]:
     """
-    Whether ``address`` should be (re-)resolved.
+    The id to quote this address with, re-checking the directory if none is stored.
 
-    Re-resolve when the post office or district changed, when we have never
-    asked, or when the last answer was one that SribeesExpress ops can flip
-    without the customer touching anything.
+    Cheap enough to call on every quote, and what lets a directory sync reach
+    addresses saved before the town was added.
     """
-    if post_office_changed:
-        return True
-    if address.courier_resolved_at is None:
-        return True
-    return address.courier_resolve_reason in RETRYABLE_REASONS
+    if address.courier_postal_city_id is not None:
+        return address.courier_postal_city_id
+    return await resolve_address(db, address)
