@@ -700,6 +700,18 @@ async def create_product(
             detail="At least one product image (thumbnail) is required",
         )
 
+    if data.weight is None or data.weight <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Product weight is required and must be greater than 0",
+        )
+
+    if not data.weight_unit or not str(data.weight_unit).strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Product weight unit is required",
+        )
+
     # Normalize image URLs to storage paths
     for img in data.images:
         img.image_url = media_path(img.image_url) or img.image_url
@@ -737,6 +749,12 @@ async def update_product(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found",
+        )
+
+    if data.weight is not None and data.weight <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Product weight must be greater than 0",
         )
 
     # Branch Manager / Staff active status toggle isolation:
