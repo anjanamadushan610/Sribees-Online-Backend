@@ -381,8 +381,10 @@ jobs:
             echo "server {" | sudo tee "$NGINX_CONF" > /dev/null
             echo "    listen 80;" | sudo tee -a "$NGINX_CONF" > /dev/null
             echo "    server_name ${DOMAIN};" | sudo tee -a "$NGINX_CONF" > /dev/null
+            echo "    client_max_body_size 25M;" | sudo tee -a "$NGINX_CONF" > /dev/null
             echo "" | sudo tee -a "$NGINX_CONF" > /dev/null
             echo "    location / {" | sudo tee -a "$NGINX_CONF" > /dev/null
+            echo "        client_max_body_size 25M;" | sudo tee -a "$NGINX_CONF" > /dev/null
             echo "        proxy_pass http://127.0.0.1:8000;" | sudo tee -a "$NGINX_CONF" > /dev/null
             echo '        proxy_set_header Host $host;' | sudo tee -a "$NGINX_CONF" > /dev/null
             echo '        proxy_set_header X-Real-IP $remote_addr;' | sudo tee -a "$NGINX_CONF" > /dev/null
