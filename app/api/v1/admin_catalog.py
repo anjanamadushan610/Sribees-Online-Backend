@@ -694,6 +694,16 @@ async def create_product(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
+    if not data.images or len(data.images) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one product image (thumbnail) is required",
+        )
+
+    # Normalize image URLs to storage paths
+    for img in data.images:
+        img.image_url = media_path(img.image_url) or img.image_url
+
     try:
         product = await ProductService.create(db, data)
         # Re-fetch with relationships loaded so format_product is safe.

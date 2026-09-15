@@ -323,6 +323,21 @@ class ProductService:
         )
 
         db.add(product)
+        await db.flush()
+
+        if data.images:
+            has_primary = any(img.is_primary for img in data.images)
+            for i, img_data in enumerate(data.images):
+                is_primary = img_data.is_primary or (not has_primary and i == 0)
+                product_image = ProductImage(
+                    product_id=product.product_id,
+                    image_url=img_data.image_url,
+                    alt_text=img_data.alt_text,
+                    is_primary=is_primary,
+                    sort_order=img_data.sort_order if img_data.sort_order is not None else i,
+                )
+                db.add(product_image)
+
         await db.commit()
         await db.refresh(product)
 

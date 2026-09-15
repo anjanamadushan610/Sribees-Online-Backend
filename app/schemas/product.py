@@ -61,6 +61,14 @@ class ProductVariantSchema(BaseModel):
 # Request Schemas
 # ============================================================================
 
+class ProductImageCreate(BaseModel):
+    """Schema for adding a product image."""
+    image_url: str
+    alt_text: Optional[str] = None
+    is_primary: bool = False
+    sort_order: int = 0
+
+
 class ProductCreate(BaseModel):
     """
     Schema for creating a product.
@@ -111,6 +119,10 @@ class ProductCreate(BaseModel):
     )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
+    images: Optional[List[ProductImageCreate]] = Field(
+        None,
+        description="Product images (at least one thumbnail image required on create)",
+    )
 
 
 class ProductUpdate(BaseModel):
@@ -164,14 +176,6 @@ class SuggestSkuRequest(BaseModel):
     """Draft product fields sent to the SKU suggestion endpoint."""
     name: Optional[str] = None
     category_id: Optional[UUID] = None
-
-
-class ProductImageCreate(BaseModel):
-    """Schema for adding a product image."""
-    image_url: str
-    alt_text: Optional[str] = None
-    is_primary: bool = False
-    sort_order: int = 0
 
 
 class ProductVariantCreate(BaseModel):
