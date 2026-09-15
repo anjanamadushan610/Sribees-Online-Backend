@@ -102,6 +102,8 @@ def format_product(
         # so it can label the column honestly per viewer.
         "branch_price": eff.get("branch_price"),
         "is_perishable": bool(getattr(product, "is_perishable", False)),
+        "weight": float(product.weight) if getattr(product, "weight", None) is not None else None,
+        "weight_unit": getattr(product, "weight_unit", None) or "kg",
         "stock_quantity": eff.get("stock_quantity", product.stock_quantity),
         "is_active": eff.get("is_active", product.is_active),
         "is_featured": product.is_featured,
