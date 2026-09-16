@@ -93,11 +93,11 @@ class ProductCreate(BaseModel):
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
     )
     sku: str = Field(..., min_length=1, max_length=100)
-    # No price/stock_quantity/cashback_percentage here on purpose: the Super
-    # Admin defines the catalog entry only. A product carries no real price,
-    # stock or cashback rate until a Branch Manager stocks it into their own
-    # branch (POST /admin/inventory), which is the only place those values are
-    # ever set — see BranchOverrideCreate.
+    price: Optional[Decimal] = Field(
+        Decimal("0.00"),
+        ge=0,
+        description="Global base catalog price (defaults to 0.00 if omitted)",
+    )
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     # Required: an uncategorised product is invisible to storefront/mobile
@@ -142,8 +142,11 @@ class ProductUpdate(BaseModel):
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
     )
     sku: Optional[str] = Field(None, max_length=100)
-    # No price/stock_quantity/cashback_percentage — same reasoning as
-    # ProductCreate. Editing those happens per-branch, via the Inventory API.
+    price: Optional[Decimal] = Field(
+        None,
+        ge=0,
+        description="Global base catalog price",
+    )
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
     category_id: Optional[UUID] = None
