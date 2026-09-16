@@ -239,9 +239,21 @@ def _format_category(cat) -> dict:
 @router.get("/categories", response_model=dict)
 async def list_categories(
     db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
 ):
-    """List all categories (including inactive) with product counts."""
-    categories = await CategoryService.get_all(db, include_inactive=True)
+    """
+    List categories with product counts.
+    For Super Admin (unscoped), returns all global categories.
+    For Scoped Admins (Branch Managers), returns only categories enabled
+    and visible for their branch.
+    """
+    if not scope.is_unscoped and scope.branch_id:
+        categories = await CategoryService.get_all(
+            db, include_inactive=False, branch_id=scope.branch_id
+        )
+    else:
+        categories = await CategoryService.get_all(db, include_inactive=True)
+
     return {
         "success": True,
         "data": {"categories": [_format_category(c) for c in categories]},

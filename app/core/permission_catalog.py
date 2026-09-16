@@ -41,6 +41,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, set[tuple[str, str]]] = {
     "branch_manager": {
         ("dashboard", "read"),
         ("products", "read"), ("products", "update"),
+        ("categories", "read"),
         ("orders", "read"), ("orders", "update"),
         ("customers", "read"),
         ("inventory", "read"), ("inventory", "update"),
