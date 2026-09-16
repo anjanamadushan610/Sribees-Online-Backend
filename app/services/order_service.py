@@ -469,7 +469,7 @@ class OrderService:
 
         # Deduct branch inventory
         if branch_id:
-            from app.models.branch import BranchInventory
+            from app.models.product import BranchInventory
             for item in cart["items"]:
                 p_id = UUID(str(item["product_id"]))
                 res = await db.execute(

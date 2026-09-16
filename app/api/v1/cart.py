@@ -118,7 +118,7 @@ async def get_cart(
         if redis and cart.get("items"):
             branch_id = await _optional_branch_id(redis, current_user)
             if branch_id:
-                from app.models.branch import BranchInventory
+                from app.models.product import BranchInventory
                 from sqlalchemy import select
                 updated_any = False
                 for item in list(cart["items"]):
@@ -177,7 +177,7 @@ async def add_to_cart(
         if redis:
             branch_id = await _optional_branch_id(redis, current_user)
             if branch_id:
-                from app.models.branch import BranchInventory
+                from app.models.product import BranchInventory
                 from sqlalchemy import select
                 try:
                     p_uuid = UUID(data.product_id)
@@ -245,7 +245,7 @@ async def update_cart_item(
         if redis and data.quantity > 0:
             branch_id = await _optional_branch_id(redis, current_user)
             if branch_id:
-                from app.models.branch import BranchInventory
+                from app.models.product import BranchInventory
                 from sqlalchemy import select
                 try:
                     p_uuid = UUID(product_id)
