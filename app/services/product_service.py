@@ -324,7 +324,11 @@ class ProductService:
 
         if data.images:
             has_primary = any(img.is_primary for img in data.images)
+            seen_urls = set()
             for i, img_data in enumerate(data.images):
+                if img_data.image_url in seen_urls:
+                    continue
+                seen_urls.add(img_data.image_url)
                 is_primary = img_data.is_primary or (not has_primary and i == 0)
                 product_image = ProductImage(
                     product_id=product.product_id,
@@ -400,6 +404,26 @@ class ProductService:
                 .where(ProductImage.product_id == product_id)
                 .values(is_primary=False)
             )
+
+        # Check if this image_url already exists on the product
+        existing = (
+            await db.execute(
+                select(ProductImage).where(
+                    ProductImage.product_id == product_id,
+                    ProductImage.image_url == data.image_url,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if existing:
+            existing.is_primary = data.is_primary
+            if data.sort_order is not None:
+                existing.sort_order = data.sort_order
+            if data.alt_text is not None:
+                existing.alt_text = data.alt_text
+            await db.commit()
+            await db.refresh(existing)
+            return existing
 
         image = ProductImage(
             product_id=product_id,
