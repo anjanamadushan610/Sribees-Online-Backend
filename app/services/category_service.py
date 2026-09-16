@@ -25,13 +25,72 @@ class CategoryService:
         """
         Get all categories with product counts.
 
-        *branch_id*, when given (and *include_inactive* is False), additionally
-        requires an active ``branch_categories`` row for that branch — a
-        category hidden from a branch (or not yet activated there) is excluded
-        from that branch's customers, mirroring branch_inventory for products.
-        Ignored when *include_inactive* is True (the admin "show me
-        everything" view has no branch context).
+        *branch_id*, when given with *include_inactive=False*, filters strictly
+        to active categories visible in that branch (for customer storefront).
+        When *include_inactive=True* with *branch_id*, returns all categories
+        with *is_active* reflecting the branch's specific activation status.
+        When *branch_id* is None, operates on global category status.
         """
+        if branch_id is not None:
+            if not include_inactive:
+                query = (
+                    select(
+                        Category,
+                        func.count(func.distinct(Category.products)).label("product_count"),
+                    )
+                    .join(
+                        BranchCategory,
+                        and_(
+                            BranchCategory.category_id == Category.category_id,
+                            BranchCategory.branch_id == branch_id,
+                        ),
+                    )
+                    .outerjoin(Category.products)
+                    .where(
+                        Category.is_active == True,
+                        BranchCategory.is_active.is_(True),
+                    )
+                    .group_by(Category.category_id)
+                    .order_by(Category.name)
+                )
+                result = await db.execute(query)
+                categories = result.all()
+                return [
+                    {
+                        **cat[0].__dict__,
+                        "product_count": cat[1] or 0,
+                    }
+                    for cat in categories
+                ]
+            else:
+                query = (
+                    select(
+                        Category,
+                        func.count(func.distinct(Category.products)).label("product_count"),
+                        func.coalesce(BranchCategory.is_active, False).label("branch_is_active"),
+                    )
+                    .outerjoin(
+                        BranchCategory,
+                        and_(
+                            BranchCategory.category_id == Category.category_id,
+                            BranchCategory.branch_id == branch_id,
+                        ),
+                    )
+                    .outerjoin(Category.products)
+                    .group_by(Category.category_id, BranchCategory.is_active)
+                    .order_by(Category.name)
+                )
+                result = await db.execute(query)
+                categories = result.all()
+                return [
+                    {
+                        **cat[0].__dict__,
+                        "product_count": cat[1] or 0,
+                        "is_active": bool(cat[0].is_active and cat[2]),
+                    }
+                    for cat in categories
+                ]
+
         query = (
             select(
                 Category,
@@ -44,14 +103,6 @@ class CategoryService:
 
         if not include_inactive:
             query = query.where(Category.is_active == True)
-            if branch_id is not None:
-                query = query.join(
-                    BranchCategory,
-                    and_(
-                        BranchCategory.category_id == Category.category_id,
-                        BranchCategory.branch_id == branch_id,
-                    ),
-                ).where(BranchCategory.is_active.is_(True))
 
         result = await db.execute(query)
         categories = result.all()

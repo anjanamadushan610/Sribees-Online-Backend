@@ -244,12 +244,12 @@ async def list_categories(
     """
     List categories with product counts.
     For Super Admin (unscoped), returns all global categories.
-    For Scoped Admins (Branch Managers), returns only categories enabled
-    and visible for their branch.
+    For Scoped Admins (Branch Managers), returns all categories with their
+    branch-specific visibility status (active/inactive).
     """
     if not scope.is_unscoped and scope.branch_id:
         categories = await CategoryService.get_all(
-            db, include_inactive=False, branch_id=scope.branch_id
+            db, include_inactive=True, branch_id=scope.branch_id
         )
     else:
         categories = await CategoryService.get_all(db, include_inactive=True)
