@@ -143,7 +143,7 @@ def _validate_category_image(parent_id: Optional[UUID], image_url: Optional[str]
         )
 
 
-async def _upload_image(file: UploadFile, folder: str) -> str:
+async def _upload_image(file: UploadFile, folder: str, max_mb: Optional[int] = None) -> str:
     """
     Validate an uploaded image, store it, and return its **relative path**.
 
@@ -159,14 +159,13 @@ async def _upload_image(file: UploadFile, folder: str) -> str:
             ),
         )
 
-    max_mb = settings.media_max_upload_size_mb
+    limit_mb = max_mb if max_mb is not None else settings.media_max_upload_size_mb
     contents = await file.read()
-    if len(contents) > max_mb * 1024 * 1024:
+    if len(contents) > limit_mb * 1024 * 1024:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"File too large ({len(contents) / 1024 / 1024:.1f} MB). "
-                f"Maximum allowed: {max_mb} MB."
+                f"Image file size ({len(contents) / 1024 / 1024:.1f}MB) exceeds the maximum allowed limit of {limit_mb}MB. Please upload an image under {limit_mb}MB."
             ),
         )
 
@@ -888,7 +887,7 @@ async def upload_product_image(
     immediately, but what it sends back to be persisted is that same value; the
     link endpoint stores the relative path. See ``_link_path``.
     """
-    path = await _upload_image(file, folder="products")
+    path = await _upload_image(file, folder="products", max_mb=1)
     return {
         "success": True,
         "data": {"image_url": media_url(path), "filename": file.filename},
