@@ -115,6 +115,42 @@ async def get_cart(
     try:
         cart = await CartService.get_cart(str(current_user.user_id))
 
+        if redis and cart.get("items"):
+            branch_id = await _optional_branch_id(redis, current_user)
+            if branch_id:
+                from app.models.branch import BranchInventory
+                from sqlalchemy import select
+                updated_any = False
+                for item in list(cart["items"]):
+                    try:
+                        p_uuid = UUID(item["product_id"])
+                        res = await db.execute(
+                            select(BranchInventory).where(
+                                BranchInventory.branch_id == branch_id,
+                                BranchInventory.product_id == p_uuid
+                            )
+                        )
+                        inv = res.scalars().first()
+                        if inv is not None and inv.stock_quantity < item["quantity"]:
+                            if inv.stock_quantity > 0:
+                                await CartService.update_item_quantity(
+                                    user_id=str(current_user.user_id),
+                                    product_id=item["product_id"],
+                                    quantity=inv.stock_quantity,
+                                    variant_id=item.get("variant_id")
+                                )
+                            else:
+                                await CartService.remove_item(
+                                    user_id=str(current_user.user_id),
+                                    product_id=item["product_id"],
+                                    variant_id=item.get("variant_id")
+                                )
+                            updated_any = True
+                    except Exception:
+                        pass
+                if updated_any:
+                    cart = await CartService.get_cart(str(current_user.user_id))
+
         return {
             "success": True,
             "data": await _priced(db, redis, current_user, cart, address_id)

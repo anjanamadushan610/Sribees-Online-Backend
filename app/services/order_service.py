@@ -482,9 +482,31 @@ class OrderService:
                 if inv is not None:
                     if inv.stock_quantity < item["quantity"]:
                         await db.rollback()
-                        raise ValueError(
-                            f"Not enough stock for {item['name']}. Only {inv.stock_quantity} available in this branch."
-                        )
+                        if inv.stock_quantity > 0:
+                            try:
+                                await CartService.update_item_quantity(
+                                    user_id=str(user_id),
+                                    product_id=str(p_id),
+                                    quantity=inv.stock_quantity,
+                                    variant_id=item.get("variant_id")
+                                )
+                            except Exception:
+                                pass
+                            raise ValueError(
+                                f"Stock changed for {item['name']}. Only {inv.stock_quantity} available. Your cart has been updated."
+                            )
+                        else:
+                            try:
+                                await CartService.remove_item(
+                                    user_id=str(user_id),
+                                    product_id=str(p_id),
+                                    variant_id=item.get("variant_id")
+                                )
+                            except Exception:
+                                pass
+                            raise ValueError(
+                                f"{item['name']} is currently out of stock and was removed from your cart."
+                            )
                     inv.stock_quantity = max(0, inv.stock_quantity - item["quantity"])
 
         # Create order items
