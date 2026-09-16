@@ -467,6 +467,26 @@ class OrderService:
                     "This promotion has reached its budget and is no longer available."
                 )
 
+        # Deduct branch inventory
+        if branch_id:
+            from app.models.branch import BranchInventory
+            for item in cart["items"]:
+                p_id = UUID(str(item["product_id"]))
+                res = await db.execute(
+                    select(BranchInventory).where(
+                        BranchInventory.branch_id == branch_id,
+                        BranchInventory.product_id == p_id
+                    )
+                )
+                inv = res.scalars().first()
+                if inv is not None:
+                    if inv.stock_quantity < item["quantity"]:
+                        await db.rollback()
+                        raise ValueError(
+                            f"Not enough stock for {item['name']}. Only {inv.stock_quantity} available in this branch."
+                        )
+                    inv.stock_quantity = max(0, inv.stock_quantity - item["quantity"])
+
         # Create order items
         for item in cart["items"]:
             order_item = OrderItem(
@@ -481,14 +501,6 @@ class OrderService:
                 subtotal=Decimal(str(item["price"] * item["quantity"]))
             )
             db.add(order_item)
-
-        # NOTE: branch-stock reservation was reverted in 56fc85b after it broke
-        # production, and the revert took app/services/inventory_service.py and
-        # orders.stock_committed_at with it -- but left these call sites behind.
-        # Every one of them raised ModuleNotFoundError at runtime, which is how
-        # `handed_to_courier` (and checkout) returned a 500. Removed rather than
-        # re-implemented: bringing stock holds back is a deliberate decision with
-        # its own migration, not something to restore by accident here.
 
         # Record wallet movements atomically with the order.
         # Spend first so the earned cashback isn't immediately spendable on the

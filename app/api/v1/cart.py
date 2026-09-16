@@ -138,6 +138,35 @@ async def add_to_cart(
     Add an item to cart.
     """
     try:
+        if redis:
+            branch_id = await _optional_branch_id(redis, current_user)
+            if branch_id:
+                from app.models.branch import BranchInventory
+                from sqlalchemy import select
+                try:
+                    p_uuid = UUID(data.product_id)
+                    res = await db.execute(
+                        select(BranchInventory).where(
+                            BranchInventory.branch_id == branch_id,
+                            BranchInventory.product_id == p_uuid
+                        )
+                    )
+                    inv = res.scalars().first()
+                    if inv is not None:
+                        existing_cart = await CartService.get_cart(str(current_user.user_id))
+                        existing_qty = sum(
+                            item["quantity"]
+                            for item in existing_cart.get("items", [])
+                            if item.get("product_id") == data.product_id
+                        )
+                        if existing_qty + data.quantity > inv.stock_quantity:
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"Only {inv.stock_quantity} items available in stock for this branch"
+                            )
+                except ValueError:
+                    pass
+
         cart = await CartService.add_item(
             user_id=str(current_user.user_id),
             product_id=data.product_id,
@@ -154,6 +183,8 @@ async def add_to_cart(
             "data": await _priced(db, redis, current_user, cart),
             "message": "Item added to cart"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error adding to cart: {e}")
         raise HTTPException(
@@ -175,6 +206,28 @@ async def update_cart_item(
     Update item quantity in cart.
     """
     try:
+        if redis and data.quantity > 0:
+            branch_id = await _optional_branch_id(redis, current_user)
+            if branch_id:
+                from app.models.branch import BranchInventory
+                from sqlalchemy import select
+                try:
+                    p_uuid = UUID(product_id)
+                    res = await db.execute(
+                        select(BranchInventory).where(
+                            BranchInventory.branch_id == branch_id,
+                            BranchInventory.product_id == p_uuid
+                        )
+                    )
+                    inv = res.scalars().first()
+                    if inv is not None and data.quantity > inv.stock_quantity:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Only {inv.stock_quantity} items available in stock for this branch"
+                        )
+                except ValueError:
+                    pass
+
         cart = await CartService.update_item_quantity(
             user_id=str(current_user.user_id),
             product_id=product_id,
@@ -187,6 +240,8 @@ async def update_cart_item(
             "data": await _priced(db, redis, current_user, cart),
             "message": "Cart updated"
         }
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
