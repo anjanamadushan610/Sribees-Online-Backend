@@ -80,6 +80,7 @@ def _format_coupon(c: Coupon, performance: dict | None = None) -> dict:
         "coupon_id": str(c.coupon_id),
         "code": c.code,
         "branch_id": str(c.branch_id) if c.branch_id else None,
+        "branch_name": c.branch.name if getattr(c, "branch", None) else None,
         "is_network_wide": c.branch_id is None,
         # Derived, not stored: a coupon becomes expired or depleted by the
         # passage of time and the spending of money, not by anyone writing a
@@ -234,6 +235,7 @@ async def list_coupons(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     search: Optional[str] = Query(None, description="Match code or description"),
+    branch_id: Optional[str] = Query(None, description="Filter by branch (Super Admin only, or 'network' for network-wide)"),
     is_active: Optional[bool] = Query(None, description="Filter by the raw is_active flag"),
     status_filter: Optional[str] = Query(
         None,
@@ -257,6 +259,14 @@ async def list_coupons(
     visible = _visible_to(scope)
     if visible is not None:
         query = query.where(visible)
+    elif branch_id:
+        if branch_id == "network":
+            query = query.where(Coupon.branch_id.is_(None))
+        else:
+            try:
+                query = query.where(Coupon.branch_id == UUID(branch_id))
+            except (ValueError, TypeError):
+                pass
     if is_active is not None:
         query = query.where(Coupon.is_active == is_active)
     if search:

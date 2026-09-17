@@ -136,6 +136,7 @@ class Coupon(Base):
     # Catalog eligibility. NO ROWS = the entire catalog is eligible, which is
     # what makes this additive: every coupon that predates the feature keeps
     # applying to everything with no backfill.
+    branch = relationship("Branch", lazy="selectin")
     eligible_categories = relationship(
         "CouponCategory", cascade="all, delete-orphan", lazy="selectin"
     )
