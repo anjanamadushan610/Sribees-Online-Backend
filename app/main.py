@@ -15,6 +15,7 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.redis import RedisIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
+from app.api.share_links import router as share_links_router
 from app.api.v1.router import router as v1_router
 from app.config.database import close_db, init_db
 from app.config.redis import close_redis, init_redis
@@ -239,6 +240,9 @@ async def api_info():
 
 # Include API v1 router
 app.include_router(v1_router, prefix="/api")
+
+# Product share links + Android App Links proof (site root, see share_links.py)
+app.include_router(share_links_router)
 
 
 # ============================================================================

@@ -305,6 +305,23 @@ class Settings(BaseSettings):
     expo_access_token: str = Field(default="", description="Expo push notification token (deprecated)")
 
     # =========================================================================
+    # Share Links (Android App Links + Play Store fallback)
+    # =========================================================================
+    android_package_name: str = Field(
+        default="com.sribeesonline.sribees_mobile",
+        description="Android applicationId the /p/{id} share links open",
+    )
+    android_sha256_cert_fingerprints: str = Field(
+        default="",
+        description=(
+            "Comma-separated SHA-256 signing-cert fingerprints served in "
+            "/.well-known/assetlinks.json (Play App Signing key + upload key). "
+            "Empty = App Links stay unverified; links still work via the "
+            "intent:// fallback on the share page."
+        ),
+    )
+
+    # =========================================================================
     # CORS Settings
     # =========================================================================
     cors_origins: List[str] = Field(
