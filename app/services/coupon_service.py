@@ -73,8 +73,6 @@ class CouponService:
 
         total = Decimal("0")
         for item in items:
-            if coupon.exclude_quick_sale and item.get("is_on_sale"):
-                continue
             if restricted:
                 pid = str(item.get("product_id") or "")
                 cid = str(item.get("category_id") or "")
@@ -304,10 +302,6 @@ class CouponService:
         # eligible rupees of goods.
         min_order = Decimal(str(coupon.min_order_value or 0))
         if min_order > 0 and subtotal < min_order:
-            if coupon.exclude_quick_sale:
-                raise CouponValidationError(
-                    f"This coupon requires Rs {min_order:.2f} of non-clearance items."
-                )
             raise CouponValidationError(
                 f"This coupon requires a minimum order of Rs {min_order:.2f}."
             )

@@ -46,8 +46,8 @@ class CouponCreate(BaseModel):
     # NULL = uncapped.
     budget_cap: Optional[Decimal] = Field(default=None, gt=0)
     auto_stop_on_budget: bool = True
-    # Clearance lines count toward neither the discount base nor min_order_value.
-    exclude_quick_sale: bool = True
+    # Quick sale / clearance items are included by default.
+    exclude_quick_sale: bool = False
 
     # ------------------------------------------------------------------
     # Eligibility and targeting
