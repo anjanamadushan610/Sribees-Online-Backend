@@ -23,6 +23,8 @@ class AddToCartRequest(CartItemBase):
     image: Optional[str] = None
     sku: Optional[str] = None
     variant_id: Optional[str] = None
+    original_price: Optional[Decimal] = None
+    cashback_percentage: Optional[Decimal] = None
 
 
 class UpdateCartItemRequest(BaseModel):
@@ -39,6 +41,8 @@ class CartItem(BaseModel):
     image: Optional[str] = None
     sku: Optional[str] = None
     variant_id: Optional[str] = None
+    original_price: Optional[float] = None
+    cashback_percentage: Optional[float] = None
 
 
 # ============================================================================
@@ -51,6 +55,7 @@ class CartTotals(BaseModel):
     discount: float = 0
     tax: float = 0
     shipping: float = 0
+    cashback_earned: float = 0
     total: float = 0
 
 

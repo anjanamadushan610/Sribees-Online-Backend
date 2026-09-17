@@ -50,6 +50,7 @@ class CartService:
             # Cart uses the legacy "shipping" key; value is the authoritative
             # delivery fee from PricingService.
             "shipping": float(breakdown.delivery_fee),
+            "cashback_earned": float(breakdown.cashback_earned),
             "total": float(breakdown.total),
         }
 
@@ -69,6 +70,7 @@ class CartService:
                     "discount": 0,
                     "tax": 0,
                     "shipping": 0,
+                    "cashback_earned": 0,
                     "total": 0
                 },
                 "coupon": None,
@@ -100,7 +102,9 @@ class CartService:
         name: str,
         image: Optional[str] = None,
         sku: Optional[str] = None,
-        variant_id: Optional[str] = None
+        variant_id: Optional[str] = None,
+        original_price: Optional[float] = None,
+        cashback_percentage: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Add item to cart."""
         cart = await CartService.get_cart(user_id)
@@ -114,8 +118,12 @@ class CartService:
                 break
 
         if existing_index is not None:
-            # Update quantity
+            # Update quantity and enrich price/cashback if provided
             cart["items"][existing_index]["quantity"] += quantity
+            if original_price is not None:
+                cart["items"][existing_index]["original_price"] = original_price
+            if cashback_percentage is not None:
+                cart["items"][existing_index]["cashback_percentage"] = cashback_percentage
         else:
             # Add new item
             cart["items"].append({
@@ -125,7 +133,9 @@ class CartService:
                 "name": name,
                 "image": image,
                 "sku": sku,
-                "variant_id": variant_id
+                "variant_id": variant_id,
+                "original_price": original_price,
+                "cashback_percentage": cashback_percentage,
             })
 
         # Recalculate totals

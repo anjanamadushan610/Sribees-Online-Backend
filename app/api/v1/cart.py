@@ -90,6 +90,7 @@ async def _priced(
         "discount": float(breakdown.discount),
         "tax": float(breakdown.tax),
         "shipping": float(breakdown.delivery_fee),
+        "cashback_earned": float(breakdown.cashback_earned),
         "total": float(breakdown.total),
     }
     cart["delivery"] = delivery_quote_service.delivery_payload(quote, destination)
@@ -211,7 +212,9 @@ async def add_to_cart(
             name=data.name,
             image=data.image,
             sku=data.sku,
-            variant_id=data.variant_id
+            variant_id=data.variant_id,
+            original_price=float(data.original_price) if data.original_price is not None else None,
+            cashback_percentage=float(data.cashback_percentage) if data.cashback_percentage is not None else None,
         )
 
         return {
