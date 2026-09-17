@@ -155,6 +155,8 @@ class CreateOrderRequest(BaseModel):
         ),
     )
     notes: Optional[str] = None
+    items: Optional[List[dict]] = None
+    is_buy_now: bool = False
 
     @field_validator("payment_method")
     @classmethod
@@ -174,9 +176,9 @@ class QuoteOrderRequest(BaseModel):
     Request to preview order totals without persisting anything.
 
     Mirrors the pricing-relevant fields of CreateOrderRequest. The coupon and
-    cart contents are read from the user's server-side cart; `coupon_code` is
-    accepted for API symmetry/forward-compat but the applied cart coupon is
-    authoritative.
+    cart contents are read from the user's server-side cart unless explicit items
+    are supplied (e.g. Buy Now or selected items). `coupon_code` is accepted
+    for API symmetry/forward-compat but the applied cart coupon is authoritative.
     """
     delivery_address_id: Optional[str] = None
     use_wallet: bool = False
@@ -189,6 +191,8 @@ class QuoteOrderRequest(BaseModel):
     # Selected payment method, so the courier's COD-collection fee (if any)
     # prices correctly into the preview. Defaults to COD when omitted.
     payment_method: Optional[str] = None
+    items: Optional[List[dict]] = None
+    is_buy_now: bool = False
 
 
 class ReturnItemSchema(BaseModel):

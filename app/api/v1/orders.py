@@ -361,6 +361,13 @@ async def quote_order(
         pricing_config = await AppSettingsService.get_pricing_config(db)
         payment_method = to_courier_payment_method(data.payment_method)
 
+        quote_items = (
+            data.items
+            if (data.items is not None and len(data.items) > 0)
+            else cart.get("items", [])
+        )
+        quote_coupon = None if data.is_buy_now else cart.get("coupon")
+
         # The delivery quote and the fulfilling branch are resolved the SAME
         # way create_from_cart resolves them: from the chosen delivery
         # address's postal city (or the shopper's default address before one
@@ -369,7 +376,7 @@ async def quote_order(
             db,
             redis,
             current_user.user_id,
-            cart.get("items", []),
+            quote_items,
             address_id=data.delivery_address_id,
             payment_method=payment_method,
         )
@@ -386,12 +393,12 @@ async def quote_order(
                     branch_id = None
 
         items = await OrderService._attach_cashback_rates(
-            db, cart.get("items", []), branch_id
+            db, quote_items, branch_id
         )
 
         breakdown = await PricingService.quote(
             items=items,
-            coupon=cart.get("coupon"),
+            coupon=quote_coupon,
             use_wallet=data.use_wallet,
             wallet_balance=wallet_balance,
             tax_rate=pricing_config["tax_rate"],
@@ -400,7 +407,7 @@ async def quote_order(
             delivery=delivery,
         )
 
-        item_count = sum(i.get("quantity", 0) for i in cart.get("items", []))
+        item_count = sum(i.get("quantity", 0) for i in quote_items)
 
         # Blended rate for display: with per-product cashback there is no single
         # platform rate to quote, so report what this cart actually earns.

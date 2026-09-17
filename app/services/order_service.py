@@ -181,11 +181,16 @@ class OrderService:
         (``None`` for COD/WALLET/wallet-fully-covered-gateway orders, which
         complete or stay pending exactly as before).
         """
-        # Get cart
+        # Get cart or custom order items
         cart = await CartService.get_cart(str(user_id))
+        order_items = (
+            data.items
+            if (data.items is not None and len(data.items) > 0)
+            else cart.get("items", [])
+        )
 
-        if not cart["items"]:
-            raise ValueError("Cart is empty")
+        if not order_items:
+            raise ValueError("Cart is empty" if not data.is_buy_now else "No items to order")
 
         # Verify address exists
         address_result = await db.execute(
@@ -244,7 +249,7 @@ class OrderService:
         # in cart.py is a courtesy so the shopper finds out at apply time.
         coupon_row = None
         coupon_for_pricing = None
-        raw_coupon = cart.get("coupon")
+        raw_coupon = None if data.is_buy_now else cart.get("coupon")
         if raw_coupon and raw_coupon.get("code"):
             coupon_row = await CouponService.get_by_code(db, raw_coupon["code"])
             if coupon_row is None:
@@ -254,7 +259,7 @@ class OrderService:
             # not the snapshot in the cart: an item that went on clearance after
             # it was added must not still be discountable.
             enriched_items = await CouponService.enrich_items(
-                db, cart["items"], branch_id
+                db, order_items, branch_id
             )
             eligible_subtotal = CouponService.eligible_subtotal(
                 coupon_row, enriched_items
@@ -296,7 +301,7 @@ class OrderService:
 
 
         priced_items = await OrderService._attach_cashback_rates(
-            db, cart["items"], branch_id
+            db, order_items, branch_id
         )
         priced_items = await OrderService._attach_weights(db, priced_items)
 
@@ -470,7 +475,7 @@ class OrderService:
         # Deduct branch inventory
         if branch_id:
             from app.models.product import BranchInventory
-            for item in cart["items"]:
+            for item in order_items:
                 p_id = UUID(str(item["product_id"]))
                 res = await db.execute(
                     select(BranchInventory).where(
@@ -482,45 +487,52 @@ class OrderService:
                 if inv is not None:
                     if inv.stock_quantity < item["quantity"]:
                         await db.rollback()
-                        if inv.stock_quantity > 0:
-                            try:
-                                await CartService.update_item_quantity(
-                                    user_id=str(user_id),
-                                    product_id=str(p_id),
-                                    quantity=inv.stock_quantity,
-                                    variant_id=item.get("variant_id")
+                        item_name = item.get("name") or item.get("product_name", "Product")
+                        if not data.is_buy_now:
+                            if inv.stock_quantity > 0:
+                                try:
+                                    await CartService.update_item_quantity(
+                                        user_id=str(user_id),
+                                        product_id=str(p_id),
+                                        quantity=inv.stock_quantity,
+                                        variant_id=item.get("variant_id")
+                                    )
+                                except Exception:
+                                    pass
+                                raise ValueError(
+                                    f"Stock changed for {item_name}. Only {inv.stock_quantity} available. Your cart has been updated."
                                 )
-                            except Exception:
-                                pass
-                            raise ValueError(
-                                f"Stock changed for {item['name']}. Only {inv.stock_quantity} available. Your cart has been updated."
-                            )
+                            else:
+                                try:
+                                    await CartService.remove_item(
+                                        user_id=str(user_id),
+                                        product_id=str(p_id),
+                                        variant_id=item.get("variant_id")
+                                    )
+                                except Exception:
+                                    pass
+                                raise ValueError(
+                                    f"{item_name} is currently out of stock and was removed from your cart."
+                                )
                         else:
-                            try:
-                                await CartService.remove_item(
-                                    user_id=str(user_id),
-                                    product_id=str(p_id),
-                                    variant_id=item.get("variant_id")
-                                )
-                            except Exception:
-                                pass
                             raise ValueError(
-                                f"{item['name']} is currently out of stock and was removed from your cart."
+                                f"Only {inv.stock_quantity} available for {item_name}."
                             )
                     inv.stock_quantity = max(0, inv.stock_quantity - item["quantity"])
 
         # Create order items
-        for item in cart["items"]:
+        for item in order_items:
+            unit_price_val = item.get("price") if "price" in item else item.get("unit_price", 0)
             order_item = OrderItem(
                 order_id=order.order_id,
-                product_id=UUID(item["product_id"]),
-                variant_id=UUID(item["variant_id"]) if item.get("variant_id") else None,
-                product_name=item["name"],
-                product_sku=item.get("sku"),
-                product_image=item.get("image"),
+                product_id=UUID(str(item["product_id"])),
+                variant_id=UUID(str(item["variant_id"])) if item.get("variant_id") else None,
+                product_name=item.get("name") or item.get("product_name", ""),
+                product_sku=item.get("sku") or item.get("product_sku"),
+                product_image=item.get("image") or item.get("imageUrl") or item.get("product_image"),
                 quantity=item["quantity"],
-                unit_price=Decimal(str(item["price"])),
-                subtotal=Decimal(str(item["price"] * item["quantity"]))
+                unit_price=Decimal(str(unit_price_val)),
+                subtotal=Decimal(str(unit_price_val * item["quantity"]))
             )
             db.add(order_item)
 
@@ -564,11 +576,26 @@ class OrderService:
         await db.commit()
         await db.refresh(order)
 
-        # Clear cart after successful order -- except a real (pending) gateway
+        # Clear cart after successful order -- except for Buy Now orders or a real (pending) gateway
         # order, where the shopper hasn't paid yet and may abandon the hosted
         # page. That case clears the cart in _on_payment_confirmed instead.
         if not is_gateway:
-            await CartService.clear_cart(str(user_id))
+            if data.is_buy_now:
+                # Direct Buy Now: user's cart is not affected
+                pass
+            elif data.items is not None and len(data.items) > 0:
+                # Partial cart checkout: remove only purchased items
+                for item in order_items:
+                    try:
+                        await CartService.remove_item(
+                            user_id=str(user_id),
+                            product_id=str(item["product_id"]),
+                            variant_id=item.get("variant_id")
+                        )
+                    except Exception:
+                        pass
+            else:
+                await CartService.clear_cart(str(user_id))
 
         logger.info(
             f"Order created: {order.order_number} for user {user_id} "
