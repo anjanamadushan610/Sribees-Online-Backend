@@ -454,13 +454,6 @@ class OrderService:
             if not redeemed:
                 await db.rollback()
                 raise ValueError("This coupon has reached its usage limit.")
-            # Per-customer redemption count (creates the user_coupons row for a
-            # private code that was never explicitly collected).
-            from app.services.user_coupon_service import UserCouponService
-
-            await UserCouponService.record_redemption(
-                db, user_id, coupon_row, order.order_id
-            )
 
             # Charge this order's discount against the campaign budget, under
             # the same row lock and in the same transaction. Two checkouts
@@ -1203,13 +1196,6 @@ class OrderService:
                 f"Rs {order.discount_amount or 0} of budget released by cancelled "
                 f"order {order.order_number}"
             )
-        # Give the customer their per-user redemption back too, so a
-        # cancelled order doesn't burn a one-per-customer coupon.
-        from app.services.user_coupon_service import UserCouponService
-
-        await UserCouponService.revert_redemption(
-            db, order.user_id, coupon.coupon_id, order.order_id
-        )
 
     @staticmethod
     async def _reverse_order_financials(db: AsyncSession, order: Order) -> None:
