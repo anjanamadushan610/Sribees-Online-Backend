@@ -55,6 +55,77 @@ async def _optional_branch_id(redis: Redis, current_user) -> Optional[UUID]:
     return None
 
 
+async def _validate_and_cleanup_coupon(
+    db: AsyncSession,
+    redis: Optional[Redis],
+    current_user,
+    cart: dict,
+) -> dict:
+    """
+    Ensure an applied coupon is still valid against the cart's current items,
+    active state, and eligibility rules. If not, automatically remove it from
+    the cart session so the shopper never holds a stale or invalid coupon.
+    """
+    coupon_data = cart.get("coupon")
+    if not coupon_data:
+        return cart
+
+    items = cart.get("items", [])
+    if not items:
+        try:
+            await CartService.remove_coupon(str(current_user.user_id))
+        except Exception:
+            pass
+        cart["coupon"] = None
+        return cart
+
+    code = coupon_data.get("code")
+    if not code:
+        cart["coupon"] = None
+        return cart
+
+    try:
+        coupon = await CouponService.get_by_code(db, code)
+        if coupon is None:
+            await CartService.remove_coupon(str(current_user.user_id))
+            cart["coupon"] = None
+            return cart
+
+        applied_branch_id = await _optional_branch_id(redis, current_user) if redis else None
+        enriched = await CouponService.enrich_items(db, items, applied_branch_id)
+        subtotal = CouponService.eligible_subtotal(coupon, enriched)
+
+        user_redemptions = await CouponService.redemptions_by_user(
+            db, coupon.code, current_user.user_id
+        )
+        had_completed = (
+            await CouponService.has_completed_order(
+                db, current_user.user_id, applied_branch_id
+            )
+            if coupon.first_order_only
+            else None
+        )
+
+        CouponService.validate(
+            coupon,
+            subtotal,
+            datetime.now(timezone.utc),
+            branch_id=applied_branch_id,
+            user_id=current_user.user_id,
+            user_redemptions=user_redemptions,
+            user_has_completed_order=had_completed,
+        )
+    except Exception as e:
+        logger.info(f"Auto-removing invalid coupon {code} from cart of user {current_user.user_id}: {e}")
+        try:
+            await CartService.remove_coupon(str(current_user.user_id))
+        except Exception:
+            pass
+        cart["coupon"] = None
+
+    return cart
+
+
 async def _priced(
     db: AsyncSession,
     redis: Optional[Redis],
@@ -69,6 +140,7 @@ async def _priced(
     what they are buying, and the ``delivery`` block explains why there is no
     charge. Checkout is where an unpriced delivery stops the order.
     """
+    cart = await _validate_and_cleanup_coupon(db, redis, current_user, cart)
     items = cart.get("items", [])
     try:
         quote, destination = await delivery_quote_service.quote_for_cart(
