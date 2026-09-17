@@ -366,7 +366,26 @@ async def quote_order(
             if (data.items is not None and len(data.items) > 0)
             else cart.get("items", [])
         )
-        quote_coupon = None if data.is_buy_now else cart.get("coupon")
+        from app.services.coupon_service import CouponService
+        quote_coupon = None
+        coupon_code_to_check = (
+            data.coupon_code.strip() if data.coupon_code else None
+        )
+        if not coupon_code_to_check and not data.is_buy_now:
+            cart_coupon = cart.get("coupon")
+            if cart_coupon and cart_coupon.get("code"):
+                coupon_code_to_check = cart_coupon.get("code")
+
+        if coupon_code_to_check:
+            coupon_row = await CouponService.get_by_code(db, coupon_code_to_check)
+            if coupon_row:
+                quote_coupon = {
+                    "code": coupon_row.code,
+                    "discount_type": coupon_row.discount_type,
+                    "discount_value": float(coupon_row.discount_value),
+                    "min_order_value": float(coupon_row.min_order_value or 0),
+                    "max_discount_amount": float(coupon_row.max_discount_amount) if coupon_row.max_discount_amount is not None else None,
+                }
 
         # The delivery quote and the fulfilling branch are resolved the SAME
         # way create_from_cart resolves them: from the chosen delivery

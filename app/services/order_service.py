@@ -249,7 +249,11 @@ class OrderService:
         # in cart.py is a courtesy so the shopper finds out at apply time.
         coupon_row = None
         coupon_for_pricing = None
-        raw_coupon = None if data.is_buy_now else cart.get("coupon")
+        raw_coupon = (
+            {"code": data.coupon_code.strip()}
+            if (data.coupon_code and data.coupon_code.strip())
+            else (None if data.is_buy_now else cart.get("coupon"))
+        )
         if raw_coupon and raw_coupon.get("code"):
             coupon_row = await CouponService.get_by_code(db, raw_coupon["code"])
             if coupon_row is None:

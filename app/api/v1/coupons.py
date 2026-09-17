@@ -56,7 +56,12 @@ def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
-def _serialize_coupon(coupon: Coupon, collected: bool = False) -> Dict[str, Any]:
+def _serialize_coupon(
+    coupon: Coupon,
+    collected: bool = False,
+    is_first_order_eligible: bool = True,
+    user_redemptions: int = 0,
+) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     valid_until = _as_utc(coupon.valid_until)
     valid_from = _as_utc(coupon.valid_from)
@@ -67,13 +72,23 @@ def _serialize_coupon(coupon: Coupon, collected: bool = False) -> Dict[str, Any]
         coupon.usage_limit is not None
         and (coupon.used_count or 0) >= coupon.usage_limit
     )
+    is_user_maxed = (
+        coupon.per_user_limit is not None
+        and user_redemptions >= coupon.per_user_limit
+    )
 
     usable = (
-        coupon.is_active and not is_expired and not is_not_started and not is_maxed
+        coupon.is_active
+        and not is_expired
+        and not is_not_started
+        and not is_maxed
+        and not is_user_maxed
     )
 
     if is_expired:
         state = "expired"
+    elif is_user_maxed:
+        state = "used"
     elif collected:
         state = "collected"
     else:
@@ -100,7 +115,14 @@ def _serialize_coupon(coupon: Coupon, collected: bool = False) -> Dict[str, Any]
         "valid_until": (
             coupon.valid_until.isoformat() if coupon.valid_until else None
         ),
-        "per_user_limit": 1,
+        "first_order_only": bool(coupon.first_order_only),
+        "exclude_quick_sale": bool(coupon.exclude_quick_sale),
+        "eligible_categories": [
+            str(cat.category_id) for cat in (coupon.eligible_categories or [])
+        ],
+        "per_user_limit": coupon.per_user_limit,
+        "user_redemptions": user_redemptions,
+        "is_first_order_eligible": is_first_order_eligible,
         "times_redeemed": coupon.used_count or 0,
         "collected": collected,
         "usable": usable,
@@ -147,6 +169,13 @@ async def get_available_coupons(
         user_id = str(current_user.user_id) if current_user else None
         collected_codes = await _get_collected_codes(user_id)
 
+        is_first_order_user = True
+        if current_user:
+            has_completed = await CouponService.has_completed_order(
+                db, current_user.user_id
+            )
+            is_first_order_user = not has_completed
+
         stmt = select(Coupon).where(
             Coupon.is_active.is_(True),
             await _redeemable_here(redis, current_user),
@@ -160,7 +189,19 @@ async def get_available_coupons(
             vf = _as_utc(c.valid_from)
             if (vu is None or now <= vu) and (vf is None or now >= vf):
                 is_coll = c.code.upper() in collected_codes
-                valid_coupons.append(_serialize_coupon(c, collected=is_coll))
+                user_redemptions = 0
+                if current_user:
+                    user_redemptions = await CouponService.redemptions_by_user(
+                        db, c.code, current_user.user_id
+                    )
+                valid_coupons.append(
+                    _serialize_coupon(
+                        c,
+                        collected=is_coll,
+                        is_first_order_eligible=is_first_order_user,
+                        user_redemptions=user_redemptions,
+                    )
+                )
 
         return {"success": True, "data": {"coupons": valid_coupons}}
     except Exception as e:
@@ -190,6 +231,12 @@ async def get_collected_coupons(
         if not collected_codes:
             return {"success": True, "data": {"coupons": []}}
 
+        is_first_order_user = True
+        has_completed = await CouponService.has_completed_order(
+            db, current_user.user_id
+        )
+        is_first_order_user = not has_completed
+
         # A code collected before the shopper switched delivery area is dropped
         # here rather than shown as unusable — the wallet only ever lists codes
         # that would survive checkout right now.
@@ -203,7 +250,17 @@ async def get_collected_coupons(
         user_coupons = []
         for c in coupons:
             if c.code.upper() in collected_codes:
-                user_coupons.append(_serialize_coupon(c, collected=True))
+                user_redemptions = await CouponService.redemptions_by_user(
+                    db, c.code, current_user.user_id
+                )
+                user_coupons.append(
+                    _serialize_coupon(
+                        c,
+                        collected=True,
+                        is_first_order_eligible=is_first_order_user,
+                        user_redemptions=user_redemptions,
+                    )
+                )
 
         return {"success": True, "data": {"coupons": user_coupons}}
     except Exception as e:
