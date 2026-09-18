@@ -175,32 +175,12 @@ JOIN branches b ON b.code = v.branch_code
 ON CONFLICT (banner_id) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
--- 4. Coupons — one of each discount type, plus expired and exhausted cases
+-- 4. Coupons (Disabled Demo Seed)
 --
--- The dead ones matter: a coupon screen that has only valid coupons on it
--- cannot show whether the expiry and usage-limit rules work.
+-- Demo coupons removed so that coupons created or deleted by Admin/Branch Manager
+-- remain persistent and are not automatically re-inserted upon migration runs.
 -- -----------------------------------------------------------------------------
-INSERT INTO coupons (
-    coupon_id, code, description, discount_type, discount_value,
-    min_order_value, usage_limit, used_count, valid_from, valid_until, is_active
-)
-SELECT
-    md5('sribees:demo-coupon:' || v.code)::uuid,
-    v.code, v.description, v.discount_type, v.discount_value,
-    v.min_order_value, v.usage_limit, v.used_count,
-    NOW() - (v.starts_days_ago || ' days')::interval,
-    NOW() + (v.ends_in_days   || ' days')::interval,
-    v.is_active
-FROM (VALUES
-    ('WELCOME10',  '10% off your first order',            'percentage', 10.00, 1000.00, 1000,  231,  60,  90, TRUE),
-    ('FRESH500',   'Rs 500 off orders over Rs 3,000',     'fixed',     500.00, 3000.00,  500,  118,  30,  60, TRUE),
-    ('WEEKEND15',  '15% off every weekend',               'percentage', 15.00, 2000.00, NULL,  402,  90, 120, TRUE),
-    ('FREEDEL',    'Delivery on us',                      'fixed',     350.00,  500.00, 2000,  874,  45,  15, TRUE),
-    ('EXPIRED20',  'Expired new-year promotion',          'percentage', 20.00, 1500.00,  300,  300, 200, -30, FALSE),
-    ('SOLDOUT250', 'Limited run — fully redeemed',        'fixed',     250.00, 1000.00,  100,  100,  40,  20, TRUE)
-) AS v(code, description, discount_type, discount_value, min_order_value,
-       usage_limit, used_count, starts_days_ago, ends_in_days, is_active)
-ON CONFLICT (code) DO NOTHING;
+
 
 -- -----------------------------------------------------------------------------
 -- 5. Product media and variants
