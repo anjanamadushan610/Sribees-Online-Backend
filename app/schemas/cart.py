@@ -74,6 +74,8 @@ class CartCoupon(BaseModel):
     discount_type: str  # 'percentage' or 'fixed'
     discount_value: float
     discount_amount: float
+    max_discount_amount: Optional[float] = None
+    min_order_value: Optional[float] = None
 
 
 # ============================================================================

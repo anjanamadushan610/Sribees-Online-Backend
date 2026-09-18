@@ -221,7 +221,8 @@ class CartService:
         code: str,
         discount_type: str,
         discount_value: float,
-        max_discount_amount: Optional[float] = None
+        max_discount_amount: Optional[float] = None,
+        min_order_value: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Apply coupon to cart."""
         cart = await CartService.get_cart(user_id)
@@ -242,6 +243,7 @@ class CartService:
             "discount_type": discount_type,
             "discount_value": discount_value,
             "max_discount_amount": max_discount_amount,
+            "min_order_value": min_order_value,
             "discount_amount": round(discount_amount, 2)
         }
 

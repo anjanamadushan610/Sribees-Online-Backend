@@ -496,6 +496,11 @@ async def apply_coupon(
                 if coupon.max_discount_amount is not None
                 else None
             ),
+            min_order_value=(
+                float(coupon.min_order_value)
+                if coupon.min_order_value is not None
+                else None
+            ),
         )
 
         return {
