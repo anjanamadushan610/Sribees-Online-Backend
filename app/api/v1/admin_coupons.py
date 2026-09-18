@@ -141,7 +141,10 @@ async def _performance_map(db: AsyncSession, coupons: list[Coupon]) -> dict[str,
         await db.execute(
             select(
                 func.lower(Order.coupon_code).label("code"),
-                func.coalesce(func.sum(Order.total_amount), 0).label("revenue"),
+                func.coalesce(
+                    func.sum(Order.subtotal - func.coalesce(Order.discount_amount, 0)),
+                    0,
+                ).label("revenue"),
                 func.count(Order.order_id).label("orders"),
             )
             .where(
