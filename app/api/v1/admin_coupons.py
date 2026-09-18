@@ -343,6 +343,7 @@ async def create_coupon(
         discount_type=data.discount_type.value,
         discount_value=data.discount_value,
         min_order_value=data.min_order_value,
+        max_discount_amount=data.max_discount_amount,
         usage_limit=data.usage_limit,
         valid_from=data.valid_from,
         valid_until=data.valid_until,

@@ -415,6 +415,12 @@ async def quote_order(
             db, quote_items, branch_id
         )
 
+        if quote_coupon and coupon_row:
+            enriched_for_coupon = await CouponService.enrich_items(db, items, branch_id)
+            quote_coupon["eligible_subtotal"] = float(
+                CouponService.eligible_subtotal(coupon_row, enriched_for_coupon)
+            )
+
         breakdown = await PricingService.quote(
             items=items,
             coupon=quote_coupon,
