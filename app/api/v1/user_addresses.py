@@ -15,7 +15,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -128,7 +128,13 @@ async def create_address(
 ) -> AddressDetailResponse:
     """Create a new delivery address for the authenticated user."""
     try:
-        if data.is_default:
+        count_res = await db.execute(
+            select(func.count()).select_from(Address).where(Address.user_id == current_user.user_id)
+        )
+        existing_count = count_res.scalar_one()
+        make_default = data.is_default or (existing_count == 0)
+
+        if make_default:
             await _clear_default(db, current_user.user_id)
 
         address = Address(
@@ -142,7 +148,7 @@ async def create_address(
             district=data.district,
             province=data.province,
             postal_code=data.postal_code or "",
-            is_default=data.is_default,
+            is_default=make_default,
         )
         # Matched against the synced SribeesExpress directory in the same
         # transaction — a local lookup, so saving an address never waits on
