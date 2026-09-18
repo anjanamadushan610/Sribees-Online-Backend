@@ -59,8 +59,9 @@ class AdminAuthService:
         Authenticate admin user.
         """
         # Find admin by email
+        clean_email = email.strip().lower()
         result = await db.execute(
-            select(Admin).where(Admin.email == email.lower())
+            select(Admin).where(Admin.email == clean_email)
         )
         admin = result.scalar_one_or_none()
 
