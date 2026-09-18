@@ -22,7 +22,7 @@ from app.models.order import (
     OrderStatusHistory,
     PaymentStatus,
 )
-from app.models.product import Product
+from app.models.product import BranchInventory, Product
 from app.models.user import Address, User
 from app.models.wallet import WalletTransactionType
 from app.schemas.notification import NotificationTypeEnum
@@ -1036,9 +1036,29 @@ class OrderService:
 
         for item in order.items:
             product = await db.get(Product, item.product_id)
-            available_stock = product.stock_quantity if product else 0
+            if not product or not product.is_active:
+                unavailable.append(item.product_name)
+                continue
 
-            if not product or not product.is_active or available_stock <= 0:
+            available_stock = product.stock_quantity if product.stock_quantity is not None else 0
+            price = float(product.price)
+
+            if order.branch_id:
+                res = await db.execute(
+                    select(BranchInventory).where(
+                        BranchInventory.branch_id == order.branch_id,
+                        BranchInventory.product_id == item.product_id,
+                    )
+                )
+                branch_inv = res.scalars().first()
+                if branch_inv is not None:
+                    available_stock = branch_inv.stock_quantity
+                    if branch_inv.branch_price is not None:
+                        price = float(branch_inv.branch_price)
+                    elif product.discount_price is not None:
+                        price = float(product.discount_price)
+
+            if available_stock <= 0:
                 unavailable.append(item.product_name)
                 continue
 
@@ -1047,7 +1067,7 @@ class OrderService:
                 user_id=str(user_id),
                 product_id=str(item.product_id),
                 quantity=quantity,
-                price=float(product.price),
+                price=price,
                 name=product.name or item.product_name,
                 image=item.product_image,
                 sku=product.sku or item.product_sku,
