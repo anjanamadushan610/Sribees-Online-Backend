@@ -115,6 +115,20 @@ async def _validate_and_cleanup_coupon(
             user_redemptions=user_redemptions,
             user_has_completed_order=had_completed,
         )
+
+        if coupon and cart.get("coupon"):
+            cart["coupon"]["min_order_value"] = (
+                float(coupon.min_order_value)
+                if coupon.min_order_value is not None
+                else 0.0
+            )
+            cart["coupon"]["max_discount_amount"] = (
+                float(coupon.max_discount_amount)
+                if coupon.max_discount_amount is not None
+                else None
+            )
+            cart["coupon"]["discount_type"] = coupon.discount_type
+            cart["coupon"]["discount_value"] = float(coupon.discount_value or 0)
     except Exception as e:
         logger.info(f"Auto-removing invalid coupon {code} from cart of user {current_user.user_id}: {e}")
         try:
