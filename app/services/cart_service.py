@@ -103,6 +103,7 @@ class CartService:
         image: Optional[str] = None,
         sku: Optional[str] = None,
         variant_id: Optional[str] = None,
+        category_id: Optional[str] = None,
         original_price: Optional[float] = None,
         cashback_percentage: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -120,6 +121,8 @@ class CartService:
         if existing_index is not None:
             # Update quantity and enrich price/cashback if provided
             cart["items"][existing_index]["quantity"] += quantity
+            if category_id is not None:
+                cart["items"][existing_index]["category_id"] = category_id
             if original_price is not None:
                 cart["items"][existing_index]["original_price"] = original_price
             if cashback_percentage is not None:
@@ -134,6 +137,7 @@ class CartService:
                 "image": image,
                 "sku": sku,
                 "variant_id": variant_id,
+                "category_id": category_id,
                 "original_price": original_price,
                 "cashback_percentage": cashback_percentage,
             })

@@ -158,6 +158,14 @@ async def _priced(
     """
     cart = await _validate_and_cleanup_coupon(db, redis, current_user, cart)
     items = cart.get("items", [])
+    if items:
+        try:
+            applied_branch_id = await _optional_branch_id(redis, current_user) if redis else None
+            cart["items"] = await CouponService.enrich_items(db, items, applied_branch_id)
+            items = cart["items"]
+        except Exception:
+            pass
+
     try:
         quote, destination = await delivery_quote_service.quote_for_cart(
             db, redis, current_user.user_id, items, address_id=address_id
@@ -297,6 +305,7 @@ async def add_to_cart(
             image=data.image,
             sku=data.sku,
             variant_id=data.variant_id,
+            category_id=data.category_id,
             original_price=float(data.original_price) if data.original_price is not None else None,
             cashback_percentage=float(data.cashback_percentage) if data.cashback_percentage is not None else None,
         )

@@ -23,6 +23,7 @@ class AddToCartRequest(CartItemBase):
     image: Optional[str] = None
     sku: Optional[str] = None
     variant_id: Optional[str] = None
+    category_id: Optional[str] = None
     original_price: Optional[Decimal] = None
     cashback_percentage: Optional[Decimal] = None
 
@@ -41,6 +42,7 @@ class CartItem(BaseModel):
     image: Optional[str] = None
     sku: Optional[str] = None
     variant_id: Optional[str] = None
+    category_id: Optional[str] = None
     original_price: Optional[float] = None
     cashback_percentage: Optional[float] = None
 
