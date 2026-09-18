@@ -15,11 +15,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.redis import get_redis, get_redis_optional
 from app.core.dependencies import get_current_user
+from app.models.product import BranchInventory
 from app.schemas.cart import (
     AddToCartRequest,
     ApplyCouponRequest,
@@ -205,8 +207,6 @@ async def get_cart(
         if redis and cart.get("items"):
             branch_id = await _optional_branch_id(redis, current_user)
             if branch_id:
-                from app.models.product import BranchInventory
-                from sqlalchemy import select
                 updated_any = False
                 for item in list(cart["items"]):
                     try:
@@ -264,8 +264,6 @@ async def add_to_cart(
         if redis:
             branch_id = await _optional_branch_id(redis, current_user)
             if branch_id:
-                from app.models.product import BranchInventory
-                from sqlalchemy import select
                 try:
                     p_uuid = UUID(data.product_id)
                     res = await db.execute(
@@ -334,8 +332,6 @@ async def update_cart_item(
         if redis and data.quantity > 0:
             branch_id = await _optional_branch_id(redis, current_user)
             if branch_id:
-                from app.models.product import BranchInventory
-                from sqlalchemy import select
                 try:
                     p_uuid = UUID(product_id)
                     res = await db.execute(
