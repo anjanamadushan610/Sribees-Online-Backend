@@ -286,7 +286,16 @@ class Settings(BaseSettings):
         default=100,
         description="Page size for the GET /ecommerce/shipments reconciliation sweep (contract section 7a).",
     )
-    delivery_verification_code_digits: int = Field(default=3, description="Delivery handover code length")
+    # 4, not 3: SribeesExpress accepts 4-6 digits and rejects anything shorter
+    # at booking (contract section 7). The old default of 3 only ever worked
+    # because DeliveryVerificationService clamps it up to 4 — so the setting
+    # said one thing and the codes said another. 6 is the safer operational
+    # choice (10^6 guesses vs 10^4), but the 5-attempt lockout is what actually
+    # bounds guessing, so this stays at the contract minimum rather than
+    # silently changing the length of codes already in flight.
+    delivery_verification_code_digits: int = Field(
+        default=4, ge=4, le=6, description="Delivery handover code length (SribeesExpress accepts 4-6)"
+    )
     delivery_verification_max_attempts: int = Field(default=5, description="Wrong-code attempts before lockout")
 
     # =========================================================================

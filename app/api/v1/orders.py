@@ -278,6 +278,23 @@ def format_order_summary(order) -> dict:
         "cashback_earned": float(order.cashback_earned or 0),
         "item_count": sum(item.quantity for item in order.items) if order.items else 0,
         "created_at": order.created_at.isoformat() if order.created_at else None,
+        # The handover code the rider will ask for, so the Orders list can put
+        # it in front of the customer at the moment it matters (a rider at the
+        # door) instead of making them open the order and hunt for it.
+        #
+        # Only while it is still live: once verification is confirmed or
+        # failed, the code has done its job and repeating it in every list
+        # response is exposure that buys nothing. A COD order never has one.
+        # This list is already scoped to the requesting user by
+        # OrderService.get_user_orders, so this is the same trust boundary the
+        # detail endpoint already sits behind, not a wider one.
+        "delivery_verification_code": (
+            order.delivery_verification_code
+            if order.delivery_verification_status == "pending"
+            else None
+        ),
+        "delivery_verification_status": order.delivery_verification_status,
+        "courier_tracking_status": order.courier_tracking_status,
         "items": [
             {
                 "product_id": str(item.product_id),
