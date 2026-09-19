@@ -100,9 +100,10 @@ async def _validate_and_cleanup_coupon(
         user_redemptions = await CouponService.redemptions_by_user(
             db, coupon.code, current_user.user_id
         )
+        target_branch = coupon.branch_id
         had_completed = (
             await CouponService.has_completed_order(
-                db, current_user.user_id, applied_branch_id
+                db, current_user.user_id, target_branch
             )
             if coupon.first_order_only
             else None
@@ -486,9 +487,10 @@ async def apply_coupon(
         user_redemptions = await CouponService.redemptions_by_user(
             db, coupon.code, current_user.user_id
         )
+        target_branch = coupon.branch_id
         had_completed = (
             await CouponService.has_completed_order(
-                db, current_user.user_id, applied_branch_id
+                db, current_user.user_id, target_branch
             )
             if coupon.first_order_only
             else None

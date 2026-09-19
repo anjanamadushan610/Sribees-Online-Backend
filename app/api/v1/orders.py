@@ -417,9 +417,32 @@ async def quote_order(
 
         if quote_coupon and coupon_row:
             enriched_for_coupon = await CouponService.enrich_items(db, items, branch_id)
-            quote_coupon["eligible_subtotal"] = float(
-                CouponService.eligible_subtotal(coupon_row, enriched_for_coupon)
+            eligible_sub = CouponService.eligible_subtotal(coupon_row, enriched_for_coupon)
+            quote_coupon["eligible_subtotal"] = float(eligible_sub)
+
+            target_branch = coupon_row.branch_id
+            had_completed = (
+                await CouponService.has_completed_order(
+                    db, current_user.user_id, target_branch
+                )
+                if coupon_row.first_order_only
+                else None
             )
+            user_redemptions = await CouponService.redemptions_by_user(
+                db, coupon_row.code, current_user.user_id
+            )
+            try:
+                CouponService.validate(
+                    coupon_row,
+                    eligible_sub,
+                    datetime.now(timezone.utc),
+                    branch_id=branch_id,
+                    user_id=current_user.user_id,
+                    user_redemptions=user_redemptions,
+                    user_has_completed_order=had_completed,
+                )
+            except Exception:
+                quote_coupon = None
 
         breakdown = await PricingService.quote(
             items=items,
