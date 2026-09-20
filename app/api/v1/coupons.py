@@ -169,13 +169,6 @@ async def get_available_coupons(
         user_id = str(current_user.user_id) if current_user else None
         collected_codes = await _get_collected_codes(user_id)
 
-        is_first_order_user = True
-        if current_user:
-            has_completed = await CouponService.has_completed_order(
-                db, current_user.user_id
-            )
-            is_first_order_user = not has_completed
-
         stmt = select(Coupon).where(
             Coupon.is_active.is_(True),
             await _redeemable_here(redis, current_user),
@@ -190,15 +183,22 @@ async def get_available_coupons(
             if (vu is None or now <= vu) and (vf is None or now >= vf):
                 is_coll = c.code.upper() in collected_codes
                 user_redemptions = 0
+                is_first_order_eligible = True
                 if current_user:
                     user_redemptions = await CouponService.redemptions_by_user(
                         db, c.code, current_user.user_id
                     )
+                    if c.first_order_only:
+                        has_completed = await CouponService.has_completed_order(
+                            db, current_user.user_id, c.branch_id
+                        )
+                        is_first_order_eligible = not has_completed
+
                 valid_coupons.append(
                     _serialize_coupon(
                         c,
                         collected=is_coll,
-                        is_first_order_eligible=is_first_order_user,
+                        is_first_order_eligible=is_first_order_eligible,
                         user_redemptions=user_redemptions,
                     )
                 )
@@ -231,12 +231,6 @@ async def get_collected_coupons(
         if not collected_codes:
             return {"success": True, "data": {"coupons": []}}
 
-        is_first_order_user = True
-        has_completed = await CouponService.has_completed_order(
-            db, current_user.user_id
-        )
-        is_first_order_user = not has_completed
-
         # A code collected before the shopper switched delivery area is dropped
         # here rather than shown as unusable — the wallet only ever lists codes
         # that would survive checkout right now.
@@ -253,11 +247,18 @@ async def get_collected_coupons(
                 user_redemptions = await CouponService.redemptions_by_user(
                     db, c.code, current_user.user_id
                 )
+                is_first_order_eligible = True
+                if c.first_order_only:
+                    has_completed = await CouponService.has_completed_order(
+                        db, current_user.user_id, c.branch_id
+                    )
+                    is_first_order_eligible = not has_completed
+
                 user_coupons.append(
                     _serialize_coupon(
                         c,
                         collected=True,
-                        is_first_order_eligible=is_first_order_user,
+                        is_first_order_eligible=is_first_order_eligible,
                         user_redemptions=user_redemptions,
                     )
                 )

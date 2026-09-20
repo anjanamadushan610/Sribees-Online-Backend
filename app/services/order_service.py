@@ -281,8 +281,9 @@ class OrderService:
             user_redemptions = await CouponService.redemptions_by_user(
                 db, coupon_row.code, user_id
             )
+            target_branch = coupon_row.branch_id
             had_completed = (
-                await CouponService.has_completed_order(db, user_id, branch_id)
+                await CouponService.has_completed_order(db, user_id, target_branch)
                 if coupon_row.first_order_only
                 else None
             )

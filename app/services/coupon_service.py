@@ -176,18 +176,23 @@ class CouponService:
         db: AsyncSession, user_id: UUID, branch_id: Optional[UUID] = None
     ) -> bool:
         """
-        Whether this customer has ever completed an order (optionally, at one
+        Whether this customer has ever placed an order (optionally, at one
         branch). Backs ``first_order_only``.
 
-        "Completed" is deliberately DELIVERED-only: a pending or cancelled
-        order is not a relationship with the branch, and an acquisition coupon
-        should still work for someone whose first attempt never arrived.
+        Only cancelled or delivery-failed orders are excluded: any confirmed,
+        processing, shipped or delivered order counts as a previous order so
+        acquisition coupons cannot be reused.
         """
         from app.models.order import Order, OrderStatus
 
+        void_statuses = [
+            OrderStatus.CANCELLED.value,
+            OrderStatus.DELIVERY_FAILED.value,
+            OrderStatus.RTO_INITIATED.value,
+        ]
         filters = [
             Order.user_id == user_id,
-            Order.status == OrderStatus.DELIVERED.value,
+            Order.status.notin_(void_statuses),
         ]
         if branch_id is not None:
             filters.append(Order.branch_id == branch_id)
