@@ -76,6 +76,13 @@ class DeliveryNotAvailableError(ValueError):
         self.status = status
 
 
+# How long after delivery a customer may start a return in the app.
+# One constant, read by the guard in `request_return` and by the
+# `return_window_expires_at` the app renders its countdown from, so the
+# rule and what the customer is told cannot drift apart.
+RETURN_WINDOW = timedelta(hours=12)
+
+
 class OrderService:
     """Service class for order operations."""
 
@@ -1522,6 +1529,22 @@ class OrderService:
         return total.quantize(Decimal("0.01"))
 
     @staticmethod
+    def return_window_expires_at(order: Order) -> Optional[datetime]:
+        """When this order stops being returnable, or None if it never started.
+
+        Exposed on the order payload so the app can render a live countdown
+        instead of re-deriving the rule — a window the customer discovers by
+        being rejected is a support ticket, and a window two codebases each
+        compute their own way is a support ticket that nobody can reproduce.
+        """
+        delivered_at = order.delivered_at
+        if delivered_at is None:
+            return None
+        if delivered_at.tzinfo is None:
+            delivered_at = delivered_at.replace(tzinfo=timezone.utc)
+        return delivered_at + RETURN_WINDOW
+
+    @staticmethod
     async def request_return(
         db: AsyncSession,
         order: Order,
@@ -1532,9 +1555,31 @@ class OrderService:
         """
         Customer request to return a DELIVERED order. Moves it to
         RETURN_REQUESTED and records the reason/comments/items.
+
+        Only inside the 12-hour window, measured from ``delivered_at`` — the
+        moment the goods actually changed hands — and not from ``updated_at``,
+        which any later write (a COD remittance, a support note) would push
+        forward and silently reopen a closed window.
+
+        An order with no ``delivered_at`` on file is refused rather than
+        waved through: without it there is no window to be inside, and
+        defaulting to "allowed" would make every legacy order returnable
+        forever.
         """
         if order.status != OrderStatus.DELIVERED.value:
             raise ValueError("Only delivered orders can be returned.")
+
+        expires_at = OrderService.return_window_expires_at(order)
+        if expires_at is None:
+            raise ValueError(
+                "This order has no recorded delivery time, so a return cannot be "
+                "started online. Please contact support."
+            )
+        if datetime.now(timezone.utc) > expires_at:
+            raise ValueError(
+                "The 12-hour return window for this order has closed. "
+                "Please contact support if you still need help."
+            )
 
         order.status = OrderStatus.RETURN_REQUESTED.value
         order.return_reason = reason
@@ -1552,15 +1597,84 @@ class OrderService:
         return order
 
     @staticmethod
-    async def approve_return(db: AsyncSession, order: Order) -> Order:
+    async def approve_return(
+        db: AsyncSession,
+        order: Order,
+        resolution: str = "returnless_refund",
+        note: Optional[str] = None,
+    ) -> Order:
         """
-        Approve a pending return: credit the returned value to the customer's
-        wallet (REFUND) and move the order to REFUNDED — all in one transaction.
+        Approve a pending return. What happens next depends on whether goods
+        are physically coming back:
+
+        - ``returnless_refund`` — spoilage, a broken item not worth freighting.
+          Nothing is collected, so there is nothing to wait for: the wallet is
+          credited here and the order goes straight to REFUNDED.
+        - ``reverse_pickup`` — a rider collects from the customer and brings
+          the goods to our branch. The order goes to RETURN_APPROVED and
+          **the wallet is not credited yet**. It is credited by
+          :meth:`complete_return` when the goods are actually back
+          (RETURNS_ARCHITECTURE.md §7). Until this existed, approval refunded
+          immediately and nothing ever checked that anything came back.
+
+        ``resolution`` and ``note`` were already in the request schema and on
+        the table, and the router has been passing them since B4 — against a
+        signature that did not accept them, which raised TypeError on every
+        call. Approving a return has therefore been broken in production;
+        this is the fix, covered by a regression test.
         """
         if order.status != OrderStatus.RETURN_REQUESTED.value:
             raise ValueError("This order has no pending return request.")
+        if resolution not in ("returnless_refund", "reverse_pickup"):
+            raise ValueError(f"Unknown return resolution '{resolution}'.")
 
-        refund = OrderService._compute_return_refund(order)
+        order.return_resolution = resolution
+        if note:
+            order.return_resolution_note = note
+        order.return_approved_at = datetime.now(timezone.utc)
+        # Computed now, at the values the claim was approved on, rather than
+        # when the goods land — so a later catalogue price change cannot move
+        # what the customer was promised.
+        order.refund_amount = OrderService._compute_return_refund(order)
+
+        if resolution == "reverse_pickup":
+            order.status = OrderStatus.RETURN_APPROVED.value
+            await db.commit()
+            await db.refresh(order)
+            # Best-effort: a courier outage must not un-approve a claim a
+            # manager has already made. The booking is retryable from the
+            # admin panel, and `return_booking_status` says it needs retrying.
+            await OrderService._book_reverse_pickup(db, order)
+            await OrderService._notify_return_status(db, order, OrderStatus.RETURN_APPROVED.value)
+            return order
+
+        await OrderService._credit_return_refund(db, order)
+        await db.commit()
+        await db.refresh(order)
+        logger.info(
+            f"Return approved ({resolution}) for order {order.order_number}: "
+            f"refunded {order.refund_amount}"
+        )
+        await OrderService._notify_return_status(db, order, OrderStatus.REFUNDED.value)
+        return order
+
+    @staticmethod
+    async def _credit_return_refund(db: AsyncSession, order: Order) -> None:
+        """Put the refund in the customer's wallet and close the order.
+
+        Guarded by ``refunded_at`` rather than by the status alone: the goods
+        arriving back is reported by a courier webhook, and webhooks are
+        redelivered. Without this, a replayed `delivered` on the return leg
+        would credit the wallet a second time.
+        """
+        if order.refunded_at is not None:
+            logger.info(f"Return refund for {order.order_number} already issued, skipping")
+            return
+
+        refund = order.refund_amount
+        if refund is None:
+            refund = OrderService._compute_return_refund(order)
+            order.refund_amount = refund
 
         if refund > 0:
             await WalletService.apply_transaction(
@@ -1574,30 +1688,139 @@ class OrderService:
                 notes="Wallet credited for approved return",
             )
 
-        order.refund_amount = refund
+        order.refunded_at = datetime.now(timezone.utc)
         order.status = OrderStatus.REFUNDED.value
 
-        await db.commit()
-        await db.refresh(order)
-        logger.info(f"Return approved for order {order.order_number}: refunded {refund}")
-
-        # Best-effort customer notification (never blocks the refund).
+    @staticmethod
+    async def _notify_return_status(db: AsyncSession, order: Order, status_value: str) -> None:
+        """Best-effort customer notification — never blocks a refund."""
         try:
             await NotificationService.notify_order_status(
-                db, order.user_id, order.order_number, OrderStatus.REFUNDED.value
+                db, order.user_id, order.order_number, status_value
             )
         except Exception as exc:  # pragma: no cover - notification is best-effort
-            logger.warning(f"Return-approved notification failed for {order.order_number}: {exc}")
+            logger.warning(f"Return notification failed for {order.order_number}: {exc}")
 
+    @staticmethod
+    async def _book_reverse_pickup(db: AsyncSession, order: Order) -> None:
+        """Book the return leg with SribeesExpress and keep what it hands back.
+
+        The handover code is the part that matters: it comes back exactly once
+        and they store only a hash, so if this write is lost nobody can recover
+        it and the branch has to ask for a new one. Persisted before anything
+        else can fail.
+
+        Never raises. A courier outage leaves ``return_booking_status =
+        'failed'`` with the reason in ``return_booking_error``, which the admin
+        panel surfaces and can retry — an approved claim that could not be
+        dispatched is an ops problem, not a reason to refuse the manager's
+        decision after the fact.
+        """
+        from app.services.courier_service import CourierError, CourierService
+
+        items = None
+        if order.return_items:
+            by_id = {str(i.order_item_id): i for i in (order.items or [])}
+            items = []
+            for line in order.return_items:
+                item = by_id.get(str(line.get("order_item_id")))
+                if item is None:
+                    continue
+                items.append(
+                    {
+                        "sku": item.product_sku,
+                        "name": item.product_name,
+                        "quantity": int(line.get("quantity", 1)),
+                    }
+                )
+
+        # Who the rider collects from. Omitted, SribeesExpress reuses the
+        # address the parcel was delivered to — which is the right default, so
+        # these are only sent when our own record is actually better.
+        address = order.delivery_address
+        try:
+            result = await CourierService.create_return(
+                merchant_order_ref=order.order_number,
+                reason=order.return_reason or "Customer return",
+                items=items or None,
+                pickup_contact_name=getattr(address, "recipient_name", None),
+                pickup_contact_phone=getattr(address, "phone", None),
+            )
+        except CourierError as exc:
+            order.return_booking_status = "failed"
+            order.return_booking_error = f"{exc.code}: {exc.message}"[:500]
+            await db.commit()
+            logger.error(f"Reverse pickup booking failed for {order.order_number}: {exc.message}")
+            return
+        except Exception as exc:  # pragma: no cover - network/unexpected
+            order.return_booking_status = "failed"
+            order.return_booking_error = str(exc)[:500]
+            await db.commit()
+            logger.error(f"Reverse pickup booking errored for {order.order_number}: {exc}")
+            return
+
+        order.return_waybill_number = result.get("return_id")
+        # Shown once, by this call only. See the column's comment in models.
+        if result.get("handover_code"):
+            order.return_handover_code = result["handover_code"]
+        if result.get("return_fee_lkr") is not None:
+            order.return_fee = Decimal(str(result["return_fee_lkr"]))
+        order.return_tracking_status = result.get("status")
+        order.return_booking_status = "booked"
+        order.return_booking_error = None
+        await db.commit()
+        await db.refresh(order)
+        logger.info(
+            f"Reverse pickup booked for {order.order_number}: "
+            f"{order.return_waybill_number} (fee {order.return_fee})"
+        )
+
+    @staticmethod
+    async def complete_return(db: AsyncSession, order: Order) -> Order:
+        """The goods are back with us — credit the refund and close the order.
+
+        Called from the courier sync when the *return leg* reports
+        ``delivered``, which on a reverse pickup means the rider handed the
+        goods to our counter and our staff gave them the code. That is the
+        event the refund waits for, per the business decision in
+        RETURNS_ARCHITECTURE.md §7.
+
+        Idempotent — see :meth:`_credit_return_refund`.
+        """
+        if order.status not in (
+            OrderStatus.RETURN_APPROVED.value,
+            OrderStatus.RETURN_REQUESTED.value,
+        ):
+            logger.info(
+                f"Return completion for {order.order_number} ignored — order is "
+                f"'{order.status}', not an open return."
+            )
+            return order
+
+        order.return_received_at = datetime.now(timezone.utc)
+        await OrderService._credit_return_refund(db, order)
+        await db.commit()
+        await db.refresh(order)
+        logger.info(
+            f"Return received for {order.order_number}: refunded {order.refund_amount}"
+        )
+        await OrderService._notify_return_status(db, order, OrderStatus.REFUNDED.value)
         return order
 
     @staticmethod
-    async def reject_return(db: AsyncSession, order: Order) -> Order:
-        """Reject a pending return: revert the order back to DELIVERED."""
+    async def reject_return(db: AsyncSession, order: Order, note: Optional[str] = None) -> Order:
+        """Reject a pending return: revert the order back to DELIVERED.
+
+        ``note`` is the manager's reason, kept on the claim so a customer who
+        rings support gets the same answer twice. Same signature fix as
+        :meth:`approve_return` — the router has been passing it all along.
+        """
         if order.status != OrderStatus.RETURN_REQUESTED.value:
             raise ValueError("This order has no pending return request.")
 
         order.status = OrderStatus.DELIVERED.value
+        if note:
+            order.return_resolution_note = note
         await db.commit()
         await db.refresh(order)
         logger.info(f"Return rejected for order {order.order_number}")

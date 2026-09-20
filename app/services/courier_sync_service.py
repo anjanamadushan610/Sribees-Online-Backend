@@ -236,6 +236,126 @@ async def apply_shipment_payload(
     return changed
 
 
+# The return leg's own external statuses. Note what `delivered` means here:
+# **the goods are back with us**, not with the customer. That is the event the
+# refund waits for.
+_RETURN_COLLECTED_STATUSES = frozenset({"picked_up", "in_transit", "out_for_delivery"})
+
+
+RETURN_CREATED_EVENT = "shipment.return_created"
+
+
+async def apply_return_created(db: AsyncSession, order: Order, payload: dict) -> bool:
+    """Record a return leg SribeesExpress has raised against one of our orders.
+
+    Two things arrive here, and they are not the same:
+
+    1. **Our own reverse pickup, echoed back.** We already stored the waybill,
+       fee and code from the booking response, so this is confirmation. The
+       code is re-stored anyway — it is the same one, and a booking response we
+       failed to persist is exactly the case this heals.
+    2. **A return we did not ask for.** A SribeesExpress rider could not
+       deliver the parcel, phoned our branch, and raised the leg from the road.
+       Nothing on our side knows about it yet, and this push is the *only*
+       delivery of the handover code — without it our counter staff cannot
+       release the goods back to the rider when they arrive.
+
+    The second case does not touch the order's own status. The parcel never
+    reached the customer, so there is no return *claim* to approve and no
+    refund to make; the order is simply coming back, and a Branch Manager sees
+    it on the order with the code beside it. Inventing a `return_requested`
+    here would put a claim in the returns queue that no customer ever made.
+    """
+    changed = False
+
+    return_id = payload.get("return_id")
+    if return_id and return_id != order.return_waybill_number:
+        order.return_waybill_number = return_id
+        changed = True
+
+    # The one and only delivery of this value — see the column's comment in
+    # models/order.py. Overwrites, because a regenerated code invalidates the
+    # old one and a stale code in this column is worse than none.
+    code = payload.get("handover_code")
+    if code and code != order.return_handover_code:
+        order.return_handover_code = code
+        changed = True
+
+    fee = payload.get("return_fee_lkr")
+    if fee is not None:
+        fee_value = Decimal(str(fee))
+        if fee_value != order.return_fee:
+            order.return_fee = fee_value
+            changed = True
+
+    if payload.get("reason") and not order.return_reason:
+        order.return_reason = str(payload["reason"])[:255]
+        changed = True
+
+    if order.return_booking_status != "booked":
+        order.return_booking_status = "booked"
+        order.return_booking_error = None
+        changed = True
+
+    at = _parse_dt(payload.get("at"))
+    if at is not None and at != order.return_tracking_updated_at:
+        order.return_tracking_updated_at = at
+        changed = True
+
+    if changed:
+        await db.commit()
+        await db.refresh(order)
+        logger.info(
+            f"Return {order.return_waybill_number} recorded on {order.order_number} "
+            f"(fee {order.return_fee})"
+        )
+    return changed
+
+
+async def apply_return_payload(db: AsyncSession, order: Order, payload: dict) -> bool:
+    """Write a *return leg's* shipment payload onto ``order``.
+
+    Deliberately separate from :func:`apply_shipment_payload` rather than a
+    flag on it. The two describe opposite journeys of the same order and write
+    to different columns, and the forward shipment's own tracking is the proof
+    that the delivery happened — a return must never overwrite it. Sharing one
+    function would mean a `delivered` on the return leg landing in
+    `courier_tracking_status`, where every screen reads it as the customer
+    receiving the parcel a second time.
+
+    Returns True if anything changed.
+    """
+    changed = False
+
+    status_value = payload.get("status")
+    if status_value and status_value != order.return_tracking_status:
+        order.return_tracking_status = status_value
+        changed = True
+
+    at = _parse_dt(payload.get("at") or payload.get("updated_at"))
+    if at is not None:
+        order.return_tracking_updated_at = at
+        changed = True
+
+    # First movement on the leg means a rider has the goods. Set once — a
+    # later `in_transit` must not restamp the moment of collection.
+    if status_value in _RETURN_COLLECTED_STATUSES and order.return_collected_at is None:
+        order.return_collected_at = at or datetime.now(timezone.utc)
+        changed = True
+
+    if status_value == "delivered":
+        from app.services.order_service import OrderService
+
+        # Commits, credits the wallet and closes the order — idempotently, so
+        # a redelivered webhook cannot refund twice.
+        await OrderService.complete_return(db, order)
+        return True
+
+    if changed:
+        await db.commit()
+    return changed
+
+
 async def refresh_order_tracking(db: AsyncSession, order: Order) -> Optional[dict]:
     """
     Pull one shipment's current state (contract section 8, with ``history``)

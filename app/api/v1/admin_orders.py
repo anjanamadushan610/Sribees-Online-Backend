@@ -135,6 +135,37 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
         "refund_amount": float(order.refund_amount) if order.refund_amount is not None else None,
         "return_resolution": getattr(order, "return_resolution", None),
         "return_resolution_note": getattr(order, "return_resolution_note", None),
+        # The reverse pickup, for the panel a Branch Manager works the claim
+        # from. `return_handover_code` is deliberately here and nowhere on the
+        # customer-facing payload — it is read to the rider at our counter.
+        "return_waybill_number": getattr(order, "return_waybill_number", None),
+        "return_handover_code": getattr(order, "return_handover_code", None),
+        "return_booking_status": getattr(order, "return_booking_status", None),
+        "return_booking_error": getattr(order, "return_booking_error", None),
+        "return_fee": (
+            float(order.return_fee) if getattr(order, "return_fee", None) is not None else None
+        ),
+        "return_tracking_status": getattr(order, "return_tracking_status", None),
+        "return_approved_at": (
+            order.return_approved_at.isoformat()
+            if getattr(order, "return_approved_at", None)
+            else None
+        ),
+        "return_collected_at": (
+            order.return_collected_at.isoformat()
+            if getattr(order, "return_collected_at", None)
+            else None
+        ),
+        "return_received_at": (
+            order.return_received_at.isoformat()
+            if getattr(order, "return_received_at", None)
+            else None
+        ),
+        # How long the customer had, and whether they were inside it. A claim
+        # support escalated from outside the window is otherwise
+        # indistinguishable from a fresh one, and they are not the same
+        # decision.
+        "hours_since_delivery": _hours_since_delivery(order),
         "customer": {
             "user_id": str(customer.user_id),
             "full_name": customer.full_name,
@@ -692,6 +723,22 @@ async def export_orders_pdf(
     )
 
 
+def _hours_since_delivery(order: Order) -> Optional[float]:
+    """Hours between delivery and now, to one decimal — or None if undelivered.
+
+    Shown beside a return claim so a manager can see at a glance whether it
+    came in inside the 12-hour window. The API refuses a late request, so an
+    out-of-window claim only exists because support raised it by hand; that is
+    a legitimate thing to do and an illegitimate thing to do invisibly.
+    """
+    delivered_at = getattr(order, "delivered_at", None)
+    if delivered_at is None:
+        return None
+    if delivered_at.tzinfo is None:
+        delivered_at = delivered_at.replace(tzinfo=timezone.utc)
+    return round((datetime.now(timezone.utc) - delivered_at).total_seconds() / 3600, 1)
+
+
 async def _load_scoped_order(db: AsyncSession, order_id: UUID, scope: BranchScope) -> Order:
     """Fetch an order with relations, enforcing branch isolation."""
     order = (
@@ -1163,6 +1210,80 @@ async def reject_order_return(
         "success": True,
         "data": _format_order_detail(order, branch_name),
         "message": "Return rejected",
+    }
+
+
+@router.post("/{order_id}/return/regenerate-code", response_model=dict)
+async def regenerate_return_handover_code(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    _decider = _RETURN_DECIDER,
+):
+    """Get a new handover code for this order's reverse pickup.
+
+    The code is what our counter staff read to the rider to close the return.
+    SribeesExpress stores only a hash of it, so "we lost it" has exactly one
+    answer: issue a new one, which kills the old one immediately. Restricted to
+    the same roles that decide the claim — anyone who can mint this code can
+    release goods back to a rider.
+    """
+    order = await _load_scoped_order(db, order_id, scope)
+    if not order.return_waybill_number:
+        raise HTTPException(
+            status_code=400, detail="This order has no reverse pickup booked."
+        )
+
+    from app.services.courier_service import CourierError, CourierService
+
+    try:
+        result = await CourierService.regenerate_return_code(order.return_waybill_number)
+    except CourierError as exc:
+        raise HTTPException(status_code=502, detail=f"SribeesExpress: {exc.message}") from exc
+
+    order.return_handover_code = result.get("handover_code")
+    await db.commit()
+    await db.refresh(order)
+    logger.info(f"[admin] Return handover code regenerated for {order.order_number}")
+    branch_name = await _branch_name(db, order.branch_id)
+    return {
+        "success": True,
+        "data": _format_order_detail(order, branch_name),
+        "message": "New handover code issued — the old one no longer works",
+    }
+
+
+@router.post("/{order_id}/return/retry-booking", response_model=dict)
+async def retry_reverse_pickup_booking(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    _decider = _RETURN_DECIDER,
+):
+    """Book the reverse pickup again after a courier outage.
+
+    Approval does not fail when SribeesExpress is unreachable — a manager's
+    decision stands and the claim is left with `return_booking_status =
+    'failed'`. This is the button that clears it. Safe to press repeatedly:
+    the booking is idempotent on the order number, so a retry after a response
+    we never saw returns the existing leg rather than sending a second rider.
+    """
+    order = await _load_scoped_order(db, order_id, scope)
+    if order.status != OrderStatusEnum.RETURN_APPROVED.value:
+        raise HTTPException(
+            status_code=400, detail="This order has no approved return awaiting pickup."
+        )
+    await OrderService._book_reverse_pickup(db, order)
+    branch_name = await _branch_name(db, order.branch_id)
+    if order.return_booking_status != "booked":
+        raise HTTPException(
+            status_code=502,
+            detail=order.return_booking_error or "SribeesExpress could not be reached.",
+        )
+    return {
+        "success": True,
+        "data": _format_order_detail(order, branch_name),
+        "message": "Reverse pickup booked",
     }
 
 

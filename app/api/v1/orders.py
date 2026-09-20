@@ -212,6 +212,30 @@ def format_order(
         "return_comments": order.return_comments,
         "return_requested_at": order.return_requested_at.isoformat() if order.return_requested_at else None,
         "refund_amount": float(order.refund_amount) if order.refund_amount is not None else None,
+        # When the 12-hour window closes, so the app can show a live countdown
+        # rather than re-deriving the rule — and so a customer learns they are
+        # out of time *before* tapping, not by being rejected. Null means the
+        # order was never delivered (or predates delivered_at being recorded),
+        # in which case the app offers no return at all.
+        "return_window_expires_at": (
+            expires.isoformat()
+            if (expires := OrderService.return_window_expires_at(order)) is not None
+            else None
+        ),
+        # The reverse pickup, once a Branch Manager has approved one. The app
+        # renders these as a second tracker under the delivered order.
+        "return_waybill_number": order.return_waybill_number,
+        "return_tracking_status": order.return_tracking_status,
+        "return_collected_at": (
+            order.return_collected_at.isoformat() if order.return_collected_at else None
+        ),
+        "return_received_at": (
+            order.return_received_at.isoformat() if order.return_received_at else None
+        ),
+        "refunded_at": order.refunded_at.isoformat() if order.refunded_at else None,
+        # Deliberately absent: `return_handover_code`. That is ours to read to
+        # the rider at the counter, not the customer's to see — a customer who
+        # can read it can close a return the goods never arrived for.
     }
 
     # Status timeline (derived — no dedicated history table)

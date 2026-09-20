@@ -197,6 +197,43 @@ class Order(Base):
     return_resolution = Column(String(30), nullable=True)
     return_resolution_note = Column(Text, nullable=True)
 
+    # --- The reverse pickup (migration 054) ---------------------------------
+    #
+    # A `reverse_pickup` resolution books a return leg with SribeesExpress: a
+    # second shipment, with its own SXR waybill, that collects from the
+    # customer and brings the goods back to our branch. See
+    # SribeesExpress/backend-fastapi/docs/RETURNS_ARCHITECTURE.md §7.
+    #
+    # Kept in their own columns rather than reusing the courier_* ones above:
+    # the forward shipment's tracking is what proves the delivery happened,
+    # and a return must not overwrite it.
+    return_waybill_number = Column(String(64), nullable=True)
+    return_booking_status = Column(String(20), default="not_required")
+    return_booking_error = Column(Text, nullable=True)
+    # What SribeesExpress charges us to carry it back. Ours to pay, not the
+    # customer's — the customer is refunded the goods, not the freight.
+    return_fee = Column(Numeric(10, 2), nullable=True)
+
+    # The code our counter staff read to the rider when the goods arrive back.
+    # Plain text, and *only* here: SribeesExpress stores a hash and genuinely
+    # cannot tell us what it was, so a lost value means the branch asks for a
+    # new one. We are the merchant in this exchange and this is our own
+    # secret — the same posture as `delivery_verification_code` above, which
+    # we hold for the customer's handover.
+    return_handover_code = Column(String(6), nullable=True)
+
+    return_tracking_status = Column(String(20), nullable=True)
+    return_tracking_updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # `return_received_at` is the one that matters: the goods are physically
+    # back with us, and — per the business decision recorded in
+    # RETURNS_ARCHITECTURE.md §7 — that, not approval, is when the customer's
+    # wallet is credited.
+    return_approved_at = Column(DateTime(timezone=True), nullable=True)
+    return_collected_at = Column(DateTime(timezone=True), nullable=True)
+    return_received_at = Column(DateTime(timezone=True), nullable=True)
+    refunded_at = Column(DateTime(timezone=True), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

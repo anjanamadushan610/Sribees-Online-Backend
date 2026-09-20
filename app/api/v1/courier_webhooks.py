@@ -179,6 +179,14 @@ async def shipment_status_webhook(
         logger.info(f"Courier webhook {payload.get('event_id')} already processed, ignoring repeat")
         return {"success": True, "duplicate": True}
 
+    # A return leg carries its own SXR waybill in `return_id`, and the forward
+    # shipment it reverses in `shipment_id`. Routing on `return_id` first is
+    # what keeps a `delivered` on the way *back* from being recorded as the
+    # customer receiving the parcel again.
+    return_id = payload.get("return_id")
+    if return_id:
+        return await _handle_return_event(db, payload, shipment_id, return_id)
+
     order = await OrderService.get_by_courier_shipment_id(db, shipment_id)
     if not order:
         # Acknowledged, not rejected: a 4xx here would make SribeesExpress log
@@ -193,3 +201,45 @@ async def shipment_status_webhook(
         f"(order {order.order_number})"
     )
     return {"success": True, "matched": True}
+
+
+async def _handle_return_event(
+    db: AsyncSession, payload: dict, shipment_id: str, return_id: str
+) -> dict:
+    """A push about the reverse leg — `shipment.return_created`, or a status
+    change on a leg we already know.
+
+    `shipment.return_created` is the one that cannot be missed: it is the only
+    delivery of the handover code, and our counter staff cannot release goods
+    back to a rider without it. It also arrives for returns **we did not
+    book** — a SribeesExpress rider raising one from the road after a failed
+    delivery — so it has to be able to attach a leg to an order that has none.
+    """
+    order = await OrderService.get_by_courier_shipment_id(db, shipment_id)
+    if not order:
+        logger.warning(f"Courier return webhook for unknown shipment {shipment_id}")
+        return {"success": True, "matched": False}
+
+    if payload.get("event") == courier_sync_service.RETURN_CREATED_EVENT:
+        await courier_sync_service.apply_return_created(db, order, payload)
+        logger.info(
+            f"Courier webhook: return {return_id} raised against {order.order_number}"
+        )
+        return {"success": True, "matched": True, "return_id": return_id}
+
+    if order.return_waybill_number and order.return_waybill_number != return_id:
+        # A second leg against the same order — possible only after the first
+        # was cancelled. Recorded, not applied: silently retargeting our
+        # columns at an unfamiliar waybill would hide the anomaly.
+        logger.warning(
+            f"Return webhook for {return_id} but {order.order_number} tracks "
+            f"{order.return_waybill_number}"
+        )
+        return {"success": True, "matched": False}
+
+    await courier_sync_service.apply_return_payload(db, order, payload)
+    logger.info(
+        f"Courier webhook: return {return_id} -> {payload.get('status')} "
+        f"(order {order.order_number})"
+    )
+    return {"success": True, "matched": True, "return_id": return_id}

@@ -51,6 +51,9 @@ RECIPIENT_ADDRESS_MAX = 255
 RECIPIENT_NAME_MAX = 150
 RECIPIENT_PHONE_MAX = 30
 ADDRESS_LINE_MAX = 150
+# `reason` is a VARCHAR(255) on their side and a long customer comment is
+# the normal case, so trim here rather than let the whole booking 422.
+RETURN_REASON_MAX = 255
 
 # Section 7a caps `limit` at 200. Asking for more is rejected outright, so the
 # client clamps rather than letting a misconfigured setting break every sweep.
@@ -509,6 +512,70 @@ class CourierService:
     # ------------------------------------------------------------------
     # Section 14 -- COD remittances (read-only)
     # ------------------------------------------------------------------
+
+    # --- Returns (contract section 9a) -----------------------------------
+    #
+    # The reverse leg of a shipment we already booked: a rider collects from
+    # the customer and brings the goods back to our branch. It gets its own
+    # SXR waybill and its own fee, and our forward shipment is untouched.
+
+    @staticmethod
+    async def create_return(
+        *,
+        merchant_order_ref: str,
+        reason: str,
+        items: Optional[List[dict]] = None,
+        pickup_contact_name: Optional[str] = None,
+        pickup_contact_phone: Optional[str] = None,
+        pickup_address: Optional[str] = None,
+    ) -> dict:
+        """
+        ``POST /ecommerce/returns`` (section 9a.1).
+
+        Idempotent on ``merchant_order_ref`` — the **original** shipment's ref,
+        not a new one. A retry after a timeout returns the existing return
+        instead of sending a second rider to a customer who has already handed
+        the goods over, which is the failure this endpoint is shaped to avoid.
+
+        The response carries ``handover_code`` **once**. Persist it on the
+        order the moment this returns: SribeesExpress holds only a hash and
+        cannot tell us what it was, and it is what our counter staff read to
+        the rider to close the return.
+
+        No quote step, unlike ``book_shipment``. A return is a consequence of a
+        delivery that already happened on a corridor they already know, so they
+        price it and report ``return_fee_lkr`` back.
+        """
+        payload: Dict[str, Any] = {
+            "merchant_order_ref": merchant_order_ref,
+            "reason": reason[:RETURN_REASON_MAX],
+        }
+        if items:
+            payload["items"] = items
+        for key, value in (
+            ("pickup_contact_name", pickup_contact_name),
+            ("pickup_contact_phone", pickup_contact_phone),
+            ("pickup_address", pickup_address),
+        ):
+            if value:
+                payload[key] = value
+        return await CourierService._request("POST", "/returns", json=payload)
+
+    @staticmethod
+    async def get_return(return_id: str) -> dict:
+        """``GET /ecommerce/returns/{id}`` (section 9a.2) — includes ``history``.
+        ``handover_code`` is always null here; only the creating call has it."""
+        return await CourierService._request("GET", f"/returns/{return_id}")
+
+    @staticmethod
+    async def regenerate_return_code(return_id: str) -> dict:
+        """``POST /ecommerce/returns/{id}/regenerate-code`` (section 9a.3).
+
+        The answer to "the branch lost the code", and the only one. Kills the
+        old code immediately, so the value this returns must replace what is on
+        the order rather than sit beside it.
+        """
+        return await CourierService._request("POST", f"/returns/{return_id}/regenerate-code")
 
     @staticmethod
     async def get_cod_balance() -> dict:
