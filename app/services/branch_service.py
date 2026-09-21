@@ -14,6 +14,7 @@ parse those keys; dropping them would blank the address dropdowns for every
 customer who has not updated. Remove them once the minimum supported app
 version reads the new names.
 """
+import json
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
