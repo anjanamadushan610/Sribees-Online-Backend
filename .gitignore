@@ -35,3 +35,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# pytest-cov's local database. Regenerated on every run; never useful to share.
+.coverage
+.coverage.*

@@ -1740,13 +1740,35 @@ class OrderService:
         # these are only sent when our own record is actually better.
         address = order.delivery_address
         try:
-            result = await CourierService.create_return(
-                merchant_order_ref=order.order_number,
-                reason=order.return_reason or "Customer return",
-                items=items or None,
-                pickup_contact_name=getattr(address, "recipient_name", None),
-                pickup_contact_phone=getattr(address, "phone", None),
-            )
+            # Act as the fulfilling branch's SribeesExpress account, the same
+            # way the forward booking does. Every call to them needs a scope —
+            # a branch with its own key is billed on it, and one on the shared
+            # account is not — and without it `CourierService` has no
+            # credentials to send and refuses before a request is made. That is
+            # exactly what a Branch Manager was hitting: "No SribeesExpress
+            # credentials are in scope for this call."
+            #
+            # `for_branch`, not `optional_for_branch`: this books a parcel, and
+            # a booking that silently did not happen is a rider nobody sends.
+            async with courier_credentials.for_branch(db, order.branch_id):
+                result = await CourierService.create_return(
+                    merchant_order_ref=order.order_number,
+                    reason=order.return_reason or "Customer return",
+                    items=items or None,
+                    pickup_contact_name=getattr(address, "recipient_name", None),
+                    pickup_contact_phone=getattr(address, "phone", None),
+                )
+        except courier_credentials.CourierNotConfiguredError as exc:
+            # Nobody has entered a key for this branch yet. A configuration gap,
+            # not an outage — say so, because "try again" will not fix it.
+            order.return_booking_status = "failed"
+            order.return_booking_error = (
+                "This branch has no SribeesExpress account configured yet. "
+                "Add its API key under Settings → Courier, then retry."
+            )[:500]
+            await db.commit()
+            logger.error(f"Reverse pickup unconfigured for {order.order_number}: {exc}")
+            return
         except CourierError as exc:
             order.return_booking_status = "failed"
             order.return_booking_error = f"{exc.code}: {exc.message}"[:500]
