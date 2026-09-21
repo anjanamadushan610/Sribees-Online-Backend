@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -312,7 +312,12 @@ async def get_customers(
             query = query.where(
                 User.email.ilike(search_pattern) |
                 User.full_name.ilike(search_pattern) |
-                User.phone.ilike(search_pattern)
+                User.phone.ilike(search_pattern) |
+                # The NIC is what support is given over the phone when
+                # someone asks about their account, so it has to be
+                # searchable here or it is not usable as an identity.
+                User.nic.ilike(search_pattern) |
+                User.alternate_phone.ilike(search_pattern)
             )
 
         if role:
@@ -353,6 +358,8 @@ async def get_customers(
                     "email": u.email,
                     "full_name": u.full_name,
                     "phone": u.phone,
+                    "nic": u.nic,
+                    "alternate_phone": u.alternate_phone,
                     "role": u.role,
                     "is_active": u.is_active,
                     "is_verified": u.is_verified,
@@ -503,6 +510,29 @@ class UpdateCustomerPayload(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=100)
     email: Optional[str] = None
     phone: Optional[str] = None
+    # A customer cannot rewrite their own NIC (see
+    # AuthService.update_profile). This is the escape hatch that guard
+    # assumes exists: support correcting a mistyped one.
+    nic: Optional[str] = None
+    alternate_phone: Optional[str] = None
+
+    @field_validator("nic")
+    @classmethod
+    def validate_nic(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not v.strip():
+            return None
+        from app.utils.identity import normalize_nic
+
+        return normalize_nic(v)
+
+    @field_validator("alternate_phone")
+    @classmethod
+    def validate_alternate_phone(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not v.strip():
+            return None
+        from app.utils.identity import normalize_mobile
+
+        return normalize_mobile(v)
 
 class BlockCustomerPayload(BaseModel):
     reason: str = Field(..., min_length=1)
@@ -565,6 +595,8 @@ async def get_customer_profile(
                 "email": user.email,
                 "full_name": user.full_name,
                 "phone": user.phone,
+                "nic": user.nic,
+                "alternate_phone": user.alternate_phone,
                 "is_active": user.is_active,
                 "is_blocked": user.is_blocked,
                 "blocked_reason": user.blocked_reason,
@@ -713,6 +745,27 @@ async def update_customer(
                 )
             user.phone = payload.phone
 
+        if payload.nic and payload.nic != user.nic:
+            nic_check = await db.execute(
+                select(User).where(
+                    User.nic == payload.nic, User.user_id != user_uuid
+                )
+            )
+            if nic_check.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This NIC is already registered to another customer",
+                )
+            user.nic = payload.nic
+
+        if payload.alternate_phone is not None:
+            if payload.alternate_phone == user.phone:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="The second number must differ from the main number",
+                )
+            user.alternate_phone = payload.alternate_phone
+
         user.full_name = payload.full_name
         await db.commit()
 
@@ -723,7 +776,9 @@ async def update_customer(
                 "user_id": str(user.user_id),
                 "email": user.email,
                 "full_name": user.full_name,
-                "phone": user.phone
+                "phone": user.phone,
+                "nic": user.nic,
+                "alternate_phone": user.alternate_phone,
             }
         }
     except HTTPException:

@@ -426,6 +426,8 @@ class OrderService:
             cashback_earned=cashback_earned,
             total_amount=breakdown.total,
             delivery_address_id=UUID(data.delivery_address_id),
+            contact_phone=data.contact_phone,
+            alternate_phone=data.alternate_phone,
             delivery_slot_date=data.delivery_slot_date,
             delivery_slot_time=data.delivery_slot_time,
             payment_method=data.payment_method,
@@ -872,7 +874,18 @@ class OrderService:
                     "merchant_order_ref": order.order_number,
                     "payment_method": to_courier_payment_method(order.payment_method),
                     "recipient_name": address.recipient_name or "Customer",
-                    "recipient_phone": address.phone or "",
+                    # The number the customer confirmed at checkout, not
+                    # whatever the address record happens to hold: the
+                    # address is edited from several screens and this is the
+                    # one they agreed to be called on for this parcel. Falls
+                    # back to the address for orders placed before the order
+                    # carried its own numbers.
+                    #
+                    # NOTE: the second number does not go to the courier --
+                    # SribeesExpress's ShipmentCreateRequest has a single
+                    # `recipient_phone` and no secondary contact field. It
+                    # stays on the order for our own support and branch staff.
+                    "recipient_phone": order.contact_phone or address.phone or "",
                     "address_line1": address.address_line1,
                     "address_line2": address.address_line2,
                     "postal_city": address.postal_city,

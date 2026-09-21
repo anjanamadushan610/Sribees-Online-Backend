@@ -193,6 +193,18 @@ class UpdateProfileRequest(BaseModel):
         "use a card/bank payment method -- checked for uniqueness against other accounts.",
     )
     phone: Optional[str] = Field(None, max_length=20, description="Phone number")
+    nic: Optional[str] = Field(
+        None,
+        max_length=20,
+        description="Sri Lankan NIC. Write-once: accepted while the account "
+        "has none, rejected afterwards (support changes it).",
+    )
+    alternate_phone: Optional[str] = Field(
+        None,
+        max_length=20,
+        description="A second contact number for deliveries. Send an empty "
+        "string to remove it.",
+    )
     profile_picture_url: Optional[str] = Field(
         None,
         max_length=500,
@@ -204,6 +216,25 @@ class UpdateProfileRequest(BaseModel):
     def validate_full_name(cls, v: Optional[str]) -> Optional[str]:
         """Strip whitespace from name."""
         return v.strip() if v is not None else v
+
+    @field_validator("nic")
+    @classmethod
+    def validate_nic(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        from app.utils.identity import normalize_nic
+
+        return normalize_nic(v)
+
+    @field_validator("alternate_phone")
+    @classmethod
+    def validate_alternate_phone(cls, v: Optional[str]) -> Optional[str]:
+        # An empty string is how the app says "remove the second number".
+        if v is None or not v.strip():
+            return v
+        from app.utils.identity import normalize_mobile
+
+        return normalize_mobile(v)
 
     class Config:
         json_schema_extra = {
@@ -310,6 +341,8 @@ class UserResponse(BaseModel):
     email: Optional[EmailStr] = None
     full_name: str = Field(..., alias="fullName")
     phone: Optional[str] = None
+    nic: Optional[str] = None
+    alternate_phone: Optional[str] = Field(None, alias="alternatePhone")
     profile_picture_url: Optional[str] = Field(None, alias="profilePictureUrl")
     is_verified: bool = Field(..., alias="isVerified")
     is_phone_verified: bool = Field(False, alias="isPhoneVerified")

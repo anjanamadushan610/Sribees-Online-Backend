@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ============================================================================
 # Enums
@@ -136,6 +136,11 @@ class OrderStatusStep(BaseModel):
 class CreateOrderRequest(BaseModel):
     """Request to create an order."""
     delivery_address_id: str
+    # Two reachable numbers are mandatory on every order: a single number
+    # that does not answer is the most common reason a delivery fails and
+    # comes back.
+    contact_phone: str = Field(..., max_length=20)
+    alternate_phone: str = Field(..., max_length=20)
     delivery_slot_date: Optional[datetime] = None
     delivery_slot_time: Optional[str] = None
     # COD, WALLET, or one of the Marx IPG gateway methods (MARX_OTHER/MARX_AMEX/MARX_BANK).
@@ -157,6 +162,21 @@ class CreateOrderRequest(BaseModel):
     notes: Optional[str] = None
     items: Optional[List[dict]] = None
     is_buy_now: bool = False
+
+    @field_validator("contact_phone", "alternate_phone")
+    @classmethod
+    def validate_contact_numbers(cls, v: str) -> str:
+        from app.utils.identity import normalize_mobile
+
+        return normalize_mobile(v)
+
+    @model_validator(mode="after")
+    def numbers_must_differ(self):
+        if self.contact_phone == self.alternate_phone:
+            raise ValueError(
+                "The two contact numbers must be different"
+            )
+        return self
 
     @field_validator("payment_method")
     @classmethod
@@ -294,6 +314,10 @@ class OrderResponse(BaseModel):
     # Marx IPG gateway (response-only; payment_redirect_url is never persisted)
     payment_redirect_url: Optional[str] = None
     gateway_status: Optional[str] = None
+
+    # Who to call about this parcel, as confirmed at checkout.
+    contact_phone: Optional[str] = None
+    alternate_phone: Optional[str] = None
 
     # Delivery handover verification code
     delivery_verification_code: Optional[str] = None

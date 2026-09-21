@@ -67,6 +67,28 @@ class User(Base):
         nullable=True,
         index=True,
     )
+    # The customer's National Identity Card number: the identity this
+    # business recognises a person by. Unique, and write-once once set (see
+    # AuthService.update_profile) because an identity key a customer can
+    # rewrite at will is not an identity key.
+    #
+    # Nullable in the database for the same reason `email` is: phone-first
+    # sign-up creates the row at OTP time and the profile step fills it in
+    # immediately afterwards, so there is a moment where the row legitimately
+    # has no NIC. "Mandatory" is enforced at the profile gate, not the column.
+    nic: Optional[str] = Column(
+        String(20),
+        unique=True,
+        nullable=True,
+        index=True,
+        comment="Sri Lankan NIC: 9 digits + V/X, or 12 digits. Write-once.",
+    )
+    # A second number the courier can try. Deliberately NOT unique: a
+    # household may well give the same fallback number on two accounts.
+    alternate_phone: Optional[str] = Column(
+        String(20),
+        nullable=True,
+    )
     profile_picture_url: Optional[str] = Column(
         Text,
         nullable=True,
@@ -207,6 +229,8 @@ class User(Base):
             "userId": str(self.user_id),
             "email": self.email,
             "fullName": self.full_name,
+            "nic": self.nic,
+            "alternatePhone": self.alternate_phone,
             "phone": self.phone,
             "profilePictureUrl": self.profile_picture_url,
             "isVerified": self.is_verified,

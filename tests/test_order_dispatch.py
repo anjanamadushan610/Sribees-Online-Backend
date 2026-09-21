@@ -76,6 +76,10 @@ def _order(**overrides):
         "courier_shipment_id": None,
         "courier_booking_status": "pending",
         "delivery_address_id": uuid4(),
+        # The numbers confirmed at checkout; the booking prefers these over
+        # whatever the address record holds.
+        "contact_phone": "+94771234567",
+        "alternate_phone": "+94719876543",
         "delivery_verification_code": None,
         "delivery_slot_date": None,
         "delivery_slot_time": None,

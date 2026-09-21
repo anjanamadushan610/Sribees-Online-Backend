@@ -12,11 +12,13 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
+    DuplicateError,
     EmailAlreadyExistsError,
     InvalidCredentialsError,
     InvalidTokenError,
     TokenExpiredError,
     UnverifiedEmailError,
+    ValidationError,
 )
 from app.core.security import (
     create_token_pair,
@@ -131,6 +133,8 @@ class AuthService:
                 email=user.email,
                 full_name=user.full_name,
                 phone=user.phone,
+                nic=user.nic,
+                alternate_phone=user.alternate_phone,
                 profile_picture_url=user.profile_picture_url,
                 is_verified=user.is_verified,
                 is_phone_verified=user.is_phone_verified,
@@ -233,6 +237,8 @@ class AuthService:
                 email=user.email,
                 full_name=user.full_name,
                 phone=user.phone,
+                nic=user.nic,
+                alternate_phone=user.alternate_phone,
                 profile_picture_url=user.profile_picture_url,
                 is_verified=user.is_verified,
                 is_phone_verified=user.is_phone_verified,
@@ -328,6 +334,8 @@ class AuthService:
                 email=user.email,
                 full_name=user.full_name,
                 phone=user.phone,
+                nic=user.nic,
+                alternate_phone=user.alternate_phone,
                 profile_picture_url=user.profile_picture_url,
                 is_verified=user.is_verified,
                 is_phone_verified=user.is_phone_verified,
@@ -808,6 +816,8 @@ class AuthService:
                 email=user.email,
                 full_name=user.full_name,
                 phone=user.phone,
+                nic=user.nic,
+                alternate_phone=user.alternate_phone,
                 profile_picture_url=user.profile_picture_url,
                 is_verified=user.is_verified,
                 is_phone_verified=user.is_phone_verified,
@@ -856,6 +866,40 @@ class AuthService:
             user.email = data.email
         if data.phone is not None:
             user.phone = data.phone
+        if data.nic is not None and data.nic != user.nic:
+            # Write-once. The NIC is what this business recognises a person
+            # by, so letting an account rewrite it at will would let one
+            # customer quietly become another; corrections go through support.
+            if user.nic:
+                raise ValidationError(
+                    message=(
+                        "Your NIC cannot be changed here. "
+                        "Contact support if it needs correcting."
+                    ),
+                    errors={"nic": "NIC is already set"},
+                )
+            existing = await db.execute(
+                select(User).where(
+                    User.nic == data.nic, User.user_id != user.user_id
+                )
+            )
+            if existing.scalar_one_or_none() is not None:
+                raise DuplicateError(
+                    field="nic",
+                    message="This NIC is already registered to another account",
+                )
+            user.nic = data.nic
+        if data.alternate_phone is not None:
+            second = data.alternate_phone.strip() or None
+            if second and second == (user.phone or ""):
+                raise ValidationError(
+                    message=(
+                        "The second number must be different from your "
+                        "main number"
+                    ),
+                    errors={"alternate_phone": "Duplicate of the main number"},
+                )
+            user.alternate_phone = second
         if data.profile_picture_url is not None:
             user.profile_picture_url = data.profile_picture_url
 
@@ -869,6 +913,8 @@ class AuthService:
                 email=user.email,
                 full_name=user.full_name,
                 phone=user.phone,
+                nic=user.nic,
+                alternate_phone=user.alternate_phone,
                 profile_picture_url=user.profile_picture_url,
                 is_verified=user.is_verified,
                 is_phone_verified=user.is_phone_verified,

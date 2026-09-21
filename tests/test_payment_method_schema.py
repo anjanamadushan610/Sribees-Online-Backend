@@ -10,6 +10,9 @@ from app.schemas.order import (
 )
 
 _ADDR = "00000000-0000-0000-0000-000000000000"
+# Every order now needs two different reachable numbers; these tests are
+# about payment methods, so they just supply a valid pair.
+_CONTACTS = {"contact_phone": "0771234567", "alternate_phone": "0719876543"}
 
 
 @pytest.mark.parametrize(
@@ -17,13 +20,13 @@ _ADDR = "00000000-0000-0000-0000-000000000000"
     [("COD", "COD"), ("wallet", "WALLET"), ("marx_other", "MARX_OTHER"), ("Marx_Amex", "MARX_AMEX")],
 )
 def test_payment_method_normalizes_case(raw, expected):
-    req = CreateOrderRequest(delivery_address_id=_ADDR, payment_method=raw)
+    req = CreateOrderRequest(delivery_address_id=_ADDR, **_CONTACTS, payment_method=raw)
     assert req.payment_method == expected
 
 
 def test_unknown_payment_method_rejected():
     with pytest.raises(ValidationError):
-        CreateOrderRequest(delivery_address_id=_ADDR, payment_method="BITCOIN")
+        CreateOrderRequest(delivery_address_id=_ADDR, **_CONTACTS, payment_method="BITCOIN")
 
 
 def test_gateway_methods_set_matches_marx_map_keys():

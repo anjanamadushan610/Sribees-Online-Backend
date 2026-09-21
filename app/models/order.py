@@ -95,6 +95,14 @@ class Order(Base):
     total_amount = Column(Numeric(10, 2), nullable=False)
 
     # Status
+    # Two numbers the courier can reach the customer on, captured at
+    # checkout and frozen here: the profile's numbers may change later, but
+    # who to call about THIS parcel must not. Nullable in the column and
+    # required by CreateOrderRequest, so orders placed before this shipped
+    # still load.
+    contact_phone = Column(String(20), nullable=True)
+    alternate_phone = Column(String(20), nullable=True)
+
     status = Column(String(30), default=OrderStatus.PENDING.value)
     payment_status = Column(String(30), default=PaymentStatus.PENDING.value)
     payment_id = Column(String(255), nullable=True)
