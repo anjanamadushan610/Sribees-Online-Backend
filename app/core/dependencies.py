@@ -96,6 +96,10 @@ async def get_current_user(
     if not user.is_verified:
         raise UnverifiedEmailError()
 
+    session_id = payload.get("session_id")
+    if session_id:
+        user._current_session_id = str(session_id)
+
     return user
 
 
