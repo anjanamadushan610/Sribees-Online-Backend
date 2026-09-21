@@ -640,7 +640,7 @@ class AuthService:
     @staticmethod
     async def logout(current_user, db: AsyncSession) -> MessageResponse:
         """
-        Logout user by invalidating session.
+        Logout user by invalidating only the current session.
 
         Args:
             current_user: Currently authenticated user
@@ -649,13 +649,26 @@ class AuthService:
         Returns:
             MessageResponse confirming logout
         """
-        # Delete all sessions for user (or just current session)
-        await db.execute(
-            delete(Session).where(Session.user_id == current_user.user_id)
-        )
+        current_session_id = str(getattr(current_user, "_current_session_id", "") or "")
+        if current_session_id:
+            try:
+                session_uuid = UUID(current_session_id)
+                await db.execute(
+                    delete(Session).where(
+                        Session.session_id == session_uuid,
+                        Session.user_id == current_user.user_id,
+                    )
+                )
+            except ValueError:
+                pass
+        else:
+            # Fallback if no specific session_id in token
+            await db.execute(
+                delete(Session).where(Session.user_id == current_user.user_id)
+            )
         await db.commit()
 
-        logger.info(f"User logged out: {current_user.email}")
+        logger.info(f"User logged out: {current_user.email or current_user.phone}")
 
         return MessageResponse(
             success=True,
