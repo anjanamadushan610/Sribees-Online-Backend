@@ -72,7 +72,7 @@ async def get_current_user(
         raise InvalidTokenError()
 
     # Import here to avoid circular imports
-    from app.models.user import Session as DbSession, User
+    from app.models.user import Session, User
 
     result = await db.execute(
         select(User).where(User.user_id == UUID(user_id))
@@ -102,10 +102,10 @@ async def get_current_user(
         try:
             session_uuid = UUID(str(session_id))
             sess_result = await db.execute(
-                select(DbSession).where(
-                    DbSession.session_id == session_uuid,
-                    DbSession.user_id == user.user_id,
-                    DbSession.expires_at > datetime.utcnow(),
+                select(Session).where(
+                    Session.session_id == session_uuid,
+                    Session.user_id == user.user_id,
+                    Session.expires_at > datetime.utcnow(),
                 )
             )
             active_session = sess_result.scalar_one_or_none()
