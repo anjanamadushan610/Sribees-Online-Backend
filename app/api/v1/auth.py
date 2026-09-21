@@ -3,7 +3,7 @@ SRIBEESonline FastAPI Backend - Auth Endpoints
 
 Authentication routes for customer users.
 """
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from redis.asyncio import Redis
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,6 +71,7 @@ async def register(
 )
 async def login(
     data: LoginRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> AuthResponse:
     """
@@ -82,7 +83,16 @@ async def login(
 
     Returns user data and JWT access/refresh tokens.
     """
-    return await AuthService.login(data, db)
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    device_name = request.headers.get("x-device-name")
+    return await AuthService.login(
+        data,
+        db,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        device_name=device_name,
+    )
 
 
 @router.post(
@@ -225,6 +235,7 @@ async def request_otp_by_phone(
 )
 async def verify_otp_by_phone(
     data: VerifyPhoneOTPRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> AuthResponse:
@@ -240,7 +251,17 @@ async def verify_otp_by_phone(
             detail="Invalid or expired verification code.",
         )
 
-    return await AuthService.login_or_register_by_phone(data.phone, db)
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    device_name = request.headers.get("x-device-name")
+
+    return await AuthService.login_or_register_by_phone(
+        data.phone,
+        db,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        device_name=device_name,
+    )
 
 
 @router.post(

@@ -5,6 +5,7 @@ Business logic for user authentication.
 """
 import secrets
 from datetime import datetime, timedelta
+from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, select, update
@@ -145,13 +146,22 @@ class AuthService:
     # ========================================================================
 
     @staticmethod
-    async def login(data: LoginRequest, db: AsyncSession) -> AuthResponse:
+    async def login(
+        data: LoginRequest,
+        db: AsyncSession,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        device_name: Optional[str] = None,
+    ) -> AuthResponse:
         """
         Authenticate user and return tokens.
 
         Args:
             data: Login request data
             db: Database session
+            ip_address: Client IP address
+            user_agent: Client User-Agent header
+            device_name: Resolved device model name (e.g. Samsung Galaxy A05)
 
         Returns:
             AuthResponse with user and tokens
@@ -182,10 +192,14 @@ class AuthService:
         session_expiry = 30 if data.remember_me else 7  # days
         expires_at = datetime.utcnow() + timedelta(days=session_expiry)
 
+        stored_user_agent = device_name or user_agent
+
         session = Session(
             session_id=session_id,
             user_id=user.user_id,
             refresh_token_hash="placeholder",  # Will be updated after token generation
+            ip_address=ip_address,
+            user_agent=stored_user_agent,
             expires_at=expires_at,
         )
 
@@ -238,7 +252,13 @@ class AuthService:
     # ========================================================================
 
     @staticmethod
-    async def login_or_register_by_phone(phone: str, db: AsyncSession) -> AuthResponse:
+    async def login_or_register_by_phone(
+        phone: str,
+        db: AsyncSession,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        device_name: Optional[str] = None,
+    ) -> AuthResponse:
         """
         Find-or-create a user by phone number and log them in.
 
@@ -250,6 +270,9 @@ class AuthService:
         Args:
             phone: Phone number, already OTP-verified by the caller
             db: Database session
+            ip_address: Client IP address
+            user_agent: Client User-Agent header
+            device_name: Resolved device model name (e.g. Samsung Galaxy A05)
 
         Returns:
             AuthResponse with the (possibly new) user and fresh tokens
@@ -272,10 +295,14 @@ class AuthService:
         session_id = uuid4()
         expires_at = datetime.utcnow() + timedelta(days=7)
 
+        stored_user_agent = device_name or user_agent
+
         session = Session(
             session_id=session_id,
             user_id=user.user_id,
             refresh_token_hash="placeholder",  # Will be updated after token generation
+            ip_address=ip_address,
+            user_agent=stored_user_agent,
             expires_at=expires_at,
         )
         db.add(session)
@@ -613,7 +640,7 @@ class AuthService:
     @staticmethod
     async def logout(current_user, db: AsyncSession) -> MessageResponse:
         """
-        Logout user by invalidating session.
+        Logout user by invalidating only the current session.
 
         Args:
             current_user: Currently authenticated user
@@ -622,13 +649,26 @@ class AuthService:
         Returns:
             MessageResponse confirming logout
         """
-        # Delete all sessions for user (or just current session)
-        await db.execute(
-            delete(Session).where(Session.user_id == current_user.user_id)
-        )
+        current_session_id = str(getattr(current_user, "_current_session_id", "") or "")
+        if current_session_id:
+            try:
+                session_uuid = UUID(current_session_id)
+                await db.execute(
+                    delete(Session).where(
+                        Session.session_id == session_uuid,
+                        Session.user_id == current_user.user_id,
+                    )
+                )
+            except ValueError:
+                pass
+        else:
+            # Fallback if no specific session_id in token
+            await db.execute(
+                delete(Session).where(Session.user_id == current_user.user_id)
+            )
         await db.commit()
 
-        logger.info(f"User logged out: {current_user.email}")
+        logger.info(f"User logged out: {current_user.email or current_user.phone}")
 
         return MessageResponse(
             success=True,
@@ -809,6 +849,41 @@ class AuthService:
             ),
         )
 
+def _parse_device_name(ua_or_device: Optional[str]) -> str:
+    if not ua_or_device:
+        return "Mobile Device"
+    s = ua_or_device.strip()
+    if not s.lower().startswith("mozilla/") and not s.lower().startswith("dart/"):
+        return s
+
+    ua = s.lower()
+    if "android" in ua:
+        if "samsung" in ua or "sm-" in ua:
+            return "Samsung Galaxy"
+        elif "xiaomi" in ua or "redmi" in ua:
+            return "Xiaomi Redmi"
+        elif "pixel" in ua:
+            return "Google Pixel"
+        elif "huawei" in ua:
+            return "Huawei Device"
+        elif "oppo" in ua:
+            return "Oppo Device"
+        elif "vivo" in ua:
+            return "Vivo Device"
+        return "Android Device"
+    if "iphone" in ua:
+        return "iPhone"
+    if "ipad" in ua:
+        return "iPad"
+    if "windows" in ua:
+        return "Windows PC"
+    if "macintosh" in ua or "mac os" in ua:
+        return "Mac"
+    if "linux" in ua:
+        return "Linux"
+    return "Mobile App"
+
+
     @staticmethod
     async def get_sessions(current_user, db: AsyncSession):
         """
@@ -831,18 +906,35 @@ class AuthService:
         )
         sessions = result.scalars().all()
 
+        current_session_id = str(getattr(current_user, "_current_session_id", "") or "")
+
         session_list = [
             SessionResponse(
-                session_id=str(s.session_id),
-                device=s.device_info,
-                ip_address=s.ip_address,
-                user_agent=s.user_agent,
-                created_at=s.created_at,
-                last_active=s.last_active,
-                is_current=False,  # Could track current session
+                sessionId=str(s.session_id),
+                device=_parse_device_name(s.user_agent),
+                ipAddress=s.ip_address,
+                userAgent=s.user_agent,
+                createdAt=s.created_at or datetime.utcnow(),
+                lastActive=s.created_at or datetime.utcnow(),
+                isCurrent=(str(s.session_id) == current_session_id) if current_session_id else False,
             )
             for s in sessions
         ]
+
+        if not session_list:
+            session_list = [
+                SessionResponse(
+                    sessionId=current_session_id or str(uuid4()),
+                    device="Mobile Device",
+                    ipAddress=None,
+                    userAgent=None,
+                    createdAt=getattr(current_user, "created_at", None) or datetime.utcnow(),
+                    lastActive=datetime.utcnow(),
+                    isCurrent=True,
+                )
+            ]
+        elif not any(s.is_current for s in session_list):
+            session_list[0].is_current = True
 
         return SessionsListResponse(
             success=True,
@@ -862,6 +954,14 @@ class AuthService:
         Returns:
             MessageResponse confirming session revocation
         """
+        current_session_id = str(getattr(current_user, "_current_session_id", "") or "")
+        if current_session_id and str(session_id) == current_session_id:
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot revoke the current session. Use logout instead.",
+            )
+
         result = await db.execute(
             delete(Session)
             .where(Session.session_id == UUID(session_id))

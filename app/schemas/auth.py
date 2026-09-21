@@ -448,7 +448,7 @@ class SessionResponse(BaseModel):
     device: Optional[str] = None
     ip_address: Optional[str] = Field(None, alias="ipAddress")
     user_agent: Optional[str] = Field(None, alias="userAgent")
-    created_at: datetime = Field(..., alias="createdAt")
+    created_at: Optional[datetime] = Field(None, alias="createdAt")
     last_active: Optional[datetime] = Field(None, alias="lastActive")
     is_current: bool = Field(False, alias="isCurrent")
 
