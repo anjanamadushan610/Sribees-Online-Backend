@@ -3,6 +3,7 @@ AI Shopping Chat API — a Gemini-backed assistant that recommends real,
 branch-visible products from a customer's message and/or photo.
 
   POST   /chat/message  — send a message, get a reply + matching products
+  POST   /chat/message/stream — the same turn, reporting progress over SSE
   GET    /chat/history  — recent turns, so reopening the chat isn't blank
   DELETE /chat/history  — clear the conversation
 
@@ -17,11 +18,12 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config.database import get_db
+from app.config.database import get_db, get_db_context
 from app.config.redis import RedisKeys, get_redis
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.rate_limiter import rate_limit
@@ -209,9 +211,211 @@ async def send_chat_message(
     }
 
 
+@router.post("/message/stream")
+@rate_limit(requests_per_minute=12)
+async def stream_chat_message(
+    body: ChatMessageRequest,
+    request: Request,
+    redis: Redis = Depends(get_redis),
+    current_user=Depends(get_current_user_optional),
+):
+    """
+    The same turn as POST /chat/message, reported as it happens.
+
+    This streams PROGRESS, not tokens, and that is deliberate. The model is
+    asked for a structured plan (`responseJsonSchema`), not prose, and
+    `_ground_reply` overrules its wording whenever real stock disagrees — so
+    streaming the model's own words would show the customer sentences the
+    server is about to discard. Generating prose separately, purely to have
+    something to stream, would mean a second Gemini call on every message.
+    This endpoint therefore costs exactly the same as the plain POST: one
+    Gemini call, the same tokens. What it buys is that the 5-50 seconds stop
+    being a silent wait.
+
+    Frames (text/event-stream):
+      event: stage  data: {"stage": "understanding" | "searching" | "orders"
+                           | "preparing", "terms": [...]}
+      event: done   data: <the same payload POST /chat/message returns>
+      event: error  data: {"code": "...", "message": "..."}
+    A `: keep-alive` comment goes out every 10s so proxies hold the connection.
+    """
+    session_id = _resolve_session_id(request, current_user)
+    branch_id = await _resolve_branch_id(redis, session_id)
+    lang = resolve_language(request.headers.get("accept-language"))
+    user_id = current_user.user_id if current_user else None
+
+    lock_key = RedisKeys.chat_history(session_id) + ":busy"
+    lock_token = str(uuid4())
+    if not await redis.set(lock_key, lock_token, nx=True, ex=90):
+        raise HTTPException(
+            status_code=409, detail="A chat request is already in progress"
+        )
+
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_stage(stage: str, detail: dict) -> None:
+            await queue.put(("stage", {"stage": stage, **detail}))
+
+        async def run() -> None:
+            try:
+                # FastAPI >= 0.106 tears down `yield` dependencies before the
+                # streaming body runs, so a session from Depends(get_db) would
+                # already be closed here. This opens its own.
+                async with get_db_context() as db:
+                    result = await asyncio.wait_for(
+                        ChatService.chat(
+                            db,
+                            redis,
+                            session_id=session_id,
+                            branch_id=branch_id,
+                            message=body.message,
+                            image_base64=body.image_base64,
+                            image_mime_type=body.image_mime_type,
+                            lang=lang,
+                            user_id=user_id,
+                            task=body.task,
+                            target=body.target,
+                            order_reference=body.order_reference,
+                            on_stage=on_stage,
+                        ),
+                        timeout=55,
+                    )
+                await queue.put(("done", result))
+            except asyncio.TimeoutError:
+                await queue.put(
+                    (
+                        "error",
+                        {
+                            "code": "TIMEOUT",
+                            "message": "The assistant took too long. Please try again.",
+                        },
+                    )
+                )
+            except GeminiAPIError as exc:
+                logger.error(f"Chat Gemini error: {exc}")
+                await queue.put(
+                    (
+                        "error",
+                        {
+                            "code": "AI_UNAVAILABLE",
+                            "message": (
+                                "AI chat isn't configured yet — add GEMINI_API_KEY "
+                                "to the backend .env."
+                                if "GEMINI_API_KEY not configured" in str(exc)
+                                else "The assistant is unavailable right now. "
+                                "Please try again."
+                            ),
+                        },
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - reported to the client
+                logger.exception(f"Chat stream failed: {exc}")
+                await queue.put(
+                    (
+                        "error",
+                        {
+                            "code": "INTERNAL",
+                            "message": "Something went wrong. Please try again.",
+                        },
+                    )
+                )
+            finally:
+                await queue.put((None, None))
+
+        worker = asyncio.create_task(run())
+        try:
+            while True:
+                try:
+                    kind, payload = await asyncio.wait_for(queue.get(), timeout=10)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                if kind is None:
+                    break
+                yield (
+                    f"event: {kind}\n"
+                    f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                )
+        finally:
+            # A customer who backs out of the screen mid-turn stops the work
+            # rather than leaving it to write a turn they will never see.
+            worker.cancel()
+            await redis.eval(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                1,
+                lock_key,
+                lock_token,
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # nginx buffers proxied responses by default, which would hold
+            # every stage frame back until the turn finished.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _already_confirmed(
+    db: AsyncSession, redis: Redis, user_id, tokens: set
+) -> set:
+    """
+    Which of these proposal tokens the customer has already confirmed.
+
+    Whether a preview was acted on is the server's fact, not the app's: the
+    app used to track it in memory only, so reopening the chat offered every
+    past "Confirm basket changes" button again as if nothing had happened.
+    Redis holds the answer for a day; the receipt table is the durable record
+    once that has expired.
+    """
+    if not user_id or not tokens:
+        return set()
+
+    from sqlalchemy import select
+
+    from app.models.assistant import AssistantReceipt
+    from app.services.assistant_shopping import proposal_key
+
+    ordered = sorted(tokens)
+    confirmed: set = set()
+    unresolved: list = []
+    for token, raw in zip(
+        ordered, await redis.mget([proposal_key(user_id, t) for t in ordered])
+    ):
+        try:
+            if raw and json.loads(raw).get("done"):
+                confirmed.add(token)
+                continue
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
+        unresolved.append(token)
+
+    receipt_ids = []
+    for token in unresolved:
+        try:
+            receipt_ids.append(UUID(token))
+        except (ValueError, AttributeError):
+            continue
+    if receipt_ids:
+        rows = await db.execute(
+            select(AssistantReceipt.token).where(
+                AssistantReceipt.token.in_(receipt_ids),
+                AssistantReceipt.user_id == user_id,
+            )
+        )
+        confirmed.update(row[0].hex for row in rows)
+    return confirmed
+
+
 @router.get("/history", response_model=dict)
 async def get_chat_history(
     request: Request,
+    db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
     current_user=Depends(get_current_user_optional),
 ):
@@ -223,6 +427,21 @@ async def get_chat_history(
         {key: value for key, value in turn.items() if key != "search_context"}
         for turn in history
     ]
+    commands = [
+        command
+        for turn in public_history
+        for panel in turn.get("panels", [])
+        for command in panel.get("commands", [])
+        if isinstance(command.get("token"), str)
+    ]
+    confirmed = await _already_confirmed(
+        db,
+        redis,
+        current_user.user_id if current_user else None,
+        {command["token"] for command in commands},
+    )
+    for command in commands:
+        command["confirmed"] = command["token"] in confirmed
     for turn in public_history:
         for order in turn.get("orders", []):
             order["freshness"] = "saved"

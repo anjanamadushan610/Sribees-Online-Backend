@@ -24,7 +24,8 @@ truncates the answer, not the reasoning.
 import asyncio
 import json
 import unicodedata
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
 
 import httpx
@@ -47,7 +48,12 @@ RETRY_DELAY = 1.5
 
 # Bounds on every call, independent of how long the conversation gets —
 # these cap Gemini prompt size/cost and DB query count per message.
-MAX_HISTORY_TURNS = 10
+#
+# Every stored turn is prompt tokens paid for again on the *next* message, so
+# this is the single knob with the most direct effect on the bill. Product
+# follow-ups ("ko nane") do not depend on it: they read `search_context`,
+# which is carried separately. Tune with GEMINI_CHAT_HISTORY_TURNS.
+MAX_HISTORY_TURNS = settings.gemini_chat_history_turns
 MAX_SEARCH_TERMS = 6
 MAX_MATCHES_PER_TERM = 3
 
@@ -98,8 +104,24 @@ Reply with ONLY a JSON object following the supplied schema. Include the fields 
 """
 
 
+# A progress ping from inside a turn. The streaming endpoint passes one of
+# these in so the app can say what is happening during the seconds Gemini and
+# the catalog search take; the plain POST endpoint passes nothing and every
+# call below becomes a no-op. Deliberately NOT token streaming: the reply text
+# is a structured plan that `_ground_reply` may overrule from real stock, so
+# streaming the model's own words would show the customer sentences the server
+# is about to throw away — and composing prose separately would mean a second
+# Gemini call per message.
+StageCallback = Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]]
+
+
 class ChatService:
     """AI shopping chat: conversation state + Gemini + real product matching."""
+
+    @staticmethod
+    async def _emit(on_stage: StageCallback, stage: str, **detail: Any) -> None:
+        if on_stage is not None:
+            await on_stage(stage, detail)
 
     # ------------------------------------------------------------------
     # History
@@ -140,7 +162,15 @@ class ChatService:
         search_context: Optional[Dict[str, Any]] = None,
         response: Optional[Dict[str, Any]] = None,
     ) -> None:
-        assistant_turn: Dict[str, Any] = {"role": "assistant", "text": reply}
+        # Stamped so a restored conversation can show when each turn
+        # happened. Turns written before this shipped carry no "at" and the
+        # app shows no time for them rather than inventing one.
+        now = datetime.now(timezone.utc).isoformat()
+        assistant_turn: Dict[str, Any] = {
+            "role": "assistant",
+            "text": reply,
+            "at": now,
+        }
         if response:
             assistant_turn.update(
                 {
@@ -162,7 +192,7 @@ class ChatService:
             # coming back empty — see _last_search_context.
             assistant_turn["search_context"] = search_context
         history = history + [
-            {"role": "user", "text": user_message},
+            {"role": "user", "text": user_message, "at": now},
             assistant_turn,
         ]
         history = history[-(MAX_HISTORY_TURNS * 2) :]
@@ -265,6 +295,14 @@ class ChatService:
             "generationConfig": {
                 "temperature": 0.6,
                 "maxOutputTokens": 4096,
+                # Flash bills thinking as output tokens, and this call asks
+                # for a classify-and-extract plan against a fixed schema --
+                # not a problem that rewards deliberation. Off by default;
+                # GEMINI_CHAT_THINKING_BUDGET raises it if intent accuracy
+                # turns out to need it.
+                "thinkingConfig": {
+                    "thinkingBudget": settings.gemini_chat_thinking_budget
+                },
                 "response_mime_type": "application/json",
                 "responseJsonSchema": ChatPlan.model_json_schema(),
             },
@@ -292,6 +330,7 @@ class ChatService:
                             )
                         except (KeyError, IndexError, TypeError, ValueError):
                             raise GeminiAPIError("Unexpected Gemini response shape")
+                        ChatService._log_usage(data.get("usageMetadata"))
                         return ChatService._parse_reply(text)
 
                     if response.status_code in (429, 500, 502, 503, 504):
@@ -316,6 +355,30 @@ class ChatService:
         if isinstance(last_error, GeminiAPIError):
             raise last_error
         raise GeminiAPIError("Chat request failed after retries") from last_error
+
+    @staticmethod
+    def _log_usage(usage: Optional[Dict[str, Any]]) -> None:
+        """
+        What this message actually cost, per call.
+
+        `cached` is the part of the prompt Gemini served from its implicit
+        cache at a discount -- the system prompt is identical on every
+        request, so it should be most of `prompt` once a few messages have
+        gone through. A `cached` that stays at 0 means the shared prefix is
+        being broken by something and the system prompt is being paid for in
+        full every time; `thoughts` above 0 means the thinking budget is not
+        actually off. Neither is visible any other way.
+        """
+        if not usage:
+            return
+        logger.info(
+            "Chat Gemini tokens: prompt={} cached={} output={} thoughts={} total={}",
+            usage.get("promptTokenCount", 0),
+            usage.get("cachedContentTokenCount", 0),
+            usage.get("candidatesTokenCount", 0),
+            usage.get("thoughtsTokenCount", 0),
+            usage.get("totalTokenCount", 0),
+        )
 
     @staticmethod
     def _parse_reply(text: str) -> Dict[str, Any]:
@@ -516,6 +579,7 @@ class ChatService:
         task: Optional[str] = None,
         target: Optional[str] = None,
         order_reference: Optional[str] = None,
+        on_stage: StageCallback = None,
     ) -> Dict[str, Any]:
         history = await ChatService.get_history(redis, session_id)
 
@@ -553,6 +617,7 @@ class ChatService:
                         for p in cart.get("items", [])[:30]
                     ],
                 }
+            await ChatService._emit(on_stage, "understanding")
             try:
                 result = await asyncio.wait_for(
                     ChatService._ask_gemini(
@@ -570,9 +635,9 @@ class ChatService:
                     {
                         "reply": tr(
                             lang,
-                            "I can't understand new requests right now, but the order and app-help shortcuts below still work. Please try your message again shortly.",
-                            "දැනට අලුත් ප්‍රශ්න තේරුම් ගැනීමේ සේවාවට සම්බන්ධ වෙන්න බැහැ. ඒත් පහළ ඇණවුම් සහ යෙදුම් උදව් බොත්තම් භාවිත කරන්න පුළුවන්. ඔබේ ප්‍රශ්නය තව මොහොතකින් නැවත එවන්න.",
-                            "இப்போது புதிய கேள்விகளைப் புரிந்துகொள்ளும் சேவை கிடைக்கவில்லை. கீழே உள்ள ஆர்டர் மற்றும் உதவிக் குறுக்குவழிகளைப் பயன்படுத்தலாம். சிறிது நேரத்தில் மீண்டும் முயற்சிக்கவும்.",
+                            "I can't understand new requests right now. Please try your message again shortly.",
+                            "දැනට අලුත් ප්‍රශ්න තේරුම් ගැනීමේ සේවාවට සම්බන්ධ වෙන්න බැහැ. ඔබේ ප්‍රශ්නය තව මොහොතකින් නැවත එවන්න.",
+                            "இப்போது புதிய கேள்விகளைப் புரிந்துகொள்ளும் சேவை கிடைக்கவில்லை. சிறிது நேரத்தில் மீண்டும் முயற்சிக்கவும்.",
                         ),
                         "degraded": True,
                     }
@@ -589,6 +654,8 @@ class ChatService:
 
         if result["intent"] in ("cart_edit", "compare_products", "alternatives"):
             from app.services.assistant_shopping import cart_preview, comparison
+
+            await ChatService._emit(on_stage, "preparing")
 
             response.update(
                 await cart_preview(db, redis, user_id, branch_id, result, lang)
@@ -611,6 +678,7 @@ class ChatService:
             else:
                 response.update(await pantry_result(db, branch_id, result, lang))
         elif result["intent"] in ("track_order", "recent_orders"):
+            await ChatService._emit(on_stage, "orders")
             response.update(
                 await orders_result(
                     db,
@@ -629,7 +697,7 @@ class ChatService:
         else:
             response.update(
                 await ChatService._product_response(
-                    db, branch_id, result, history, lang
+                    db, branch_id, result, history, lang, on_stage=on_stage
                 )
             )
         await ChatService._append_turn(
@@ -644,7 +712,7 @@ class ChatService:
         return response
 
     @staticmethod
-    async def _product_response(db, branch_id, result, history, lang):
+    async def _product_response(db, branch_id, result, history, lang, on_stage=None):
 
         intent = result["intent"]
         search_terms = result["search_terms"]
@@ -701,6 +769,7 @@ class ChatService:
                 ),
                 "products": [],
             }
+        await ChatService._emit(on_stage, "searching", terms=search_terms[:3])
         strict_matches, broad_matches = await ChatService._match_products(
             db,
             branch_id,

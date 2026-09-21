@@ -421,6 +421,28 @@ class Settings(BaseSettings):
         default=768,
         description="Embedding vector dimension"
     )
+    gemini_chat_thinking_budget: int = Field(
+        default=0,
+        ge=-1,
+        description=(
+            "Output tokens the shopping assistant may spend 'thinking' before "
+            "its visible answer. Flash bills these as output, and the chat "
+            "asks for a classify-and-extract plan rather than reasoning, so "
+            "the default is 0 (off). Raise it if intent accuracy drops; -1 "
+            "hands the budget back to the model."
+        ),
+    )
+    gemini_chat_history_turns: int = Field(
+        default=6,
+        ge=1,
+        le=20,
+        description=(
+            "Conversation turns kept and re-sent on every chat message. Every "
+            "turn is prompt tokens paid for again on the next message, and "
+            "product follow-ups already carry their own search_context, so "
+            "this is deliberately short."
+        ),
+    )
 
     # Semantic Search Configuration
     semantic_search_similarity_threshold: float = Field(

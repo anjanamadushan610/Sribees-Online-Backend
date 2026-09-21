@@ -1,6 +1,7 @@
 """Assistant trust boundaries, localization, continuity and courier degradation."""
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -242,6 +243,122 @@ async def test_shortcuts_work_without_model_and_restore_rich_history(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_turn_reports_its_stages_and_still_runs_without_a_listener(
+    monkeypatch,
+):
+    """
+    The SSE endpoint's only job is to relay these. A turn must report the
+    same stages it has always gone through, and must behave identically when
+    nobody is listening (the plain POST passes no callback).
+    """
+    plan = ChatPlan(
+        reply="Checking", intent="buy_product", search_terms=["milk"]
+    ).model_dump()
+    monkeypatch.setattr(ChatService, "_ask_gemini", AsyncMock(return_value=plan))
+    monkeypatch.setattr(
+        ChatService, "_match_products", AsyncMock(return_value=([], []))
+    )
+
+    seen = []
+
+    async def on_stage(stage, detail):
+        seen.append((stage, detail))
+
+    redis = AsyncMock()
+    redis.get.return_value = None
+    streamed = await ChatService.chat(
+        AsyncMock(),
+        redis,
+        "guest:one",
+        uuid4(),
+        "milk",
+        lang="si",
+        on_stage=on_stage,
+    )
+    assert [stage for stage, _ in seen] == ["understanding", "searching"]
+    assert seen[1][1]["terms"] == ["milk"]
+
+    redis_plain = AsyncMock()
+    redis_plain.get.return_value = None
+    plain = await ChatService.chat(
+        AsyncMock(), redis_plain, "guest:one", uuid4(), "milk", lang="si"
+    )
+    assert plain["reply"] == streamed["reply"]
+
+
+@pytest.mark.asyncio
+async def test_the_cost_settings_actually_reach_gemini(monkeypatch):
+    """
+    Thinking tokens are billed as output, and every stored turn is prompt
+    tokens paid for again on the next message. Both are configuration, which
+    is exactly the kind of thing that silently stops being wired up.
+    """
+    import httpx
+
+    from app.config.settings import settings
+    from app.services import chat_service as chat_module
+
+    captured = {}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": ChatPlan(
+                                        reply="ok", intent="chitchat"
+                                    ).model_dump_json()
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 10},
+            }
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            captured["payload"] = json
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(settings, "gemini_chat_thinking_budget", 0)
+
+    history = [{"role": "user", "text": f"turn {i}"} for i in range(60)]
+    await chat_module.ChatService._ask_gemini("hello", history, None, None)
+
+    config = captured["payload"]["generationConfig"]
+    assert config["thinkingConfig"]["thinkingBudget"] == 0
+    # The prompt must not carry the whole conversation back every time.
+    assert (
+        len(captured["payload"]["contents"])
+        == chat_module.MAX_HISTORY_TURNS * 2 + 1
+    )
+    assert chat_module.MAX_HISTORY_TURNS == settings.gemini_chat_history_turns
+    # The system prompt is the cacheable prefix; it must lead, identically
+    # for every caller, or implicit caching has nothing to match on.
+    system = captured["payload"]["systemInstruction"]["parts"][0]["text"]
+    assert system.startswith(chat_module._SYSTEM_PROMPT)
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_model_outage_has_localized_fallback(monkeypatch):
     redis = AsyncMock()
     redis.get.return_value = None
@@ -252,7 +369,10 @@ async def test_model_outage_has_localized_fallback(monkeypatch):
         AsyncMock(), redis, "guest:one", None, "hello", lang="si"
     )
     assert result["degraded"]
-    assert "බොත්තම්" in result["reply"]
+    # The fallback used to point at a shortcut row under the composer;
+    # that row is gone, so it must not promise buttons any more.
+    assert "බොත්තම්" not in result["reply"]
+    assert re.search(r"[\u0d80-\u0dff]", result["reply"])
     assert not result["products"]
 
 
@@ -383,6 +503,47 @@ async def test_busy_session_cannot_clear_in_flight_history():
 
 
 @pytest.mark.asyncio
+async def test_history_marks_a_preview_the_customer_already_confirmed():
+    """
+    Reopening the chat used to offer every past confirm button again, because
+    only the app's in-memory set knew they had been pressed.
+    """
+    from starlette.requests import Request
+
+    from app.api.v1 import chat
+
+    done_token = "a" * 32
+    open_token = "b" * 32
+    redis = AsyncMock()
+    redis.get.return_value = json.dumps(
+        [
+            {
+                "role": "assistant",
+                "text": "Preview",
+                "panels": [
+                    {
+                        "title": "Basket preview",
+                        "commands": [
+                            {"token": done_token, "label": "Confirm"},
+                            {"token": open_token, "label": "Confirm"},
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    redis.mget.return_value = [json.dumps({"done": {"reply": "Saved"}}), None]
+    db = AsyncMock()
+    db.execute.return_value = []
+    user = SimpleNamespace(user_id=uuid4())
+    request = Request({"type": "http", "headers": []})
+    result = await chat.get_chat_history(request, db, redis, user)
+    commands = result["data"]["history"][0]["panels"][0]["commands"]
+    assert commands[0]["confirmed"] is True
+    assert commands[1]["confirmed"] is False
+
+
+@pytest.mark.asyncio
 async def test_history_endpoint_marks_old_order_data_as_saved():
     from starlette.requests import Request
 
@@ -400,7 +561,7 @@ async def test_history_endpoint_marks_old_order_data_as_saved():
         ]
     )
     request = Request({"type": "http", "headers": [(b"x-device-id", b"test-device")]})
-    result = await chat.get_chat_history(request, redis, None)
+    result = await chat.get_chat_history(request, AsyncMock(), redis, None)
     turn = result["data"]["history"][0]
     assert "search_context" not in turn
     assert turn["orders"][0]["freshness"] == "saved"
