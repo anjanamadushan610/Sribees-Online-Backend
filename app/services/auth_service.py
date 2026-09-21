@@ -5,6 +5,7 @@ Business logic for user authentication.
 """
 import secrets
 from datetime import datetime, timedelta
+from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, select, update
