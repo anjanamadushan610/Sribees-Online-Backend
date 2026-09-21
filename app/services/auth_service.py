@@ -692,11 +692,41 @@ class AuthService:
         )
         await db.commit()
 
-        logger.info(f"User logged out from all devices: {current_user.email}")
+        logger.info(f"User logged out from all devices: {current_user.email or current_user.phone}")
 
         return MessageResponse(
             success=True,
             message="Logged out from all devices",
+        )
+
+    @staticmethod
+    async def logout_others(current_user, db: AsyncSession) -> MessageResponse:
+        """
+        Logout from all other sessions except the current one.
+
+        Args:
+            current_user: Currently authenticated user
+            db: Database session
+
+        Returns:
+            MessageResponse confirming logout from other devices
+        """
+        current_session_id = str(getattr(current_user, "_current_session_id", "") or "")
+        query = delete(Session).where(Session.user_id == current_user.user_id)
+        if current_session_id:
+            try:
+                session_uuid = UUID(current_session_id)
+                query = query.where(Session.session_id != session_uuid)
+            except ValueError:
+                pass
+        await db.execute(query)
+        await db.commit()
+
+        logger.info(f"User logged out from other devices: {current_user.email or current_user.phone}")
+
+        return MessageResponse(
+            success=True,
+            message="Logged out from other devices",
         )
 
     @staticmethod

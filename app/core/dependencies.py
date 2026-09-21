@@ -71,7 +71,8 @@ async def get_current_user(
         raise InvalidTokenError()
 
     # Import here to avoid circular imports
-    from app.models.user import User
+    from datetime import datetime
+    from app.models.user import User, Session as DbSession
 
     result = await db.execute(
         select(User).where(User.user_id == UUID(user_id))
@@ -93,11 +94,25 @@ async def get_current_user(
             error_code="ACCOUNT_INACTIVE"
         )
 
-    if not user.is_verified:
+    if not user.is_verified and not getattr(user, "is_phone_verified", False):
         raise UnverifiedEmailError()
 
     session_id = payload.get("session_id")
     if session_id:
+        try:
+            session_uuid = UUID(str(session_id))
+            sess_result = await db.execute(
+                select(DbSession).where(
+                    DbSession.session_id == session_uuid,
+                    DbSession.user_id == user.user_id,
+                    DbSession.expires_at > datetime.utcnow(),
+                )
+            )
+            active_session = sess_result.scalar_one_or_none()
+            if not active_session:
+                raise InvalidTokenError(message="Session has been revoked or expired")
+        except ValueError:
+            raise InvalidTokenError(message="Invalid session id in token")
         user._current_session_id = str(session_id)
 
     return user

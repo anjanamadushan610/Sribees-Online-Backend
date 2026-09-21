@@ -369,6 +369,24 @@ async def logout_all(
 
 
 @router.post(
+    "/logout-others",
+    response_model=MessageResponse,
+    summary="Logout all other sessions",
+    description="Invalidate all user sessions except the current one.",
+)
+async def logout_others(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Logout from all other devices.
+
+    Requires authentication. Invalidates all active sessions except the current one.
+    """
+    return await AuthService.logout_others(current_user, db)
+
+
+@router.post(
     "/change-password",
     response_model=MessageResponse,
     summary="Change password",
