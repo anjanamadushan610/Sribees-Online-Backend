@@ -524,6 +524,12 @@ async def apply_coupon(
             ),
         )
 
+        try:
+            from app.api.v1.coupons import _add_collected_code
+            await _add_collected_code(str(current_user.user_id), coupon.code)
+        except Exception:
+            pass
+
         return {
             "success": True,
             "data": await _priced(db, redis, current_user, updated_cart),

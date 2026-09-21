@@ -171,6 +171,8 @@ async def get_available_coupons(
 
         stmt = select(Coupon).where(
             Coupon.is_active.is_(True),
+            Coupon.is_public.is_(True),
+            Coupon.target_user_id.is_(None),
             await _redeemable_here(redis, current_user),
         )
         result = await db.execute(stmt)
