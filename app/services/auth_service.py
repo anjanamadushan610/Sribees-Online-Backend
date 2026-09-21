@@ -901,14 +901,26 @@ def _parse_device_name(ua_or_device: Optional[str]) -> str:
                 device=_parse_device_name(s.user_agent),
                 ipAddress=s.ip_address,
                 userAgent=s.user_agent,
-                createdAt=s.created_at,
-                lastActive=s.created_at,
+                createdAt=s.created_at or datetime.utcnow(),
+                lastActive=s.created_at or datetime.utcnow(),
                 isCurrent=(str(s.session_id) == current_session_id) if current_session_id else False,
             )
             for s in sessions
         ]
 
-        if session_list and not any(s.is_current for s in session_list):
+        if not session_list:
+            session_list = [
+                SessionResponse(
+                    sessionId=current_session_id or str(uuid4()),
+                    device="Mobile Device",
+                    ipAddress=None,
+                    userAgent=None,
+                    createdAt=getattr(current_user, "created_at", None) or datetime.utcnow(),
+                    lastActive=datetime.utcnow(),
+                    isCurrent=True,
+                )
+            ]
+        elif not any(s.is_current for s in session_list):
             session_list[0].is_current = True
 
         return SessionsListResponse(
