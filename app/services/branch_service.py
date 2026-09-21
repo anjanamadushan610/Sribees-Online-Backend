@@ -38,34 +38,6 @@ from app.models.branch import (
 from app.models.user import Address
 from app.utils.logger import logger
 
-
-# ============================================================================
-# Legacy key mapper
-# ============================================================================
-
-def context_payload(ctx: Optional[dict]) -> Optional[dict]:
-    """
-    Produce the branch context payload, injecting legacy keys for older clients.
-    """
-    if ctx is None:
-        return None
-    out = dict(ctx)
-    if "postalCity" in out and "postOffice" not in out:
-        out["postOffice"] = out["postalCity"]
-    if "postal_city" in out and "post_office" not in out:
-        out["post_office"] = out["postal_city"]
-    return out
-
-
-def _delivery_info(m: PostalCityBranchMapping) -> dict:
-    return {
-        "postalCity": m.postal_city,
-        "postOffice": m.postal_city,
-        "district": m.district,
-        "province": m.province,
-    }
-
-
 def _build_branch_context(
     branch_id: UUID,
     branch_name: str,
@@ -356,8 +328,10 @@ def context_postal_city(context: dict) -> Optional[str]:
     return context.get("postal_city") or context.get("post_office")
 
 
-def context_payload(context: dict) -> dict:
+def context_payload(context: Optional[dict]) -> Optional[dict]:
     """The wire shape of a branch context, shared by every route that returns one."""
+    if context is None:
+        return None
     postal_city = context_postal_city(context)
     return {
         "branchId": context["branch_id"],

@@ -3,6 +3,7 @@ SRIBEESonline FastAPI Backend - Common Dependencies
 
 Reusable FastAPI dependencies for authentication, database, and utilities.
 """
+from datetime import datetime
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -71,8 +72,7 @@ async def get_current_user(
         raise InvalidTokenError()
 
     # Import here to avoid circular imports
-    from datetime import datetime
-    from app.models.user import User, Session as DbSession
+    from app.models.user import Session as DbSession, User
 
     result = await db.execute(
         select(User).where(User.user_id == UUID(user_id))
