@@ -879,41 +879,6 @@ class AuthService:
             ),
         )
 
-def _parse_device_name(ua_or_device: Optional[str]) -> str:
-    if not ua_or_device:
-        return "Mobile Device"
-    s = ua_or_device.strip()
-    if not s.lower().startswith("mozilla/") and not s.lower().startswith("dart/"):
-        return s
-
-    ua = s.lower()
-    if "android" in ua:
-        if "samsung" in ua or "sm-" in ua:
-            return "Samsung Galaxy"
-        elif "xiaomi" in ua or "redmi" in ua:
-            return "Xiaomi Redmi"
-        elif "pixel" in ua:
-            return "Google Pixel"
-        elif "huawei" in ua:
-            return "Huawei Device"
-        elif "oppo" in ua:
-            return "Oppo Device"
-        elif "vivo" in ua:
-            return "Vivo Device"
-        return "Android Device"
-    if "iphone" in ua:
-        return "iPhone"
-    if "ipad" in ua:
-        return "iPad"
-    if "windows" in ua:
-        return "Windows PC"
-    if "macintosh" in ua or "mac os" in ua:
-        return "Mac"
-    if "linux" in ua:
-        return "Linux"
-    return "Mobile App"
-
-
     @staticmethod
     async def get_sessions(current_user, db: AsyncSession):
         """
@@ -1006,3 +971,44 @@ def _parse_device_name(ua_or_device: Optional[str]) -> str:
             success=True,
             message="Session revoked successfully",
         )
+
+
+def _parse_device_name(ua_or_device: Optional[str]) -> str:
+    if not ua_or_device:
+        return "Mobile Device"
+    s = ua_or_device.strip()
+    if "sribeesmobile" in s.lower() and "(" in s and ")" in s:
+        start = s.find("(") + 1
+        end = s.rfind(")")
+        extracted = s[start:end].strip()
+        if extracted:
+            return extracted
+    if not s.lower().startswith("mozilla/") and not s.lower().startswith("dart/"):
+        return s
+
+    ua = s.lower()
+    if "android" in ua:
+        if "samsung" in ua or "sm-" in ua:
+            return "Samsung Galaxy"
+        elif "xiaomi" in ua or "redmi" in ua:
+            return "Xiaomi Redmi"
+        elif "pixel" in ua:
+            return "Google Pixel"
+        elif "huawei" in ua:
+            return "Huawei Device"
+        elif "oppo" in ua:
+            return "Oppo Device"
+        elif "vivo" in ua:
+            return "Vivo Device"
+        return "Android Device"
+    if "iphone" in ua:
+        return "iPhone"
+    if "ipad" in ua:
+        return "iPad"
+    if "windows" in ua:
+        return "Windows PC"
+    if "macintosh" in ua or "mac os" in ua:
+        return "Mac"
+    if "linux" in ua:
+        return "Linux"
+    return "Mobile App"
