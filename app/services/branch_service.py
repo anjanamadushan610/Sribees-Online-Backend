@@ -20,7 +20,7 @@ from typing import Optional
 from uuid import UUID
 
 from redis.asyncio import Redis
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -37,6 +37,53 @@ from app.models.branch import (
 )
 from app.models.user import Address
 from app.utils.logger import logger
+
+
+# ============================================================================
+# Legacy key mapper
+# ============================================================================
+
+def context_payload(ctx: Optional[dict]) -> Optional[dict]:
+    """
+    Produce the branch context payload, injecting legacy keys for older clients.
+    """
+    if ctx is None:
+        return None
+    out = dict(ctx)
+    if "postalCity" in out and "postOffice" not in out:
+        out["postOffice"] = out["postalCity"]
+    if "postal_city" in out and "post_office" not in out:
+        out["post_office"] = out["postal_city"]
+    return out
+
+
+def _delivery_info(m: PostalCityBranchMapping) -> dict:
+    return {
+        "postalCity": m.postal_city,
+        "postOffice": m.postal_city,
+        "district": m.district,
+        "province": m.province,
+    }
+
+
+def _build_branch_context(
+    branch_id: UUID,
+    branch_name: str,
+    postal_city: str,
+    delivery_info: Optional[dict] = None,
+) -> dict:
+    return {
+        "branch_id": str(branch_id),
+        "branchId": str(branch_id),
+        "branch_name": branch_name,
+        "branchName": branch_name,
+        "postal_city": postal_city,
+        "postalCity": postal_city,
+        "post_office": postal_city,
+        "postOffice": postal_city,
+        "delivery_info": delivery_info or {},
+    }
+
 
 # ============================================================================
 # Hierarchical Location Discovery  (for cascading dropdowns)
@@ -178,12 +225,12 @@ async def resolve_branch_by_postal_city(
     postal_city_name: str,
 ) -> Optional[PostalCityBranchMapping]:
     """Look up which branch serves the given postal city (active only)."""
-    normalized = postal_city_name.strip().title()
+    normalized = postal_city_name.strip().lower()
     result = await db.execute(
         select(PostalCityBranchMapping)
         .options(joinedload(PostalCityBranchMapping.branch))
         .where(
-            PostalCityBranchMapping.postal_city == normalized,
+            func.lower(PostalCityBranchMapping.postal_city) == normalized,
             PostalCityBranchMapping.is_active.is_(True),
         )
     )
@@ -198,20 +245,41 @@ async def resolve_branch_by_location_triplet(
 ) -> Optional[PostalCityBranchMapping]:
     """
     Resolve a branch using the full ``{province, district, postal_city}`` triplet.
-
-    Leverages the composite B-tree index ``idx_po_branch_mapping_location_triplet``.
+    Uses case-insensitive matching with flexible province comparison, and
+    falls back directly to postal_city resolution for complete parity with
+    registered address resolution.
     """
-    result = await db.execute(
+    prov = province.strip().lower()
+    dist = district.strip().lower()
+    pc = postal_city.strip().lower()
+
+    # 1. Try case-insensitive triplet match with flexible province name
+    stmt = (
         select(PostalCityBranchMapping)
         .options(joinedload(PostalCityBranchMapping.branch))
         .where(
-            PostalCityBranchMapping.province == province.strip().title(),
-            PostalCityBranchMapping.district == district.strip().title(),
-            PostalCityBranchMapping.postal_city == postal_city.strip().title(),
+            func.lower(PostalCityBranchMapping.postal_city) == pc,
             PostalCityBranchMapping.is_active.is_(True),
         )
     )
-    return result.unique().scalar_one_or_none()
+    if dist:
+        stmt = stmt.where(func.lower(PostalCityBranchMapping.district) == dist)
+    if prov:
+        stmt = stmt.where(
+            or_(
+                func.lower(PostalCityBranchMapping.province) == prov,
+                func.lower(PostalCityBranchMapping.province).like(f"{prov}%"),
+                PostalCityBranchMapping.province.is_(None),
+            )
+        )
+
+    result = await db.execute(stmt)
+    mapping = result.unique().scalar_one_or_none()
+    if mapping is not None:
+        return mapping
+
+    # 2. Fallback to direct postal city resolution (same as registered address lookup)
+    return await resolve_branch_by_postal_city(db, postal_city)
 
 
 async def list_served_postal_cities(db: AsyncSession) -> list[str]:
