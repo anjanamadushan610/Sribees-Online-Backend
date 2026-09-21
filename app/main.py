@@ -4,6 +4,7 @@ SRIBEESonline FastAPI Backend - Main Application
 FastAPI application entry point with lifespan management.
 Includes Sentry error tracking for production monitoring.
 """
+
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -88,7 +89,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         sentry_sdk.capture_exception(e)
         raise
 
-    yield
+    import asyncio
+    from contextlib import suppress
+
+    from app.services.assistant_reminder_worker import run_reminder_worker
+
+    reminder_task = asyncio.create_task(run_reminder_worker())
+    try:
+        yield
+    finally:
+        reminder_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await reminder_task
 
     # Shutdown
     logger.info("Shutting down application...")
@@ -158,6 +170,7 @@ app.add_middleware(
 # Exception Handlers
 # ============================================================================
 
+
 @app.exception_handler(AppException)
 async def app_exception_handler(request: Request, exc: AppException):
     """Handle application exceptions."""
@@ -193,6 +206,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ============================================================================
 # Routes
 # ============================================================================
+
 
 # Health check endpoint
 @app.get("/health", tags=["Health"])

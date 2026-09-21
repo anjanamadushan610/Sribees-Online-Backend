@@ -10,8 +10,11 @@ Works for guests too (X-Device-Id), same convention as /products/search.
 
 Prefix "/chat" is applied by app/api/v1/router.py — do not repeat it here.
 """
+
+import asyncio
+import json
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from loguru import logger
@@ -19,8 +22,10 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.config.redis import get_redis
-from app.core.dependencies import get_current_user_optional
+from app.config.redis import RedisKeys, get_redis
+from app.core.dependencies import get_current_user, get_current_user_optional
+from app.core.rate_limiter import rate_limit
+from app.schemas.assistant_commerce import ConfirmAssistantRequest
 from app.schemas.chat import ChatMessageRequest
 from app.services import branch_service
 from app.services.chat_service import ChatService
@@ -28,6 +33,71 @@ from app.services.embedding_service import GeminiAPIError
 from app.utils.i18n import resolve_language
 
 router = APIRouter(tags=["AI Chat"])
+
+
+@router.post("/confirm", response_model=dict)
+@rate_limit(requests_per_minute=12)
+async def confirm_assistant_action(
+    body: ConfirmAssistantRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+    current_user=Depends(get_current_user),
+):
+    from app.models.assistant import AssistantReceipt
+    from app.services.assistant_personal import confirm_personal
+    from app.services.assistant_shopping import confirm_cart, proposal_key
+    from app.services.assistant_tools import tr
+
+    user_id = current_user.user_id
+    lang = resolve_language(request.headers.get("accept-language"))
+    key = proposal_key(user_id, body.token)
+    raw = await redis.get(key)
+    if not raw:
+        receipt = await db.get(AssistantReceipt, UUID(body.token))
+        if receipt and receipt.user_id == user_id:
+            return {"success": True, "data": receipt.response}
+        raise HTTPException(409, "PREVIEW_EXPIRED_REQUEST_AGAIN")
+    data = json.loads(raw)
+    if data.get("done"):
+        return {"success": True, "data": data["done"]}
+    lock_key = RedisKeys.chat_history(str(user_id)) + ":busy"
+    token = str(uuid4())
+    if not await redis.set(lock_key, token, nx=True, ex=90):
+        raise HTTPException(409, "A chat request is already in progress")
+    try:
+        if data["kind"] == "cart":
+            branch = await _resolve_branch_id(redis, str(user_id))
+            result = await confirm_cart(
+                db, redis, user_id, branch, key, raw, data["payload"], lang
+            )
+        else:
+            result = await confirm_personal(
+                db, user_id, body.token, data["kind"], data["payload"], lang
+            )
+            await redis.set(key, json.dumps({"done": result}), ex=86400)
+        history = await ChatService.get_history(redis, str(user_id))
+        await ChatService._append_turn(
+            redis,
+            str(user_id),
+            history,
+            tr(
+                lang,
+                "Confirm my selection",
+                "මගේ තේරීම තහවුරු කරන්න",
+                "என் தேர்வை உறுதிசெய்யவும்",
+            ),
+            result["reply"],
+            response=result,
+        )
+        return {"success": True, "data": result}
+    finally:
+        await redis.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            1,
+            lock_key,
+            token,
+        )
 
 
 def _resolve_session_id(request: Request, current_user) -> str:
@@ -69,6 +139,7 @@ async def _resolve_branch_id(redis: Redis, session_id: str) -> Optional[UUID]:
 
 
 @router.post("/message", response_model=dict)
+@rate_limit(requests_per_minute=12)
 async def send_chat_message(
     body: ChatMessageRequest,
     request: Request,
@@ -85,17 +156,34 @@ async def send_chat_message(
 
     session_id = _resolve_session_id(request, current_user)
     branch_id = await _resolve_branch_id(redis, session_id)
-
+    lock_key = RedisKeys.chat_history(session_id) + ":busy"
+    lock_token = str(uuid4())
+    if not await redis.set(lock_key, lock_token, nx=True, ex=90):
+        raise HTTPException(
+            status_code=409, detail="A chat request is already in progress"
+        )
     try:
-        result = await ChatService.chat(
-            db,
-            redis,
-            session_id=session_id,
-            branch_id=branch_id,
-            message=body.message,
-            image_base64=body.image_base64,
-            image_mime_type=body.image_mime_type,
-            lang=resolve_language(request.headers.get("accept-language")),
+        result = await asyncio.wait_for(
+            ChatService.chat(
+                db,
+                redis,
+                session_id=session_id,
+                branch_id=branch_id,
+                message=body.message,
+                image_base64=body.image_base64,
+                image_mime_type=body.image_mime_type,
+                lang=resolve_language(request.headers.get("accept-language")),
+                user_id=current_user.user_id if current_user else None,
+                task=body.task,
+                target=body.target,
+                order_reference=body.order_reference,
+            ),
+            timeout=55,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The assistant took too long. Please try again.",
         )
     except GeminiAPIError as exc:
         logger.error(f"Chat Gemini error: {exc}")
@@ -104,14 +192,20 @@ async def send_chat_message(
             if "GEMINI_API_KEY not configured" in str(exc)
             else "The assistant is unavailable right now. Please try again."
         )
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail
+        )
+    finally:
+        await redis.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            1,
+            lock_key,
+            lock_token,
+        )
 
     return {
         "success": True,
-        "data": {
-            "reply": result["reply"],
-            "products": result["products"],
-        },
+        "data": result,
     }
 
 
@@ -124,7 +218,15 @@ async def get_chat_history(
     """Recent turns, so reopening the chat screen isn't a blank slate."""
     session_id = _resolve_session_id(request, current_user)
     history = await ChatService.get_history(redis, session_id)
-    return {"success": True, "data": {"history": history}}
+    # Search context stays server-side; restored order cards are snapshots.
+    public_history = [
+        {key: value for key, value in turn.items() if key != "search_context"}
+        for turn in history
+    ]
+    for turn in public_history:
+        for order in turn.get("orders", []):
+            order["freshness"] = "saved"
+    return {"success": True, "data": {"history": public_history}}
 
 
 @router.delete("/history", response_model=dict)
@@ -135,5 +237,19 @@ async def clear_chat_history(
 ):
     """Clear the conversation."""
     session_id = _resolve_session_id(request, current_user)
-    await ChatService.clear_history(redis, session_id)
+    lock_key = RedisKeys.chat_history(session_id) + ":busy"
+    lock_token = str(uuid4())
+    if not await redis.set(lock_key, lock_token, nx=True, ex=90):
+        raise HTTPException(
+            status_code=409, detail="A chat request is already in progress"
+        )
+    try:
+        await ChatService.clear_history(redis, session_id)
+    finally:
+        await redis.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            1,
+            lock_key,
+            lock_token,
+        )
     return {"success": True, "message": "Chat history cleared"}

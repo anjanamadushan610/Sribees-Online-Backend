@@ -3,8 +3,10 @@ SRIBEESonline FastAPI Backend - Models Module
 
 SQLAlchemy ORM models for all database tables.
 """
+
 from app.models.admin import Admin, AdminRole, AdminSession
 from app.models.app_settings import AppSetting
+from app.models.assistant import AssistantProfile, AssistantReceipt, AssistantReminder
 from app.models.banner import Banner, BannerEvent, BannerEventType
 from app.models.branch import Branch, PostalCityBranchMapping, PostalCityDirectory
 from app.models.category import Category
@@ -45,6 +47,9 @@ from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.models.wishlist import WishlistItem
 
 __all__ = [
+    "AssistantProfile",
+    "AssistantReminder",
+    "AssistantReceipt",
     # User models
     "User",
     "EmailVerification",
