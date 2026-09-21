@@ -33,6 +33,7 @@ reportlab = "^4.1.0"
 pytest = "^7.4.4"
 pytest-asyncio = "^0.23.3"
 pytest-cov = "^4.1.0"
+fakeredis = {version = ">=2.26,<3", extras = ["lua"]}
 black = "^23.12.1"
 isort = "^5.13.2"
 mypy = "^1.8.0"
