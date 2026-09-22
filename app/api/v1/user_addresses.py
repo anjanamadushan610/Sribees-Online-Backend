@@ -190,25 +190,29 @@ async def update_address(
         if data.is_default:
             await _clear_default(db, current_user.user_id)
 
-        if data.title is not None:
+        if "title" in data.model_fields_set:
             address.title = data.title
-        if data.recipient_name is not None:
+        if "recipient_name" in data.model_fields_set:
             address.recipient_name = data.recipient_name
-        if data.phone is not None:
+        if "phone" in data.model_fields_set:
             address.phone = data.phone
-        if data.address_line1 is not None:
+        if "address_line1" in data.model_fields_set and data.address_line1 is not None:
             address.address_line1 = data.address_line1
-        if data.address_line2 is not None:
-            address.address_line2 = data.address_line2
-        if data.postal_city is not None:
+        if "address_line2" in data.model_fields_set:
+            address.address_line2 = (
+                data.address_line2.strip()
+                if data.address_line2 and data.address_line2.strip()
+                else None
+            )
+        if "postal_city" in data.model_fields_set and data.postal_city is not None:
             address.postal_city = data.postal_city
-        if data.district is not None:
+        if "district" in data.model_fields_set and data.district is not None:
             address.district = data.district
-        if data.province is not None:
+        if "province" in data.model_fields_set and data.province is not None:
             address.province = data.province
-        if data.postal_code is not None:
+        if "postal_code" in data.model_fields_set:
             address.postal_code = data.postal_code
-        if data.is_default is not None:
+        if "is_default" in data.model_fields_set and data.is_default is not None:
             address.is_default = data.is_default
 
         # A moved address must not keep the old town's courier id — it would
