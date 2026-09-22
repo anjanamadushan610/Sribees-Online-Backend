@@ -16,7 +16,8 @@
 -- the profile gate, which can tell a half-finished sign-up from a bad one;
 -- a NOT NULL here could only reject the OTP itself.
 --
--- SQLAlchemy create_all() adds these on a fresh DB. Idempotent -- safe to re-run.
+-- SQLAlchemy create_all() adds these on a fresh DB. Every statement below is
+-- idempotent: the deploy applies this file again on each release.
 -- =============================================================================
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS nic             VARCHAR(20);
@@ -28,19 +29,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_users_nic_unique
     ON users (nic)
     WHERE nic IS NOT NULL;
 
--- Development seed accounts predate the column and would otherwise be stuck
--- at the profile gate on next launch. These are synthetic, correctly-shaped
--- 12-digit NICs; production does not use this database.
-WITH seeded AS (
-    SELECT user_id,
-           '1990' || LPAD((ROW_NUMBER() OVER (ORDER BY created_at, user_id))::text, 8, '0') AS nic
-    FROM users
-    WHERE nic IS NULL
-)
-UPDATE users
-SET    nic = seeded.nic
-FROM   seeded
-WHERE  users.user_id = seeded.user_id;
+-- REMOVED 2026-09-22: a synthetic-NIC backfill used to sit here.
+--
+-- It rested on "production does not use this database", which was not true --
+-- this file is applied to the production database by every deploy. On
+-- 2026-09-21 it stamped 89 real customers with invented NICs
+-- (199000000001 upward), and because the NIC is write-once
+-- (AuthService.update_profile) those customers can no longer enter their real
+-- one; the app answers "Contact support if it needs correcting".
+--
+-- It also broke every deploy after the first. ROW_NUMBER() restarts at 1 on
+-- each run while only selecting the NIC-less rows, so the next customer to
+-- sign up and stop before the profile step was handed 199000000001 again --
+-- a number already taken. Deploys failed on the unique index from then on:
+--   ERROR: duplicate key value violates unique constraint "ix_users_nic_unique"
+--
+-- Nothing replaces it. A NULL nic is a supported state -- it is exactly what
+-- a phone-first sign-up has between OTP and the profile step -- and the
+-- profile gate is what asks for the real number. Inventing a government ID
+-- for someone is not a migration's job.
 
 -- -----------------------------------------------------------------------------
 -- Orders: who to call about THIS parcel, frozen at checkout.
