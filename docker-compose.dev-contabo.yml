@@ -41,8 +41,26 @@ services:
       # what resolves them. Must match the hostname the edge serves.
       MEDIA_BASE_URL: https://${DOMAIN:?DOMAIN must be set}
     ports:
-      # Loopback only — the edge reaches it over the host's own interface.
+      # Loopback only, and NOT how the edge reaches this — that goes over the
+      # shared network below. This is here so someone on the box can
+      # `curl 127.0.0.1:8100/health` without going out to the internet and
+      # back, which is the first thing you want when the edge is the suspect.
+      #
+      # The 127.0.0.1 prefix is load-bearing: without it Docker writes its own
+      # iptables rules that bypass ufw entirely, and this API — DEBUG on,
+      # /docs open — would be answering the internet on a high port in
+      # cleartext.
       - "127.0.0.1:${APP_BIND_PORT:-8100}:8000"
+    networks:
+      default:
+      # The network sribees-express-dev's Caddy is on. Reaching this container
+      # by name over a shared network is what actually puts it on the
+      # internet; a published host port cannot serve that purpose, because a
+      # port bound to 127.0.0.1 is reachable from the host's loopback and NOT
+      # from another container coming in over the bridge gateway.
+      edge:
+        aliases:
+          - sribees-online-dev-app
     volumes:
       # Uploads outlive the container, exactly as in production: every deploy
       # recreates the app from a fresh image, and without this every image an
@@ -143,6 +161,19 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  # Postgres and Redis live here and nowhere else: nothing outside this stack
+  # can reach them.
+  default:
+
+  # Created and owned by the sribees-express-dev stack (compose project
+  # `sribees`). Declared external so this stack joins it rather than trying to
+  # manage it — and so a mistake here cannot reconfigure Express's network.
+  # Only `app` joins it.
+  edge:
+    external: true
+    name: sribees_default
 
 volumes:
   postgres_data:
