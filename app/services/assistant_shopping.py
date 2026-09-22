@@ -335,7 +335,7 @@ async def cart_preview(db, redis, user_id, branch_id, plan, lang):
             "reply": tr(
                 lang,
                 "Sign in to edit your basket with the assistant.",
-                "සහායකයා හරහා බඩු මල්ල වෙනස් කරන්න ගිණුමට පිවිසෙන්න.",
+                "සහායකයා හරහා භාණ්ඩ මල්ල වෙනස් කරන්න ගිණුමට පිවිසෙන්න.",
                 "உதவியாளர் மூலம் கூடையை மாற்ற உள்நுழையவும்.",
             ),
             "actions": [action("login", lang)],
@@ -371,7 +371,7 @@ async def cart_preview(db, redis, user_id, branch_id, plan, lang):
             "reply": tr(
                 lang,
                 "I couldn't prepare that change. Check the item, variant and available quantity in your basket.",
-                "ඒ වෙනස සූදානම් කරන්න බැරි වුණා. භාණ්ඩය, වර්ගය සහ ඇති ප්‍රමාණය බඩු මල්ලෙන් පරීක්ෂා කරන්න.",
+                "ඒ වෙනස සූදානම් කරන්න බැරි වුණා. භාණ්ඩය, වර්ගය සහ ඇති ප්‍රමාණය භාණ්ඩ මල්ලෙන් පරීක්ෂා කරන්න.",
                 "அந்த மாற்றத்தைத் தயாரிக்க முடியவில்லை. பொருள், வகை மற்றும் கிடைக்கும் அளவைச் சரிபார்க்கவும்.",
             ),
             "actions": [action("cart", lang)],
@@ -381,7 +381,7 @@ async def cart_preview(db, redis, user_id, branch_id, plan, lang):
             "reply": tr(
                 lang,
                 "Please specify the exact brand, pack size or variant. Your basket has not changed.",
-                "නිශ්චිත වෙළඳ නාමය, පැකට් ප්‍රමාණය හෝ වර්ගය කියන්න. බඩු මල්ල තවම වෙනස් කර නැහැ.",
+                "නිශ්චිත වෙළඳ නාමය, පැකට් ප්‍රමාණය හෝ වර්ගය කියන්න. භාණ්ඩ මල්ල තවම වෙනස් කර නැහැ.",
                 "சரியான பிராண்ட், பொதி அளவு அல்லது வகையைக் குறிப்பிடவும். கூடை இன்னும் மாற்றப்படவில்லை.",
             ),
             "products": choices,
@@ -402,7 +402,7 @@ async def cart_preview(db, redis, user_id, branch_id, plan, lang):
         tr(
             lang,
             "Confirm basket changes",
-            "බඩු මල්ලේ වෙනස්කම් තහවුරු කරන්න",
+            "භාණ්ඩ මල්ලේ වෙනස්කම් තහවුරු කරන්න",
             "கூடை மாற்றங்களை உறுதிசெய்யவும்",
         ),
     )
@@ -410,12 +410,12 @@ async def cart_preview(db, redis, user_id, branch_id, plan, lang):
         "reply": tr(
             lang,
             "Review these changes, then confirm to update your basket.",
-            "මේ වෙනස්කම් පරීක්ෂා කර බඩු මල්ල යාවත්කාලීන කිරීමට තහවුරු කරන්න.",
+            "මේ වෙනස්කම් පරීක්ෂා කර භාණ්ඩ මල්ල යාවත්කාලීන කිරීමට තහවුරු කරන්න.",
             "இந்த மாற்றங்களைச் சரிபார்த்து கூடையைப் புதுப்பிக்க உறுதிசெய்யவும்.",
         ),
         "panels": [
             panel(
-                tr(lang, "Basket preview", "බඩු මල්ලේ පෙරදසුන", "கூடை முன்னோட்டம்"),
+                tr(lang, "Basket preview", "භාණ්ඩ මල්ලේ පෙරදසුන", "கூடை முன்னோட்டம்"),
                 [
                     section(
                         "",
@@ -437,7 +437,7 @@ async def cart_preview(db, redis, user_id, branch_id, plan, lang):
                 tr(
                     lang,
                     "Delivery, coupons and final totals are calculated in your basket. This does not place an order. Preview expires in 10 minutes.",
-                    "බෙදාහැරීම, කූපන් සහ අවසන් මුදල බඩු මල්ලේදී ගණනය කරනවා. මෙයින් ඇණවුමක් දාන්නේ නැහැ. පෙරදසුන විනාඩි 10කින් කල් ඉකුත් වෙනවා.",
+                    "බෙදාහැරීම, කූපන් සහ අවසන් මුදල භාණ්ඩ මල්ලේදී ගණනය කරනවා. මෙයින් ඇණවුමක් දාන්නේ නැහැ. පෙරදසුන විනාඩි 10කින් කල් ඉකුත් වෙනවා.",
                     "விநியோகம், கூப்பன்கள் மற்றும் இறுதித் தொகை கூடையில் கணக்கிடப்படும். இது ஆர்டர் செய்யாது. முன்னோட்டம் 10 நிமிடங்களில் காலாவதியாகும்.",
                 ),
             )
@@ -465,7 +465,7 @@ async def confirm_cart(db, redis, user_id, branch_id, key, raw_proposal, payload
         "reply": tr(
             lang,
             "Your basket is updated. Review delivery and the final total in your basket.",
-            "බඩු මල්ල යාවත්කාලීන කළා. බෙදාහැරීම සහ අවසන් මුදල බඩු මල්ලෙන් බලන්න.",
+            "භාණ්ඩ මල්ල යාවත්කාලීන කළා. බෙදාහැරීම සහ අවසන් මුදල භාණ්ඩ මල්ලෙන් බලන්න.",
             "கூடை புதுப்பிக்கப்பட்டது. விநியோகத்தையும் இறுதித் தொகையையும் கூடையில் பார்க்கவும்.",
         ),
         "products": [],

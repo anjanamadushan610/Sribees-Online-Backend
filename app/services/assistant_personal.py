@@ -349,13 +349,13 @@ async def reminders_result(db, redis, user_id, branch_id, plan, lang):
         ),
         "panels": [
             panel(
-                tr(lang, "Shopping reminders", "බඩු මතක් කිරීම්", "ஷாப்பிங் நினைவூட்டல்கள்"),
+                tr(lang, "Shopping reminders", "භාණ්ඩ මතක් කිරීම්", "ஷாப்பிங் நினைவூட்டல்கள்"),
                 sections,
                 commands,
                 tr(
                     lang,
                     "Reminders are optional suggestions, not a claim that supplies have run out. Times use Sri Lanka time. To get suggestions, ask about items you buy regularly.",
-                    "මේවා කැමැත්තෙන් ලබාගන්නා යෝජනා පමණයි; ගෙදර බඩු ඉවර බවට ප්‍රකාශයක් නොවේ. වේලාව ශ්‍රී ලංකා වේලාවයි. යෝජනා සඳහා නිතර මිලදී ගන්නා බඩු ගැන අහන්න.",
+                    "මේවා කැමැත්තෙන් ලබාගන්නා යෝජනා පමණයි; නිවසේ භාණ්ඩ ඉවර බවට ප්‍රකාශයක් නොවේ. වේලාව ශ්‍රී ලංකා වේලාවයි. යෝජනා සඳහා නිතර මිලදී ගන්නා භාණ්ඩ ගැන අහන්න.",
                     "இவை விருப்பமான பரிந்துரைகள்; பொருட்கள் தீர்ந்துவிட்டதாகக் கூறவில்லை. இலங்கை நேரம் பயன்படுத்தப்படுகிறது. பரிந்துரைகளுக்கு வழக்கமாக வாங்கும் பொருட்கள் பற்றிக் கேளுங்கள்.",
                 ),
             )

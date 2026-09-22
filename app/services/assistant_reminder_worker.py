@@ -42,7 +42,7 @@ async def dispatch_due(db):
         title = tr(
             lang,
             "Time to check your supplies?",
-            "ගෙදර බඩු ටික බලමුද?",
+            "නිවසේ භාණ්ඩ ටික බලමුද?",
             "வீட்டுப் பொருட்களைச் சரிபார்க்கலாமா?",
         )
         message = tr(

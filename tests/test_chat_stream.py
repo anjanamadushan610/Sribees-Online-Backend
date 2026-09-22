@@ -74,7 +74,7 @@ async def test_a_streamed_turn_reports_its_stages_then_the_finished_reply(
         await on_stage("understanding", {})
         await on_stage("searching", {"terms": ["කිරි"]})
         return {
-            "reply": "මෙන්න බඩු",
+            "reply": "මෙන්න භාණ්ඩ",
             "products": [],
             "orders": [],
             "actions": [],
@@ -97,9 +97,9 @@ async def test_a_streamed_turn_reports_its_stages_then_the_finished_reply(
     assert frames[0][1]["stage"] == "understanding"
     assert frames[1][1] == {"stage": "searching", "terms": ["කිරි"]}
     # The final frame is the same payload the plain POST returns.
-    assert frames[2][1]["reply"] == "මෙන්න බඩු"
+    assert frames[2][1]["reply"] == "මෙන්න භාණ්ඩ"
     # Sinhala must survive the frame encoding, not arrive as \uXXXX escapes.
-    assert "මෙන්න බඩු" in response.text
+    assert "මෙන්න භාණ්ඩ" in response.text
 
 
 @pytest.mark.asyncio
