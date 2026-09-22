@@ -89,6 +89,40 @@ backup_database() {
   log "backup written to $(basename "$file")"
 }
 
+create_base_tables() {
+  local image="$1"
+  # The raw SQL migrations only ALTER and seed; they never CREATE TABLE. On a
+  # fresh database they therefore have nothing to alter, and the first one to
+  # touch a table dies with "relation does not exist". What builds the schema
+  # is SQLAlchemy's create_all() at application startup, so the app has to
+  # boot once before the migrations can run.
+  #
+  # THIS BOOT IS ALLOWED TO FAIL, and that is the whole point. A release that
+  # adds a column starts an image whose ORM selects that column against a
+  # database where the migration adding it has not run yet; startup queries
+  # the table, the column is missing, and the app exits. That is not a broken
+  # release -- it is the ordering doing what it always does, and the deploy
+  # recovers from it below by running the migrations and recreating the app.
+  #
+  # Mirrors what the EC2 production deploy has done since 2026-09-12, when
+  # doing it the other way round took production down.
+  log "booting the app once so create_all() can build any missing tables"
+  APP_IMAGE="$image" compose up -d --no-build app || true
+
+  local deadline=$(( SECONDS + 60 )) cid state
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    cid="$(compose ps -q app || true)"
+    if [ -n "$cid" ]; then
+      state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || echo unknown)"
+      [ "$state" = "healthy" ] && { log "first boot is healthy"; return 0; }
+    fi
+    sleep 3
+  done
+  log "first boot did not report healthy - expected when this release adds a"
+  log "column. Migrations run next, then the app is recreated."
+  return 0
+}
+
 start_infrastructure() {
   log "starting datastores"
   compose up -d --no-build postgres redis
@@ -150,6 +184,7 @@ cmd_deploy() {
   APP_IMAGE="$image" compose pull --quiet app || die "could not pull $image"
 
   start_infrastructure
+  create_base_tables "$image"
   backup_database
   run_migrations "$image"
 
