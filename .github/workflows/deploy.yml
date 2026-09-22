@@ -80,13 +80,19 @@ jobs:
       - name: Lint with ruff
         run: ruff check app/ --output-format github
 
+      # Advisory only. The codebase carries ~829 pre-existing mypy errors, so a
+      # hard gate here would block every commit rather than the bad ones. Drop
+      # the `|| true` once that backlog is cleared.
       - name: Type check with mypy
         run: mypy app/ --ignore-missing-imports || true
 
+      # A real gate: a failing test fails the build. It used to end in
+      # `|| true`, which meant the entire suite could be red and CI would still
+      # report success -- lint was the only thing actually being checked.
       - name: Run tests
         env:
           DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/test_db
           REDIS_URL: redis://localhost:6379/0
           JWT_SECRET_KEY: test-secret-key
           APP_ENV: testing
-        run: pytest tests/ -v --tb=short --cov=app --cov-report=xml || true
+        run: pytest tests/ -v --tb=short --cov=app --cov-report=xml
