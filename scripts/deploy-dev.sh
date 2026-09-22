@@ -49,10 +49,6 @@ require_env() {
   fi
 }
 
-env_value() {
-  grep -m1 "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | cut -d"#" -f1 | tr -d '[:space:]' || true
-}
-
 wait_healthy() {
   local service="$1" cid state
   local deadline=$(( SECONDS + HEALTH_TIMEOUT ))
@@ -110,11 +106,6 @@ run_migrations() {
   docker cp "${cid}:/app/migrations" "$work" >/dev/null
   docker rm -f "$cid" >/dev/null 2>&1 || true
 
-  local db_user db_name
-  db_user="$(env_value POSTGRES_USER)"
-  db_name="$(env_value POSTGRES_DB)"
-  [ -n "$db_user" ] && [ -n "$db_name" ] || die "POSTGRES_USER/POSTGRES_DB missing from .env"
-
   shopt -s nullglob
   local files=("$work"/*.sql)
   shopt -u nullglob
@@ -128,9 +119,20 @@ run_migrations() {
   # sort puts it first.
   while IFS= read -r f; do
     log ">>> $(basename "$f")"
+    # PGPASSWORD is required even over the local socket. The container is
+    # initialised with scram-sha-256 for local connections as well as host
+    # ones, not the usual trust-for-local, so an unauthenticated psql is
+    # refused with "password authentication failed" — which reads like wrong
+    # credentials and is really the auth method. Same reason backup_database
+    # sets it.
+    #
+    # Credentials are read from the container's OWN environment inside the
+    # container, so they never appear in this host's argv or process list,
+    # and the script does not need to parse them out of .env at all.
+    #
     # ON_ERROR_STOP=1 makes a genuine SQL error exit non-zero, while the
     # NOTICEs from IF NOT EXISTS clauses pass through harmlessly.
-    if ! compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" < "$f"; then
+    if ! compose exec -T postgres sh -c          'PGPASSWORD="$POSTGRES_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'          < "$f"; then
       die "migration $(basename "$f") failed - the database is at the dump taken above"
     fi
   done < <(printf '%s\n' "${files[@]}" | sort -V)
