@@ -535,9 +535,9 @@ class ChatService:
         if not strict_matches and not broad_matches:
             return tr(
                 lang,
-                f"I couldn't find an exact match for {asked} in your selected store. Try another name or size.",
-                f"ඔබ තෝරාගත් වෙළඳසැලේ {asked} සඳහා ගැළපෙන භාණ්ඩයක් හමු වුණේ නැහැ. වෙනත් නමක් හෝ ප්‍රමාණයක් කියන්න පුළුවන්ද?",
-                f"நீங்கள் தேர்ந்தெடுத்த கடையில் {asked} என்பதற்குப் பொருத்தமான பொருள் கிடைக்கவில்லை. வேறு பெயர் அல்லது அளவை முயற்சிக்கவும்.",
+                f"I couldn't find an exact match for {asked}. Try another name or size.",
+                f"{asked} සඳහා ගැළපෙන භාණ්ඩයක් හමු වුණේ නැහැ. වෙනත් නමක් හෝ ප්‍රමාණයක් කියන්න පුළුවන්ද?",
+                f"{asked} என்பதற்குப் பொருத்தமான பொருள் கிடைக்கவில்லை. வேறு பெயர் அல்லது அளவை முயற்சிக்கவும்.",
             )
 
         if not strict_matches and broad_matches:
@@ -556,9 +556,9 @@ class ChatService:
 
         return tr(
             lang,
-            "Here are matching products from your selected store. Check the cards for prices and available quantities.",
-            "ඔබ තෝරාගත් වෙළඳසැලෙන් ගැළපෙන භාණ්ඩ මෙන්න 😊 මිල සහ ලබාගත හැකි ප්‍රමාණ පහළින් බලන්න.",
-            "நீங்கள் தேர்ந்தெடுத்த கடையின் பொருத்தமான பொருட்கள் இதோ. விலைகளையும் கிடைக்கும் அளவுகளையும் கீழே பார்க்கவும்.",
+            "Here are the matching products. Check the cards for prices and available quantities.",
+            "ගැළපෙන භාණ්ඩ මෙන්න 😊 මිල සහ ලබාගත හැකි ප්‍රමාණ පහළින් බලන්න.",
+            "பொருத்தமான பொருட்கள் இதோ. விலைகளையும் கிடைக்கும் அளவுகளையும் கீழே பார்க்கவும்.",
         )
 
     # ------------------------------------------------------------------
@@ -752,9 +752,9 @@ class ChatService:
             return {
                 "reply": tr(
                     lang,
-                    "Choose your delivery location first so I can search the right store for you.",
-                    "ඔබට ගැළපෙන වෙළඳසැලෙන් භාණ්ඩ සොයන්න මුලින් බෙදාහැරීමේ ස්ථානය තෝරන්න.",
-                    "சரியான கடையில் தேட முதலில் உங்கள் விநியோக இடத்தைத் தேர்ந்தெடுக்கவும்.",
+                    "Choose your delivery location first, so I can show you what we deliver there.",
+                    "ඔබට බෙදාහැරිය හැකි භාණ්ඩ පෙන්වන්න මුලින් බෙදාහැරීමේ ස්ථානය තෝරන්න.",
+                    "உங்களுக்கு விநியோகிக்கக்கூடிய பொருட்களைக் காட்ட முதலில் விநியோக இடத்தைத் தேர்ந்தெடுக்கவும்.",
                 ),
                 "products": [],
                 "actions": [action("addresses", lang)],

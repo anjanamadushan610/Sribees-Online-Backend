@@ -218,9 +218,9 @@ async def comparison(db, branch_id, plan, history, lang):
     return {
         "reply": tr(
             lang,
-            "Here are real store prices and pack comparisons. Choose what suits you.",
-            "වෙළඳසැලේ සැබෑ මිල සහ පැකට් ප්‍රමාණ මෙන්න. ඔබට ගැළපෙන එක තෝරන්න.",
-            "கடையின் உண்மையான விலைகள் மற்றும் பொதி ஒப்பீடுகள் இதோ. பொருத்தமானதைத் தேர்ந்தெடுக்கவும்.",
+            "Here are the real prices and pack comparisons. Choose what suits you.",
+            "සැබෑ මිල සහ පැකට් ප්‍රමාණ මෙන්න. ඔබට ගැළපෙන එක තෝරන්න.",
+            "உண்மையான விலைகள் மற்றும் பொதி ஒப்பீடுகள் இதோ. பொருத்தமானதைத் தேர்ந்தெடுக்கவும்.",
         ),
         "products": products,
         "panels": [
