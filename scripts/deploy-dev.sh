@@ -192,8 +192,9 @@ cmd_deploy() {
   APP_IMAGE="$image" compose up -d --no-build --force-recreate app
   wait_healthy app || die "app did not become healthy - run './deploy-dev.sh rollback'"
 
-  log "reconciling the edge proxy"
-  APP_IMAGE="$image" compose up -d --no-build caddy
+  # No edge to reconcile: this stack has no Caddy of its own. The public edge
+  # is sribees-express-dev's Caddy, which proxies devapionline.sribees.com to
+  # the loopback port published above, and it is reconciled by its own deploy.
 
   # Recorded only once the rollout is proven, so `.image` always names a
   # release that actually served traffic and rollback has somewhere to go.
