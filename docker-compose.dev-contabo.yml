@@ -1,0 +1,150 @@
+# =============================================================================
+# SRIBEESonline — development stack for the Contabo VPS.
+#
+# Shares the box with sribees-express-dev and touches nothing of it: its own
+# DEPLOY_PATH (/opt/sribees-online-dev), its own compose project name, its own
+# volumes, its own database.
+#
+# NO CADDY HERE, AND THAT IS THE POINT.
+#
+# sribees-express-dev's Caddy already binds host ports 80 and 443. A second
+# ACME client cannot share them, and two edges on one box means two places to
+# look when TLS breaks. So this stack publishes ONE port, on loopback only,
+# and the existing Caddy proxies the dev hostname to it. See
+# docs/DEV_ENVIRONMENT.md for the site block to add there.
+#
+# `127.0.0.1:` in the port mapping is load-bearing. Without it Docker inserts
+# its own iptables rules that bypass ufw entirely, and the dev API — docs
+# open, DEBUG on — would be reachable from the internet on a high port,
+# unencrypted, whatever the firewall says.
+#
+# Nothing is built here. CI builds and pushes one image and this file pulls
+# the exact digest it published; APP_IMAGE is written to .image by
+# deploy-dev.sh.
+# =============================================================================
+name: sribees-online-dev
+
+services:
+  app:
+    image: ${APP_IMAGE:?APP_IMAGE must be set (see .image, written by deploy-dev.sh)}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      APP_ENV: development
+      # Docs stay open and DEBUG stays on. That is what a development
+      # environment is for, and it is exactly why this stack must never be
+      # pointed at a production hostname or a production database.
+      DEBUG: "true"
+      MEDIA_ROOT: /app/media
+      # The public origin, because stored media paths are relative and this is
+      # what resolves them. Must match the hostname the edge serves.
+      MEDIA_BASE_URL: https://${DOMAIN:?DOMAIN must be set}
+    ports:
+      # Loopback only — the edge reaches it over the host's own interface.
+      - "127.0.0.1:${APP_BIND_PORT:-8100}:8000"
+    volumes:
+      # Uploads outlive the container, exactly as in production: every deploy
+      # recreates the app from a fresh image, and without this every image an
+      # admin uploaded goes with it.
+      - media_data:/app/media
+    security_opt:
+      - no-new-privileges:true
+    # Deliberately NOT read_only: the production image writes logs under
+    # /app/logs and the local storage backend writes uploads under /app/media.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    # pgvector, not stock postgres: the catalogue's semantic search needs the
+    # extension and plain postgres fails on the CREATE EXTENSION.
+    image: pgvector/pgvector:pg15@sha256:a947c45cdc5906a1bc951f20a8709e321256343ee0f251e4ae00b5e7def4e6da
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
+      # SCRAM rather than the md5 default: an md5 hash is trivially cracked
+      # offline if it ever leaks.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No published port. Reachable on the compose network only; psql goes
+    # through `docker compose exec`, or an SSH tunnel.
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    restart: unless-stopped
+    # Redis ships with no authentication and a full admin command set. Require
+    # a password, and disable the commands that can wipe or reconfigure it.
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      - --appendonly
+      - "yes"
+      - --maxmemory-policy
+      - noeviction
+      # `--rename-command <CMD> ""` disables a command. The empty string must
+      # be its own argv entry — folded into the previous one redis rejects the
+      # config and crash-loops on boot.
+      - --rename-command
+      - FLUSHALL
+      - ""
+      - --rename-command
+      - CONFIG
+      - ""
+    volumes:
+      - redis_data:/data
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:
