@@ -19,6 +19,19 @@ SPLASH_VIDEO_KEY = "splash_video_url"
 # Stored as a human-friendly percentage (e.g. "15" = 15%). Converted to a
 # fraction for PricingService in get_pricing_config().
 ORDER_TAX_RATE_PERCENT_KEY = "order_tax_rate_percent"
+# --- Mobile remote config ---------------------------------------------------
+# The Play Store freezes the app: once a build is submitted, changing anything
+# in it means another review, which is days. These keys are how the running
+# app is steered without a new build -- a kill switch for a broken feature, a
+# maintenance notice instead of a screen of errors, and the ability to require
+# an update once a fixed build is actually published.
+MOBILE_MIN_VERSION_KEY = "mobile_minimum_version"
+MOBILE_LATEST_VERSION_KEY = "mobile_latest_version"
+MOBILE_UPDATE_URL_KEY = "mobile_update_url"
+MOBILE_MAINTENANCE_ACTIVE_KEY = "mobile_maintenance_active"
+MOBILE_MAINTENANCE_MESSAGE_KEY = "mobile_maintenance_message"
+MOBILE_FEATURE_FLAGS_KEY = "mobile_feature_flags"
+
 # There is deliberately no delivery fee setting. The delivery charge is
 # SribeesExpress's quote for each parcel (see PricingService); migration 052
 # deleted the `flat_delivery_fee` / `delivery_fee` rows an administrator used
@@ -78,6 +91,67 @@ class AppSettingsService:
         await db.refresh(setting)
         logger.info(f"AppSetting upserted: {key}")
         return setting
+
+    # ------------------------------------------------------------------
+    # Mobile remote config
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def get_mobile_config(db: AsyncSession) -> dict:
+        """
+        What the shipped app is allowed to be told at launch.
+
+        Every value has a default that means "carry on normally", so an empty
+        settings table -- or a database that cannot be read at all -- leaves
+        the app working. Failing the other way would turn one bad row into a
+        total outage for every installed copy, which is exactly the situation
+        this exists to prevent.
+
+        ``minimum_version`` is the only hard gate. Setting it above what a
+        customer has installed stops that copy until they update, so it is
+        raised only once a fixed build is actually live on the store -- raising
+        it first locks people out of an app that has no newer version to go to.
+        """
+        import json as _json
+
+        rows = {}
+        for key in (
+            MOBILE_MIN_VERSION_KEY,
+            MOBILE_LATEST_VERSION_KEY,
+            MOBILE_UPDATE_URL_KEY,
+            MOBILE_MAINTENANCE_ACTIVE_KEY,
+            MOBILE_MAINTENANCE_MESSAGE_KEY,
+            MOBILE_FEATURE_FLAGS_KEY,
+        ):
+            row = await AppSettingsService.get_by_key(db, key)
+            rows[key] = row.value if row and row.is_active else None
+
+        flags = {}
+        raw_flags = rows[MOBILE_FEATURE_FLAGS_KEY]
+        if raw_flags:
+            try:
+                parsed = _json.loads(raw_flags)
+                if isinstance(parsed, dict):
+                    flags = parsed
+            except (ValueError, TypeError):
+                # A typo in the admin form must not take the app down. Log it
+                # and serve no flags, which is the same as every feature being
+                # in its normal state.
+                logger.warning("mobile_feature_flags is not valid JSON - ignoring")
+
+        return {
+            # "0.0.0" blocks nobody. A missing row must never lock users out.
+            "minimum_version": rows[MOBILE_MIN_VERSION_KEY] or "0.0.0",
+            "latest_version": rows[MOBILE_LATEST_VERSION_KEY] or None,
+            "update_url": rows[MOBILE_UPDATE_URL_KEY] or None,
+            "maintenance": {
+                # Only the exact string "true" turns it on, so a malformed
+                # value leaves the app running rather than dark.
+                "active": (rows[MOBILE_MAINTENANCE_ACTIVE_KEY] or "").strip().lower() == "true",
+                "message": rows[MOBILE_MAINTENANCE_MESSAGE_KEY] or None,
+            },
+            "flags": flags,
+        }
 
     # ------------------------------------------------------------------
     # Splash video helpers
