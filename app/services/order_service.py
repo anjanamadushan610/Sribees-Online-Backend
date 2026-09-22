@@ -83,6 +83,47 @@ class DeliveryNotAvailableError(ValueError):
 RETURN_WINDOW = timedelta(hours=12)
 
 
+async def resolve_recipient_name(
+    db: AsyncSession, order: Order, address: Optional[Address]
+) -> str:
+    """
+    The name that goes on the parcel, the courier's system and the rider app.
+
+    This used to be ``address.recipient_name or "Customer"``. ``recipient_name``
+    is an optional field on the address form -- most people never fill it in,
+    because the address is already theirs -- so the fallback was the common
+    case, not the rare one. Riders were handed parcels addressed to a person
+    called "Customer", and the same string was what SribeesExpress stored and
+    showed in its own screens.
+
+    We are the ones who know who this is. The account carries a full name
+    (``users.full_name``, NOT NULL, collected at sign-up), so the order of
+    preference is:
+
+      1. ``address.recipient_name`` -- someone deliberately said "deliver this
+         to my mother", and that beats the account holder's name.
+      2. ``users.full_name`` -- the customer themselves.
+      3. the order number, and only if a row is somehow nameless. A parcel
+         still has to be identifiable at the door; "Customer" identifies
+         nobody, an order number identifies exactly one delivery.
+
+    The courier API is asked for shipping and tracking. It is not the record
+    of who our customers are, and it should not be the source of a name we
+    already hold.
+    """
+    named = (getattr(address, "recipient_name", None) or "").strip()
+    if named:
+        return named
+
+    if order.user_id:
+        user = await db.get(User, order.user_id)
+        full_name = (getattr(user, "full_name", None) or "").strip()
+        if full_name:
+            return full_name
+
+    return order.order_number
+
+
 class OrderService:
     """Service class for order operations."""
 
@@ -873,7 +914,7 @@ class OrderService:
                 booking_kwargs = {
                     "merchant_order_ref": order.order_number,
                     "payment_method": to_courier_payment_method(order.payment_method),
-                    "recipient_name": address.recipient_name or "Customer",
+                    "recipient_name": await resolve_recipient_name(db, order, address),
                     # The number the customer confirmed at checkout, not
                     # whatever the address record happens to hold: the
                     # address is edited from several screens and this is the
@@ -1565,6 +1606,7 @@ class OrderService:
         reason: str,
         comments: Optional[str] = None,
         items: Optional[list] = None,
+        images: Optional[list] = None,
     ) -> Order:
         """
         Customer request to return a DELIVERED order. Moves it to
@@ -1603,6 +1645,10 @@ class OrderService:
             if items
             else None
         )
+        # Relative paths, already checked by the router to belong to this
+        # order. Stored in the order the customer added them, because the
+        # first photo is usually the one they framed as the problem.
+        order.return_images = list(images) if images else None
         order.return_requested_at = datetime.utcnow()
 
         await db.commit()
@@ -1768,7 +1814,7 @@ class OrderService:
                     merchant_order_ref=order.order_number,
                     reason=order.return_reason or "Customer return",
                     items=items or None,
-                    pickup_contact_name=getattr(address, "recipient_name", None),
+                    pickup_contact_name=await resolve_recipient_name(db, order, address),
                     pickup_contact_phone=getattr(address, "phone", None),
                 )
         except courier_credentials.CourierNotConfiguredError as exc:

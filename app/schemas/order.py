@@ -227,6 +227,12 @@ class ReturnRequest(BaseModel):
     comments: Optional[str] = None
     # Optional item-level selection; empty means a full-order return.
     items: List[ReturnItemSchema] = Field(default_factory=list)
+    # Paths returned by POST /orders/{id}/return/images, in the order the
+    # customer added them. At least one: whoever decides this claim decides it
+    # by looking at the goods, and every return raised from the app can show
+    # them. Support raising one by hand goes through the admin API, which has
+    # no such requirement -- a phone call has no photographs.
+    images: List[str] = Field(..., min_length=1, max_length=4)
 
 
 class UpdateOrderStatusRequest(BaseModel):

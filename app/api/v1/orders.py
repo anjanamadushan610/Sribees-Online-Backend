@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from redis.asyncio import Redis
@@ -15,6 +15,7 @@ from app.config.database import get_db
 from app.config.redis import get_redis
 from app.config.settings import settings
 from app.core.dependencies import get_current_admin, get_current_user
+from app.core.media import media_url
 from app.models.order import OrderStatus
 from app.schemas.order import (
     CreateOrderRequest,
@@ -36,6 +37,7 @@ from app.services.invoice_service import InvoiceService
 from app.services.order_service import OrderService
 from app.services.pricing_service import PricingService
 from app.services.product_review_service import ProductReviewService
+from app.services.storage import StorageError, get_storage
 from app.services.wallet_service import WalletService
 
 # Prefix "/orders" is applied by app/api/v1/router.py — do not repeat it here.
@@ -210,6 +212,7 @@ def format_order(
         # Returns & refunds (Module 5.5)
         "return_reason": order.return_reason,
         "return_comments": order.return_comments,
+        "return_images": [media_url(p) for p in (order.return_images or [])],
         "return_requested_at": order.return_requested_at.isoformat() if order.return_requested_at else None,
         "refund_amount": float(order.refund_amount) if order.refund_amount is not None else None,
         # When the 12-hour window closes, so the app can show a live countdown
@@ -711,6 +714,97 @@ async def cancel_order(
         )
 
 
+# Kept deliberately small. A phone camera photo of a dented tin does not need
+# to arrive at full resolution, and the app already downscales to quality 80
+# before sending; this is the ceiling, not the target.
+RETURN_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+RETURN_IMAGE_MAX_MB = 5
+RETURN_IMAGE_MAX_COUNT = 4
+
+
+def _return_image_folder(order_id: UUID) -> str:
+    """One folder per order, which is also what makes the path checkable."""
+    return f"returns/{order_id}"
+
+
+@router.post("/{order_id}/return/images", response_model=dict)
+async def upload_return_image(
+    order_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Store one photo for a return the customer is about to request.
+
+    Uploaded before the request itself, so the app can show a thumbnail the
+    moment a photo is picked and so a failed upload is reported there rather
+    than swallowing the whole submission at the end.
+
+    Scoped to the order and the caller: the file lands under
+    ``returns/<order_id>/``, and :func:`request_order_return` accepts only
+    paths under that prefix. Without that, ``images`` would be a free-text
+    field the client fills in, and anything readable on the media host could
+    be attached to a claim.
+    """
+    order_uuid = UUID(order_id)
+    order = await OrderService.get_by_id(db, order_uuid, current_user.user_id)
+    if not order:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        )
+
+    # Same gate as the return itself. Uploading against an order that can no
+    # longer be returned would only fill the disk with files nothing can claim.
+    if order.status != OrderStatus.DELIVERED.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only delivered orders can be returned.",
+        )
+
+    if file.content_type not in RETURN_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Invalid file type '{file.content_type}'. "
+                f"Allowed: {', '.join(sorted(RETURN_IMAGE_TYPES))}"
+            ),
+        )
+
+    contents = await file.read()
+    if len(contents) > RETURN_IMAGE_MAX_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Photo is {len(contents) / 1024 / 1024:.1f}MB. "
+                f"Please use one under {RETURN_IMAGE_MAX_MB}MB."
+            ),
+        )
+
+    import io
+
+    try:
+        path = get_storage().save(
+            fileobj=io.BytesIO(contents),
+            filename=file.filename or "return.jpg",
+            folder=_return_image_folder(order_uuid),
+            content_type=file.content_type,
+        )
+    except StorageError as exc:
+        # 500 rather than 502: the storage backend is in-process, so a write
+        # failure is ours, and calling it a gateway error sends the next person
+        # to look at nginx.
+        logger.error(f"Return image upload failed for order {order_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not store the photo. Please try again.",
+        )
+
+    # The path is what the client sends back with the request; the URL is only
+    # so it can render the thumbnail it just uploaded.
+    return {"success": True, "data": {"path": path, "url": media_url(path)}}
+
+
 @router.post("/{order_id}/return", response_model=dict)
 async def request_order_return(
     order_id: str,
@@ -734,8 +828,23 @@ async def request_order_return(
                 detail="Order not found"
             )
 
+        # Every path must be one WE wrote for THIS order. `images` arrives
+        # from the client, so without this it is a free-text field: any
+        # readable path on the media host could be pinned to a claim, and a
+        # path belonging to somebody else's order could be used to read it.
+        prefix = f"/{settings.media_url_prefix.strip('/')}/{_return_image_folder(order_uuid)}/"
+        for path in data.images:
+            if not path.startswith(prefix):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Return photos must be uploaded to this order through "
+                        "/return/images before the request is submitted."
+                    ),
+                )
+
         order = await OrderService.request_return(
-            db, order, data.reason, data.comments, data.items
+            db, order, data.reason, data.comments, data.items, data.images
         )
 
         return {

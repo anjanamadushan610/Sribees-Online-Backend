@@ -1,0 +1,24 @@
+-- =============================================================================
+-- Migration 056: the photos a customer sends with a return request.
+--
+-- Until now the mobile app let someone attach up to four photos of a damaged
+-- item and then threw the bytes away, writing one sentence into the comments
+-- instead: "Attached Photos: 3 photo(s) submitted with return." The Branch
+-- Manager deciding the claim read that line, believed evidence existed, and
+-- had none to look at. A claim is approved or refused on what the goods
+-- actually look like, so that was the worst possible failure: it did not look
+-- like a missing feature, it looked like evidence.
+--
+-- A JSON array of origin-free relative media paths, exactly as product images
+-- are stored (see app/core/media.py) -- ["/uploads/returns/<order>/x.jpg"].
+-- media_url() turns them into fetchable URLs at serialization time, so moving
+-- the bucket never rewrites a row.
+--
+-- Nullable: orders that predate this have no photos, and a return raised by
+-- support over the phone legitimately has none either.
+--
+-- SQLAlchemy create_all() adds this on a fresh DB. Idempotent -- the deploy
+-- applies this file again on each release.
+-- =============================================================================
+
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS return_images JSONB;

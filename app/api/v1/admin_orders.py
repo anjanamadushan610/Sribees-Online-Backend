@@ -32,6 +32,7 @@ from app.core.dependencies import (
     require_permission,
     require_roles,
 )
+from app.core.media import media_url
 from app.models.admin import Admin
 from app.models.branch import Branch
 from app.models.escalation import EscalationStatus, OrderEscalation
@@ -50,7 +51,7 @@ from app.schemas.order import (
 from app.services import courier_sync_service, order_workflow
 from app.services.invoice_service import InvoiceService
 from app.services.notification_service import NotificationService
-from app.services.order_service import OrderService
+from app.services.order_service import OrderService, resolve_recipient_name
 
 # Allow base-role admins and staff accounts that hold orders:read.
 # Write routes additionally require orders:update (declared per-route).
@@ -131,6 +132,10 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
         "return_reason": order.return_reason,
         "return_comments": order.return_comments,
         "return_items": order.return_items,
+        # Resolved to URLs here, not stored that way -- this is what the
+        # Branch Manager, Super Admin or Customer Support actually looks at
+        # before approving or refusing the claim.
+        "return_images": [media_url(p) for p in (order.return_images or [])],
         "return_requested_at": order.return_requested_at.isoformat() if order.return_requested_at else None,
         "refund_amount": float(order.refund_amount) if order.refund_amount is not None else None,
         "return_resolution": getattr(order, "return_resolution", None),
@@ -1049,7 +1054,7 @@ async def get_courier_label(
             "sender_name": branch.name if branch else None,
             "sender_phone": branch.phone if branch else None,
             "origin_branch": branch.name if branch else None,
-            "recipient_name": (address.recipient_name if address else None) or "Customer",
+            "recipient_name": await resolve_recipient_name(db, order, address),
             "recipient_phone": (address.phone if address else None) or "",
             "recipient_address": ", ".join([p for p in address_parts if p]),
             "destination_city": address.postal_city if address else None,

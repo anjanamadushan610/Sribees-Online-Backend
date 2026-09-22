@@ -198,6 +198,10 @@ class Order(Base):
     return_reason = Column(String(255), nullable=True)
     return_comments = Column(Text, nullable=True)
     return_items = Column(JSONB, nullable=True)
+    # Relative media paths for the photos the customer attached, e.g.
+    # ["/uploads/returns/<order_id>/a1b2.jpg"]. Origin-free, like every
+    # other image column -- media_url() resolves them when serializing.
+    return_images = Column(JSONB, nullable=True)
     return_requested_at = Column(DateTime(timezone=True), nullable=True)
     refund_amount = Column(Numeric(10, 2), nullable=True)
     # B4 §2: how a Branch Manager / Super Admin settled the claim.
