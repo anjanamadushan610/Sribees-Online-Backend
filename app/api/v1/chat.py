@@ -385,7 +385,12 @@ async def _already_confirmed(
     confirmed: set = set()
     unresolved: list = []
     for token, raw in zip(
-        ordered, await redis.mget([proposal_key(user_id, t) for t in ordered])
+        ordered,
+        await redis.mget([proposal_key(user_id, t) for t in ordered]),
+        # MGET answers with exactly one entry per key (None for a miss), so the
+        # two sides cannot fall out of step -- strict=True states that rather
+        # than silently truncating if it ever stopped being true.
+        strict=True,
     ):
         try:
             if raw and json.loads(raw).get("done"):
