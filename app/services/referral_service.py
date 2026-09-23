@@ -743,6 +743,13 @@ class ReferralService:
                 "rate_percentage": row.rate_percentage,
                 "status": row.status,
                 "level": row.level,
+                # When a pending row becomes theirs. Without it the app can
+                # only say "pending", and "pending until when" is the only
+                # question anyone actually has about money they can see and
+                # cannot touch.
+                "claimable_at": (
+                    row.claimable_at.isoformat() if row.claimable_at else None
+                ),
             }
             for row in result.scalars().all()
         ]
