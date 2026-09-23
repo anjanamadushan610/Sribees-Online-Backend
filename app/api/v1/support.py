@@ -111,11 +111,19 @@ async def get_my_support_tickets(
     conditions = []
     if current_user:
         conditions.append(SupportTicket.user_id == current_user.user_id)
-        if current_user.phone_number:
-            conditions.append(SupportTicket.contact_phone == current_user.phone_number)
+        if current_user.phone:
+            user_phone = current_user.phone.strip()
+            conditions.append(SupportTicket.contact_phone == user_phone)
+            digits = "".join(c for c in user_phone if c.isdigit())
+            if len(digits) >= 9:
+                conditions.append(SupportTicket.contact_phone.ilike(f"%{digits[-9:]}%"))
 
     if phone and phone.strip():
-        conditions.append(SupportTicket.contact_phone == phone.strip())
+        req_phone = phone.strip()
+        conditions.append(SupportTicket.contact_phone == req_phone)
+        digits = "".join(c for c in req_phone if c.isdigit())
+        if len(digits) >= 9:
+            conditions.append(SupportTicket.contact_phone.ilike(f"%{digits[-9:]}%"))
 
     if not conditions:
         return {"items": [], "total": 0}
