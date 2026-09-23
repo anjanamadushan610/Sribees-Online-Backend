@@ -971,9 +971,12 @@ async def request_order_return(
         # from the client, so without this it is a free-text field: any
         # readable path on the media host could be pinned to a claim, and a
         # path belonging to somebody else's order could be used to read it.
-        prefix = f"/{settings.media_url_prefix.strip('/')}/{_return_image_folder(order_uuid)}/"
+        valid_prefixes = (
+            f"/{settings.media_url_prefix.strip('/')}/returns/{order_uuid}/",
+            f"/{settings.media_url_prefix.strip('/')}/returns_{order_uuid}/",
+        )
         for path in data.images:
-            if not path.startswith(prefix):
+            if not any(path.startswith(prefix) for prefix in valid_prefixes):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(

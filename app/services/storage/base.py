@@ -38,6 +38,16 @@ def safe_suffix(filename: str) -> str:
     return suffix if re.fullmatch(r"\.[a-z0-9]{1,8}", suffix) else ""
 
 
+def safe_folder(folder: str) -> str:
+    """Sanitize directory segments while preserving subfolder hierarchy (e.g. returns/uuid)."""
+    segments = [
+        _SAFE_NAME.sub("_", seg.strip("_")).strip("_")
+        for seg in folder.strip("/").split("/")
+        if seg.strip("/")
+    ]
+    return "/".join(s for s in segments if s) or "uploads"
+
+
 def build_relative_path(folder: str, filename: str, url_prefix: str) -> str:
     """
     Compose the stored path: ``/{prefix}/{folder}/{stem}_{random}{ext}``.
@@ -49,7 +59,7 @@ def build_relative_path(folder: str, filename: str, url_prefix: str) -> str:
     The random suffix stops two admins uploading "logo.png" from clobbering
     each other.
     """
-    folder_part = _SAFE_NAME.sub("_", folder.strip("/")) or "uploads"
+    folder_part = safe_folder(folder)
     name = f"{safe_stem(filename)}_{uuid.uuid4().hex[:12]}{safe_suffix(filename)}"
     return f"/{url_prefix.strip('/')}/{folder_part}/{name}"
 
