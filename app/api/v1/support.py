@@ -90,3 +90,64 @@ async def submit_support_ticket(
         "ticket_number": ticket.ticket_number,
         "message": "Your support request has been submitted successfully.",
     }
+
+
+@router.get(
+    "/my-tickets",
+    summary="Get support tickets submitted by the current customer",
+)
+async def get_my_support_tickets(
+    phone: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """
+    Retrieve customer support tickets submitted by the user.
+
+    Matched by authenticated user_id, user's phone, or query param phone for guests.
+    """
+    from sqlalchemy import or_
+
+    conditions = []
+    if current_user:
+        conditions.append(SupportTicket.user_id == current_user.user_id)
+        if current_user.phone_number:
+            conditions.append(SupportTicket.contact_phone == current_user.phone_number)
+
+    if phone and phone.strip():
+        conditions.append(SupportTicket.contact_phone == phone.strip())
+
+    if not conditions:
+        return {"items": [], "total": 0}
+
+    stmt = (
+        select(SupportTicket)
+        .where(or_(*conditions))
+        .order_by(SupportTicket.created_at.desc())
+        .limit(50)
+    )
+    res = await db.execute(stmt)
+    tickets = res.scalars().all()
+
+    items = []
+    for t in tickets:
+        branch_name = t.branch.name if t.branch else None
+        items.append(
+            {
+                "ticket_id": str(t.ticket_id),
+                "ticket_number": t.ticket_number,
+                "category": t.category,
+                "message": t.message,
+                "status": t.status,
+                "branch_id": str(t.branch_id) if t.branch_id else None,
+                "branch_name": branch_name,
+                "contact_phone": t.contact_phone,
+                "resolution_notes": t.resolution_notes,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+                "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
+            }
+        )
+
+    return {"items": items, "total": len(items)}
+
