@@ -1425,7 +1425,20 @@ class OrderService:
         elif status == OrderStatusEnum.CANCELLED:
             order.cancelled_at = now
             if not was_cancelled:
-                await OrderService._reverse_order_financials(db, order)
+                # The same effects as the customer's own button, through the
+                # same helper. This branch used to call
+                # _reverse_order_financials alone, which returned the wallet
+                # portion and quietly kept the card payment.
+                await OrderService._apply_cancellation_effects(
+                    db,
+                    order,
+                    reason=notes,
+                    # Which admin is already recorded on the adjacent
+                    # OrderStatusHistory row (`changed_by`), keyed by the same
+                    # order. Repeating the identity here would give it two
+                    # homes and one chance to disagree.
+                    cancelled_by="admin",
+                )
 
         # Log status transition in audit history
         history = OrderStatusHistory(
@@ -1504,12 +1517,141 @@ class OrderService:
         return order
 
     @staticmethod
+    @staticmethod
+    def gateway_paid_amount(order: Order) -> Decimal:
+        """
+        What the customer paid with a card, and is therefore owed back.
+
+        The wallet portion is refunded separately by
+        :meth:`_reverse_order_financials`, so this is deliberately the
+        REMAINDER -- together they return the full order total, which is what
+        a customer who cancelled before we booked a courier is owed. We have
+        incurred nothing at that point.
+
+        Zero unless the money actually arrived: a COD order is unpaid until
+        the rider collects it, and an abandoned gateway order never reached
+        PAID. Refunding either would credit a wallet from nothing.
+        """
+        if order.payment_status != PaymentStatus.PAID.value:
+            return Decimal("0")
+        if (order.payment_method or "").upper() == PaymentMethodEnum.COD.value:
+            return Decimal("0")
+        paid = (order.total_amount or Decimal("0")) - (order.wallet_deduction or Decimal("0"))
+        return paid if paid > 0 else Decimal("0")
+
+    @staticmethod
+    def customer_can_cancel(order: Order) -> bool:
+        """
+        Whether the customer's own Cancel button should exist for this order.
+
+        The line is the courier booking, not a status name. `ready_for_pickup`
+        IS the booking -- the parcel is registered with SribeesExpress and a
+        rider may already be on the way -- so a customer cancelling there is
+        cancelling something that exists in somebody else's system. Past that
+        it is a support conversation.
+
+        Checked against ``courier_shipment_id`` as well as the status, because
+        the booking is what actually matters and a status can be moved by
+        hand.
+        """
+        if order.courier_shipment_id:
+            return False
+        return order.status in (
+            OrderStatus.PENDING.value,
+            OrderStatus.CONFIRMED.value,
+            OrderStatus.PROCESSING.value,
+            OrderStatus.PACKING.value,
+            OrderStatus.PACKED.value,
+        )
+
+    @staticmethod
+    async def _record_cancellation(
+        db: AsyncSession,
+        order: Order,
+        *,
+        reason: Optional[str],
+        refund_amount: Decimal,
+        cancelled_by: str,
+        actor_admin_id=None,
+        context: Optional[dict] = None,
+    ) -> None:
+        """
+        Write the audit row, and decide whether it deserves a second look.
+
+        Staged in the caller's transaction so a cancellation can never commit
+        without its record. ``order_id`` is UNIQUE, so a double-submit raises
+        rather than producing two rows -- and therefore cannot refund twice.
+
+        Flagging never blocks anything. The customer's money moves either way;
+        the flag only decides whether the row is waiting at the top of
+        somebody's screen tomorrow morning.
+        """
+        from app.models.order import OrderCancellation
+
+        ctx = context or {}
+        placed_at = order.created_at
+        cancelled_at = datetime.now(timezone.utc)
+
+        flags: list[str] = []
+        if cancelled_by == "customer":
+            # Minutes, not hours. A person who has just placed an order and
+            # changed their mind is the normal case and must not be flagged;
+            # an order cancelled in seconds, repeatedly, is not a person.
+            if placed_at is not None:
+                placed = placed_at if placed_at.tzinfo else placed_at.replace(tzinfo=timezone.utc)
+                if (cancelled_at - placed).total_seconds() < 120:
+                    flags.append("cancelled within two minutes of ordering")
+
+            # How often this customer has done it lately. The count is the
+            # signal; one cancellation is a customer, ten in a month is a
+            # pattern.
+            recent = await db.execute(
+                select(func.count())
+                .select_from(OrderCancellation)
+                .where(
+                    OrderCancellation.user_id == order.user_id,
+                    OrderCancellation.cancelled_by == "customer",
+                    OrderCancellation.cancelled_at >= cancelled_at - timedelta(days=30),
+                )
+            )
+            recent_count = recent.scalar() or 0
+            if recent_count >= 3:
+                flags.append(f"{recent_count + 1} cancellations in 30 days")
+
+            if refund_amount > 0 and recent_count >= 1:
+                flags.append("repeat cancellation with money refunded")
+
+        db.add(
+            OrderCancellation(
+                order_id=order.order_id,
+                user_id=order.user_id,
+                cancelled_by=cancelled_by,
+                actor_admin_id=actor_admin_id,
+                reason=reason,
+                ip_address=ctx.get("ip_address"),
+                user_agent=ctx.get("user_agent"),
+                device_id=ctx.get("device_id"),
+                client_platform=ctx.get("client_platform"),
+                order_placed_at=placed_at,
+                cancelled_at=cancelled_at,
+                refund_amount=refund_amount,
+                refund_destination="wallet" if refund_amount > 0 else "none",
+                flagged=bool(flags),
+                flag_reason="; ".join(flags) or None,
+            )
+        )
+
+    @staticmethod
     async def cancel_order(
         db: AsyncSession,
         order: Order,
-        reason: Optional[str] = None
+        reason: Optional[str] = None,
+        *,
+        cancelled_by: str = "customer",
+        actor_admin_id=None,
+        context: Optional[dict] = None,
     ) -> Order:
-        """Cancel an order."""
+        """Cancel an order, refund what was paid, and record who did it."""
         # Check if order can be cancelled. Once a rider has collected the parcel
         # (handed_to_courier onwards) a cancellation cannot recall it -- the
         # courier refuses a cancel past pickup -- so it is a support
@@ -1537,10 +1679,14 @@ class OrderService:
         if reason:
             order.notes = f"{order.notes or ''}\nCancellation reason: {reason}".strip()
 
-        # Reverse all financial effects (coupon slot, wallet refund, cashback
-        # clawback) atomically within this transaction. The non-cancellable
-        # guard above ensures this runs only on a real cancellation transition.
-        await OrderService._reverse_order_financials(db, order)
+        await OrderService._apply_cancellation_effects(
+            db,
+            order,
+            reason=reason,
+            cancelled_by=cancelled_by,
+            actor_admin_id=actor_admin_id,
+            context=context,
+        )
 
         await db.commit()
         await db.refresh(order)
@@ -1551,6 +1697,70 @@ class OrderService:
         logger.info(f"Order {order.order_number} cancelled")
 
         return order
+
+    @staticmethod
+    async def _apply_cancellation_effects(
+        db: AsyncSession,
+        order: Order,
+        *,
+        reason: Optional[str] = None,
+        cancelled_by: str = "customer",
+        actor_admin_id=None,
+        context: Optional[dict] = None,
+    ) -> None:
+        """
+        Everything a cancellation owes: the money back, and the record of it.
+
+        One place, called by both cancellation paths -- the customer's button
+        and an admin moving the status to CANCELLED. They used to diverge: the
+        admin path reversed the wallet portion and kept the card payment, with
+        nothing anywhere admitting it. Money must not depend on which screen
+        somebody happened to be looking at.
+
+        Staged in the CALLER'S transaction. Nothing here commits, so the
+        refund, the clawback and the audit row land together or not at all.
+        Must be called exactly once per cancellation -- both callers guard the
+        transition INTO the cancelled state.
+        """
+        # Coupon slot, wallet refund, cashback clawback.
+        await OrderService._reverse_order_financials(db, order)
+
+        # The card portion. _reverse_order_financials returns what was paid
+        # FROM the wallet; this returns what was paid TO the gateway, and
+        # together they make the customer whole. Without this a card payment
+        # was simply kept -- the order cancelled, the money gone, and nothing
+        # in the system admitting it.
+        #
+        # Credited to the wallet rather than reversed at the gateway because
+        # Marx IPG has no refund call: its whole API is create order, initiate
+        # payment, read summary (see marx_ipg_service). A wallet credit is
+        # immediate, is visible to the customer, and does not depend on a
+        # capability the gateway does not have.
+        gateway_refund = OrderService.gateway_paid_amount(order)
+        if gateway_refund > 0:
+            await WalletService.apply_transaction(
+                db,
+                user_id=order.user_id,
+                tx_type=WalletTransactionType.REFUND,
+                amount=gateway_refund,
+                title="Order cancellation refund",
+                order_id=order.order_id,
+                order_number=order.order_number,
+            )
+            # The money came back, so the order is no longer a paid order.
+            order.payment_status = PaymentStatus.REFUNDED.value
+            order.refund_amount = (order.refund_amount or Decimal("0")) + gateway_refund
+            order.refunded_at = datetime.utcnow()
+
+        await OrderService._record_cancellation(
+            db,
+            order,
+            reason=reason,
+            refund_amount=gateway_refund + (order.wallet_deduction or Decimal("0")),
+            cancelled_by=cancelled_by,
+            actor_admin_id=actor_admin_id,
+            context=context,
+        )
 
     # ================================================================
     # Returns & Refunds (Module 5.5)

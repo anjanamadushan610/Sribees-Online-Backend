@@ -5,7 +5,16 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from redis.asyncio import Redis
@@ -213,6 +222,17 @@ def format_order(
         "return_reason": order.return_reason,
         "return_comments": order.return_comments,
         "return_images": [media_url(p) for p in (order.return_images or [])],
+        # Whether the app should draw a Cancel button, decided HERE.
+        # The rule is "no courier booked yet", and it involves fields the
+        # app does not have. Re-implementing it client-side would mean two
+        # copies drifting apart, and the one on the phone cannot be fixed
+        # for a fortnight once the store has the build.
+        "can_cancel": OrderService.customer_can_cancel(order),
+        # What tapping it would return, so the confirmation can name the
+        # real figure instead of saying "your money".
+        "cancel_refund_amount": float(
+            OrderService.gateway_paid_amount(order) + (order.wallet_deduction or 0)
+        ),
         "return_requested_at": order.return_requested_at.isoformat() if order.return_requested_at else None,
         "refund_amount": float(order.refund_amount) if order.refund_amount is not None else None,
         # When the 12-hour window closes, so the app can show a live countdown
@@ -673,14 +693,42 @@ async def get_order_tracking(
 
 
 @router.post("/{order_id}/cancel", response_model=dict)
+def _client_ip(request: Request) -> Optional[str]:
+    """
+    The caller's address, as close to the truth as we can get.
+
+    Behind nginx (production) and Caddy (development) the socket peer is the
+    proxy, so the real client is the FIRST entry of X-Forwarded-For -- the
+    proxy appends, so later entries are hops we added ourselves. It is a
+    client-settable header and a determined abuser can put anything in it;
+    that is fine for what this is used for. It is a signal on an internal
+    review screen, not an authorisation decision.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first[:64]
+    real = request.headers.get("x-real-ip")
+    if real:
+        return real.strip()[:64]
+    return request.client.host if request.client else None
+
+
 async def cancel_order(
     order_id: str,
+    request: Request,
     reason: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     """
-    Cancel an order.
+    Cancel an order the customer still owns the decision on.
+
+    Allowed only while no courier has been booked -- see
+    ``OrderService.customer_can_cancel``. Anything paid comes back to the
+    Sribees Wallet in the same transaction, and every cancellation is recorded
+    with where it came from (``order_cancellations``).
     """
     try:
         order_uuid = UUID(order_id)
@@ -692,7 +740,30 @@ async def cancel_order(
                 detail="Order not found"
             )
 
-        order = await OrderService.cancel_order(db, order, reason)
+        # The customer's own limit, which is tighter than the service's: past
+        # the courier booking this is a support conversation, and the app is
+        # told so rather than being allowed to try and fail.
+        if not OrderService.customer_can_cancel(order):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "This order is already with our courier and can no longer be "
+                    "cancelled here. Please contact support."
+                ),
+            )
+
+        order = await OrderService.cancel_order(
+            db,
+            order,
+            reason,
+            cancelled_by="customer",
+            context={
+                "ip_address": _client_ip(request),
+                "user_agent": request.headers.get("user-agent"),
+                "device_id": request.headers.get("x-device-id"),
+                "client_platform": request.headers.get("x-client-platform"),
+            },
+        )
 
         return {
             "success": True,
