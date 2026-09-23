@@ -513,3 +513,13 @@ class ConfirmAccountDeletionRequest(BaseModel):
         max_length=500,
         description="Why they left. Asked once, never required.",
     )
+
+
+class SocialLoginRequest(BaseModel):
+    """A Firebase ID token from a Google or Apple sign-in.
+
+    The token is the only thing trusted. Email, name and provider are read
+    from its verified claims, never from the request body.
+    """
+
+    id_token: str = Field(..., min_length=20)

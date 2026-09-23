@@ -29,6 +29,7 @@ from app.schemas.auth import (
     ResendVerificationRequest,
     ResetPasswordRequest,
     SessionsListResponse,
+    SocialLoginRequest,
     UpdateProfileRequest,
     VerifyEmailRequest,
     VerifyOTPRequest,
@@ -582,3 +583,49 @@ async def confirm_account_deletion(
         ) from exc
 
     return MessageResponse(message="Your account has been closed.")
+
+
+# ============================================================================
+# Google / Apple sign-in
+# ============================================================================
+
+
+@router.post(
+    "/social/login",
+    response_model=AuthResponse,
+    summary="Sign in with Google or Apple",
+    description=(
+        "Takes a Firebase ID token from a Google or Apple sign-in, verifies "
+        "it server-side, and returns a session. Creates the account on first "
+        "use. "
+        "A social sign-in skips the phone STEP, not the phone: the profile "
+        "gate still collects the phone number and the NIC before an order can "
+        "be placed, and the NIC is still unique and still write-once."
+    ),
+)
+async def social_login(
+    data: SocialLoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> AuthResponse:
+    from fastapi import HTTPException
+
+    from app.services.social_auth_service import SocialAuthError, sign_in
+
+    try:
+        user, created = await sign_in(db, data.id_token)
+    except SocialAuthError as exc:
+        # 401, not 400: the token is a credential, and a rejected credential
+        # is an authentication failure however it was malformed.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
+        ) from exc
+
+    return await AuthService.issue_session(
+        user,
+        db,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        device_name=request.headers.get("x-device-name"),
+        message="Welcome to Sribees Online" if created else "Login successful",
+    )

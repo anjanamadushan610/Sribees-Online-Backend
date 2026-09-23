@@ -258,6 +258,66 @@ class AuthService:
     # ========================================================================
 
     @staticmethod
+    @staticmethod
+    async def issue_session(
+        user,
+        db: AsyncSession,
+        *,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        device_name: Optional[str] = None,
+        message: str = "Login successful",
+    ) -> AuthResponse:
+        """
+        Issue a session for a user who has already been authenticated.
+
+        Extracted so the social sign-in path cannot drift from the phone one.
+        A second copy of session creation is a second place for an expiry, an
+        ip record or a token pair to be got subtly wrong.
+        """
+        session_id = uuid4()
+        session = Session(
+            session_id=session_id,
+            user_id=user.user_id,
+            refresh_token_hash="placeholder",
+            ip_address=ip_address,
+            user_agent=device_name or user_agent,
+            expires_at=datetime.utcnow() + timedelta(days=7),
+        )
+        db.add(session)
+        user.last_login = datetime.utcnow()
+        await db.commit()
+        await db.refresh(user)
+
+        tokens = create_token_pair(
+            user_id=user.user_id,
+            email=user.email or "",
+            session_id=session_id,
+        )
+        return AuthResponse(
+            success=True,
+            message=message,
+            user=UserResponse(
+                user_id=user.user_id,
+                email=user.email,
+                full_name=user.full_name,
+                phone=user.phone,
+                nic=user.nic,
+                alternate_phone=user.alternate_phone,
+                profile_picture_url=user.profile_picture_url,
+                is_verified=user.is_verified,
+                is_phone_verified=user.is_phone_verified,
+                two_factor_enabled=user.two_factor_enabled,
+                created_at=user.created_at,
+                updated_at=user.updated_at,
+                last_login=user.last_login,
+            ),
+            tokens=TokensResponse(
+                access_token=tokens["access_token"],
+                refresh_token=tokens["refresh_token"],
+            ),
+        )
+
     async def login_or_register_by_phone(
         phone: str,
         db: AsyncSession,

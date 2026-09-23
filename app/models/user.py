@@ -173,6 +173,20 @@ class User(Base):
         default="customer",  # customer, admin, manager
         nullable=False,
     )
+    # --- Google / Apple sign-in ---------------------------------------------
+    #
+    # Both arrive through Firebase Auth, so one verification path serves both
+    # and there is no second copy of Apple's JWKS handling to keep correct.
+    #
+    # `provider_uid` is Firebase's stable uid, NOT the email. An email can be
+    # changed, released and re-registered by somebody else; the uid cannot, so
+    # it is what the account is recognised by on the second sign-in.
+    #
+    # NULL for every phone-registered account, which is why the unique index
+    # on it is partial.
+    auth_provider: Optional[str] = Column(String(20), nullable=True)
+    provider_uid: Optional[str] = Column(String(128), nullable=True, index=True)
+
     # --- Account closure (Google Play requires an in-app delete) ------------
     #
     # A SOFT delete, and not out of laziness. The NIC is this business's
