@@ -48,8 +48,15 @@ def init_sentry() -> None:
 
 
 def init_fcm() -> None:
-    """Initialize Firebase Cloud Messaging for push notifications."""
-    if settings.firebase_credentials_path:
+    """Initialize Firebase Cloud Messaging for push notifications.
+
+    Either source will do: the JSON itself in the environment (preferred in a
+    container) or a path to a file. This gate used to check only the path, so
+    configuring the JSON left push silently disabled with FCMService.initialize
+    never even called -- the log said "not configured" while the credential sat
+    right there in the environment.
+    """
+    if settings.firebase_credentials_json or settings.firebase_credentials_path:
         if FCMService.initialize():
             logger.info("Firebase Cloud Messaging initialized")
         else:
