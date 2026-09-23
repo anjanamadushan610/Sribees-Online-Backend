@@ -99,3 +99,29 @@ def test_the_stored_rate_is_used_not_the_current_one():
     earned_at_two = ReferralService._commission_amount(Decimal("4000"), 2.0)
     assert earned_at_two == Decimal("80.00")
     assert ReferralService._commission_amount(Decimal("4000"), 3.0) == Decimal("120.00")
+
+
+# --- the guard must not strand what was already earned ----------------------
+
+
+def test_the_claim_guard_requires_a_deadline_that_has_passed():
+    """Both halves of the guard, stated as the query means them.
+
+    The `IS NOT NULL` half is what broke 1,960 commissions on the dev database
+    when this shipped: rows vested under the old rule had no deadline, and a
+    NULL reads as "not due yet". Migration 059 backfills them. If that ever
+    gets dropped, this is the test that should fail first.
+    """
+    now = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+    def claimable(deadline):
+        return deadline is not None and deadline <= now
+
+    assert claimable(now - timedelta(hours=1)) is True
+    assert claimable(now) is True
+    assert claimable(now + timedelta(hours=1)) is False
+    # The regression: an already-vested row with no deadline.
+    assert claimable(None) is False, (
+        "a NULL deadline is not claimable, which is why 059 has to backfill "
+        "every row that vested before claimable_at existed"
+    )
