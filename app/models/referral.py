@@ -137,6 +137,24 @@ class ReferralCommission(Base):
         index=True,
     )
 
+    # When the money genuinely becomes theirs: delivery plus the same return
+    # window the customer gets. Until then the row stays `pending` and nothing
+    # can move it.
+    #
+    # Stored rather than derived from the order, because the window is a
+    # property of the commission at the time it was earned -- changing the
+    # platform's return window later must not retroactively move money that
+    # was already promised. Same reasoning as `rate_percentage`.
+    claimable_at = Column(DateTime(timezone=True), nullable=True)
+
+    # How much of `order_subtotal` came back. Supports a PARTIAL reversal: a
+    # customer returning one item out of five should cost the referrer the
+    # commission on that item, not all of it -- the other four were delivered
+    # and kept.
+    returned_subtotal = Column(
+        Numeric(10, 2), nullable=False, default=0, server_default="0"
+    )
+
     claimed_at = Column(DateTime(timezone=True), nullable=True)
     wallet_transaction_id = Column(
         UUID(as_uuid=True),

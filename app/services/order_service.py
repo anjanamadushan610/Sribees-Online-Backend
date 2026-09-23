@@ -1426,7 +1426,14 @@ class OrderService:
             if not was_delivered:
                 from app.services.referral_service import ReferralService
 
-                await ReferralService.mark_claimable_for_order(db, order.order_id)
+                # Measured from the delivery, not from now. They are the same
+                # instant on the happy path, but an ops correction marking a
+                # parcel delivered two days late would otherwise restart the
+                # customer's window -- and the referrer would wait twelve hours
+                # from a timestamp that has nothing to do with the goods.
+                await ReferralService.mark_claimable_for_order(
+                    db, order.order_id, delivered_at=order.delivered_at or now
+                )
         elif status == OrderStatusEnum.CANCELLED:
             order.cancelled_at = now
             if not was_cancelled:
@@ -2244,6 +2251,23 @@ class OrderService:
 
         order.return_received_at = datetime.now(timezone.utc)
         await OrderService._credit_return_refund(db, order)
+
+        # The referrer's share of goods that came back. Only that share: the
+        # rest of the order was delivered and kept, and the referrer did the
+        # same work for it. Voiding the whole commission over one returned
+        # kettle is easy to write and impossible to defend to the person it
+        # happens to.
+        #
+        # Staged in this transaction so the customer's refund and the
+        # referrer's adjustment land together or not at all.
+        from app.services.referral_service import ReferralService
+
+        returned_value = OrderService._compute_return_refund(order)
+        if returned_value > 0:
+            await ReferralService.reduce_for_returned_value(
+                db, order.order_id, returned_value
+            )
+
         await db.commit()
         await db.refresh(order)
         logger.info(

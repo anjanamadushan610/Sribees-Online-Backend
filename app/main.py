@@ -93,14 +93,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from contextlib import suppress
 
     from app.services.assistant_reminder_worker import run_reminder_worker
+    from app.services.referral_vesting_worker import run_referral_vesting_worker
 
-    reminder_task = asyncio.create_task(run_reminder_worker())
+    # Two loops, not one. They fail for unrelated reasons -- one needs the
+    # reminder tables, the other the commission tables -- and sharing a task
+    # would mean an exception in either stopping both. A referral sweep that
+    # silently stopped looks exactly like "the money never vested", which is
+    # the one failure nobody reports as a bug.
+    background = [
+        asyncio.create_task(run_reminder_worker()),
+        asyncio.create_task(run_referral_vesting_worker()),
+    ]
     try:
         yield
     finally:
-        reminder_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await reminder_task
+        for task in background:
+            task.cancel()
+        for task in background:
+            with suppress(asyncio.CancelledError):
+                await task
 
     # Shutdown
     logger.info("Shutting down application...")
