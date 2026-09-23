@@ -22,8 +22,42 @@ except ImportError:
     logger.warning("firebase-admin not installed. FCM push notifications disabled.")
 
 
+# The Android channel every push lands in. The mobile app creates it in
+# MainActivity.kt and names it in res/values/notifications.xml -- change all
+# three together, or background pushes fall into an unnamed low-importance
+# channel.
+ANDROID_CHANNEL_ID = "sribeesonline_notifications"
+
+
+def _android_config() -> "messaging.AndroidConfig":
+    # High priority is what lets FCM wake a phone in Doze. At normal priority
+    # a push to a backgrounded app is held until the device next wakes, which
+    # on aggressive OEM battery savers can be hours.
+    return messaging.AndroidConfig(
+        priority="high",
+        notification=messaging.AndroidNotification(
+            sound="default",
+            click_action="FLUTTER_NOTIFICATION_CLICK",
+            channel_id=ANDROID_CHANNEL_ID,
+        ),
+    )
+
+
+def _apns_config() -> "messaging.APNSConfig":
+    return messaging.APNSConfig(
+        payload=messaging.APNSPayload(
+            aps=messaging.Aps(sound="default", badge=1),
+        ),
+    )
+
+
 class FCMService:
-    """Firebase Cloud Messaging service for push notifications."""
+    """Firebase Cloud Messaging service for push notifications.
+
+    Every send path uses the same Android/APNs config. The multicast path once
+    went out without it, so a customer with two devices got normal-priority
+    pushes that never arrived while the app was in the background.
+    """
 
     _initialized = False
 
@@ -119,32 +153,11 @@ class FCMService:
                 image=image_url,
             )
 
-            # Build Android-specific config
-            android_config = messaging.AndroidConfig(
-                priority="high",
-                notification=messaging.AndroidNotification(
-                    sound="default",
-                    click_action="FLUTTER_NOTIFICATION_CLICK",
-                    channel_id="sribeesonline_notifications",
-                ),
-            )
-
-            # Build iOS-specific config
-            apns_config = messaging.APNSConfig(
-                payload=messaging.APNSPayload(
-                    aps=messaging.Aps(
-                        sound="default",
-                        badge=1,
-                    ),
-                ),
-            )
-
-            # Build message
             message = messaging.Message(
                 notification=notification,
                 data=data or {},
-                android=android_config,
-                apns=apns_config,
+                android=_android_config(),
+                apns=_apns_config(),
                 token=token,
             )
 
@@ -202,6 +215,8 @@ class FCMService:
             message = messaging.MulticastMessage(
                 notification=notification,
                 data=data or {},
+                android=_android_config(),
+                apns=_apns_config(),
                 tokens=tokens,
             )
 
@@ -256,6 +271,8 @@ class FCMService:
             message = messaging.Message(
                 notification=messaging.Notification(title=title, body=body),
                 data=data or {},
+                android=_android_config(),
+                apns=_apns_config(),
                 topic=topic,
             )
 
