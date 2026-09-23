@@ -173,6 +173,47 @@ run_migrations() {
   log "all migrations applied"
 }
 
+seed_development() {
+  # Applied ONLY here. Nothing in the production pipeline reads this path, and
+  # that is deliberate: these scripts invent data -- NICs, phone numbers -- and
+  # inventing identity data is fine for a demo dataset and never fine for real
+  # customers. A backfill exactly like this one used to sit in migrations/055,
+  # where it ran against production and stamped 89 real people with NICs they
+  # could not correct.
+  #
+  # The seeds are extracted from the IMAGE, like the migrations, so a rollout
+  # always applies the pair that shipped together.
+  local image="$1"
+  local work="$DIR/.seeds"
+  rm -rf "$work"
+  local cid
+  cid="$(docker create "$image")"
+  # The directory is optional: a release that ships none is not a failure.
+  if ! docker cp "${cid}:/app/seeds/development" "$work" >/dev/null 2>&1; then
+    docker rm -f "$cid" >/dev/null 2>&1 || true
+    log "no seeds/development in the image - skipping"
+    return 0
+  fi
+  docker rm -f "$cid" >/dev/null 2>&1 || true
+
+  shopt -s nullglob
+  local files=("$work"/*.sql)
+  shopt -u nullglob
+  [ ${#files[@]} -eq 0 ] && { log "no .sql seeds to apply"; return 0; }
+
+  local f
+  while IFS= read -r f; do
+    log "seed >>> $(basename "$f")"
+    # Same authentication as the migrations, for the same reason: the
+    # container is scram-sha-256 even over its own socket.
+    if ! compose exec -T postgres sh -c          'PGPASSWORD="$POSTGRES_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'          < "$f"; then
+      die "seed $(basename "$f") failed"
+    fi
+  done < <(printf '%s
+' "${files[@]}" | sort -V)
+  log "development seeds applied"
+}
+
 cmd_deploy() {
   require_env
   local image="${APP_IMAGE:-}"
@@ -187,6 +228,7 @@ cmd_deploy() {
   create_base_tables "$image"
   backup_database
   run_migrations "$image"
+  seed_development "$image"
 
   log "rolling out the app"
   APP_IMAGE="$image" compose up -d --no-build --force-recreate app
