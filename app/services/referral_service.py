@@ -16,7 +16,7 @@ retried, webhooks get replayed, and users double-tap buttons; none of that may
 produce a second payout.
 """
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID
@@ -347,14 +347,27 @@ class ReferralService:
         db: AsyncSession,
         order_id: UUID,
         *,
+        delivered_at=None,
         commit: bool = False,
     ) -> int:
         """
-        Vest an order's commissions once it is delivered.
+        Schedule an order's commissions to vest once its return window closes.
 
-        Only ``pending`` rows move. A row that was already reversed stays
+        Delivery is NOT the moment the money is earned. The customer then has
+        twelve hours to send the goods back, and this used to vest on delivery
+        — so a referrer could claim, spend, and be clawed back into a negative
+        balance because their friend returned a kettle. The clawback works;
+        collecting a debt from someone who did nothing wrong is the problem.
+
+        So this sets ``claimable_at`` and leaves the row ``pending``.
+        :meth:`vest_due_commissions` moves it when the window has actually
+        passed.
+
+        Only ``pending`` rows are touched. A row already reversed stays
         reversed — a delivered-after-refund sequence must not resurrect money.
         """
+        from app.services.order_service import RETURN_WINDOW
+
         result = await db.execute(
             select(ReferralCommission).where(
                 ReferralCommission.order_id == order_id,
@@ -362,14 +375,160 @@ class ReferralService:
             )
         )
         rows = result.scalars().all()
+
+        base = delivered_at or datetime.now(timezone.utc)
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=timezone.utc)
+        # A minute past the customer's own deadline, so the two cannot race:
+        # a return landing on the last second must still win against a
+        # commission vesting on the same second.
+        vest_at = base + RETURN_WINDOW + timedelta(minutes=1)
+
         for row in rows:
-            row.status = ReferralCommissionStatus.CLAIMABLE
+            row.claimable_at = vest_at
 
         if rows and commit:
             await db.commit()
         if rows:
-            logger.info(f"{len(rows)} referral commission(s) vested for order {order_id}")
+            logger.info(
+                f"{len(rows)} referral commission(s) scheduled to vest at {vest_at} "
+                f"for order {order_id}"
+            )
         return len(rows)
+
+    @staticmethod
+    async def reduce_for_returned_value(
+        db: AsyncSession,
+        order_id: UUID,
+        returned_subtotal: Decimal,
+        *,
+        commit: bool = False,
+    ) -> int:
+        """
+        Take back the commission on goods that came back, and only those.
+
+        A customer returning one item out of five should cost the referrer the
+        commission on that item. The other four were delivered and kept, and
+        the referrer did the same work for them either way. Voiding the whole
+        commission over a single returned kettle is the kind of rule that is
+        easy to write and impossible to defend to the person it happens to.
+
+        The commission is recomputed against the remaining basis at the rate
+        stored on the row, so a rate change since the order does not leak in.
+
+        Already-PAID rows are clawed back for the difference only. That can
+        push a wallet negative, and it is meant to -- the ledger records the
+        debt rather than quietly forgiving it -- but it is now the difference
+        rather than the lot.
+
+        Returning everything leaves the row at zero rather than deleting it:
+        the history of what was earned and taken back is the audit trail.
+        """
+        if returned_subtotal <= 0:
+            return 0
+
+        result = await db.execute(
+            select(ReferralCommission)
+            .where(
+                ReferralCommission.order_id == order_id,
+                ReferralCommission.status.in_(
+                    [
+                        ReferralCommissionStatus.PENDING,
+                        ReferralCommissionStatus.CLAIMABLE,
+                        ReferralCommissionStatus.PAID,
+                    ]
+                ),
+            )
+            .with_for_update()
+        )
+        rows = result.scalars().all()
+        touched = 0
+
+        for row in rows:
+            basis = Decimal(str(row.order_subtotal or 0))
+            if basis <= 0:
+                continue
+
+            # Cumulative: a second partial return adds to the first rather
+            # than replacing it.
+            returned = min(
+                Decimal(str(row.returned_subtotal or 0)) + returned_subtotal, basis
+            )
+            remaining = basis - returned
+            new_amount = ReferralService._commission_amount(
+                remaining, float(row.rate_percentage)
+            )
+            old_amount = Decimal(str(row.amount or 0))
+            difference = old_amount - new_amount
+            if difference <= 0:
+                continue
+
+            row.returned_subtotal = returned
+            row.amount = new_amount
+
+            # Money already in their wallet has to come back out. Only the
+            # difference -- they keep what the delivered goods earned.
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_user_id:
+                await WalletService.apply_transaction(
+                    db,
+                    user_id=row.beneficiary_user_id,
+                    tx_type=WalletTransactionType.SPENT,
+                    amount=difference,
+                    title="Referral adjusted — items returned",
+                    order_id=row.order_id,
+                    order_number=row.order_number,
+                )
+
+            if new_amount <= 0:
+                row.status = ReferralCommissionStatus.REVERSED
+            touched += 1
+
+        if touched and commit:
+            await db.commit()
+        if touched:
+            logger.info(
+                f"{touched} referral commission(s) reduced for returned goods "
+                f"on order {order_id}"
+            )
+        return touched
+
+    @staticmethod
+    async def vest_due_commissions(
+        db: AsyncSession, *, limit: int = 500
+    ) -> list[ReferralCommission]:
+        """
+        Move every commission whose return window has closed to ``claimable``.
+
+        Returns the rows it vested, so the caller can tell the people who just
+        earned something. That is the whole reason this is a sweep rather than
+        a check at read time: a notification has to fire when the money becomes
+        theirs, not the next time they happen to open the app.
+
+        ``FOR UPDATE SKIP LOCKED`` so two app replicas running this loop cannot
+        vest the same row twice — whichever gets the lock does the work and the
+        other moves on. `limit` keeps one pass bounded; the next tick takes the
+        rest.
+        """
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            select(ReferralCommission)
+            .where(
+                ReferralCommission.status == ReferralCommissionStatus.PENDING,
+                ReferralCommission.claimable_at.isnot(None),
+                ReferralCommission.claimable_at <= now,
+            )
+            .order_by(ReferralCommission.claimable_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        rows = list(result.scalars().all())
+        for row in rows:
+            row.status = ReferralCommissionStatus.CLAIMABLE
+
+        if rows:
+            await db.commit()
+            logger.info(f"{len(rows)} referral commission(s) vested")
+        return rows
 
     @staticmethod
     async def reverse_for_order(
@@ -442,6 +601,12 @@ class ReferralService:
             .where(
                 ReferralCommission.beneficiary_user_id == user_id,
                 ReferralCommission.status == ReferralCommissionStatus.CLAIMABLE,
+                # Belt and braces. Status is set by the sweeper; this is the
+                # underlying fact. A bug that vested a row early must not be
+                # able to pay it out early as well -- the two would have to be
+                # wrong in the same direction on the same row.
+                ReferralCommission.claimable_at.isnot(None),
+                ReferralCommission.claimable_at <= datetime.now(timezone.utc),
             )
             .with_for_update(skip_locked=True)
         )

@@ -63,14 +63,14 @@ class Settings(BaseSettings):
         ),
     )
     referral_level2_percent: float = Field(
-        default=0.5,
+        default=1.0,
         ge=0.0,
         le=100.0,
         description=(
             "Percentage paid to a partner's upline on orders from customers "
             "their recruit signed up (level 2). Lower than level 1 by design: "
             "the recruit did the work. Two levels only — a deeper chain is a "
-            "pyramid, not a referral programme."
+            "pyramid, not a referral programme. Agent 2%, lead 1%."
         ),
     )
     referral_code_length: int = Field(
