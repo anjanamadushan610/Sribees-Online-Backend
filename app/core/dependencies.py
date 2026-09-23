@@ -397,12 +397,23 @@ async def inject_branch_filter(
     Branch-isolation dependency.
 
     Yields a :class:`BranchScope` describing what the current admin may see.
-    Scoped admins (everyone outside ``UNSCOPED_ROLES``) without an assigned
-    branch are rejected — they have no valid scope to operate within.
+    - Super Admin is always unscoped (sees all branches).
+    - Customer Support without an assigned branch is global (unscoped).
+    - Customer Support with an assigned branch is strictly pinned to that branch.
+    - All other roles (Branch Manager, Marketing, Inventory, Staff) must have
+      an assigned branch and are scoped to it.
     """
     role = admin.role.value if hasattr(admin.role, "value") else admin.role
     is_super = role == "super_admin"
-    is_unscoped = role in UNSCOPED_ROLES
+
+    if is_super:
+        is_unscoped = True
+    elif role == "customer_support":
+        # Global support (no branch assigned) sees all branches.
+        # Branch-scoped support (assigned branch) is pinned to that branch.
+        is_unscoped = admin.branch_id is None
+    else:
+        is_unscoped = False
 
     if not is_unscoped and admin.branch_id is None:
         raise InsufficientPermissionsError(
