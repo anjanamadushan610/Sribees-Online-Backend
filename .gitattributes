@@ -1,0 +1,9 @@
+# Anything that runs on the Linux deploy host must be checked out with LF.
+# A CRLF shell script fails on the server with "bad interpreter: No such file
+# or directory" — which names the interpreter, not the line endings, and has
+# cost more than one person an evening.
+*.sh            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+Dockerfile      text eol=lf
+*.sql           text eol=lf

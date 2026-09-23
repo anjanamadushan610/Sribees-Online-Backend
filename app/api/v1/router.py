@@ -12,6 +12,7 @@ from app.api.v1 import (
     admin_banners,
     admin_branch_categories,
     admin_branches,
+    admin_cancellations,
     admin_catalog,
     admin_coupons,
     admin_courier,
@@ -298,6 +299,12 @@ router.include_router(
 
 # Admin Order management (/admin/orders). Branch-scoped via inject_branch_filter;
 # restricted to super_admin/branch_manager/customer_support.
+router.include_router(
+    admin_cancellations.router,
+    prefix="/admin",
+    tags=["Admin Cancellations"],
+)
+
 router.include_router(
     admin_orders.router,
     prefix="/admin/orders",
