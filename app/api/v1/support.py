@@ -8,10 +8,9 @@ import random
 import string
 from datetime import datetime
 from typing import Optional
-from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

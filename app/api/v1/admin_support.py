@@ -14,15 +14,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.core.dependencies import get_current_admin, require_permission
 from app.models.admin import Admin
-from app.models.branch import Branch
 from app.models.support_ticket import SupportTicket, TicketStatus
-from app.models.user import User
 from app.schemas.support_ticket import (
     SupportTicketListResponse,
     SupportTicketResponse,
