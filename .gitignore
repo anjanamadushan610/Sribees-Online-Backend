@@ -39,3 +39,10 @@ Thumbs.db
 # pytest-cov's local database. Regenerated on every run; never useful to share.
 .coverage
 .coverage.*
+
+# Filled-in secret values, kept on the operator's machine only. This is the
+# copy of what went into GitHub Actions -- those secrets are write-only and
+# cannot be read back by anyone, including whoever set them, so without a
+# local record a rebuilt server means reconstructing every credential from
+# scratch. Never committed.
+secrets.out/

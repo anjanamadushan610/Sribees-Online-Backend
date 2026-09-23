@@ -329,3 +329,76 @@ class OrderStatusHistory(Base):
 
     def __repr__(self):
         return f"<OrderStatusHistory {self.old_status} -> {self.new_status}>"
+
+
+class OrderCancellation(Base):
+    """
+    One row per cancelled order: who cancelled it, from where, how fast, and
+    what it cost.
+
+    Cancelling is a button in the customer's app rather than a support
+    conversation, and a button that moves money is a button people will test.
+    This is what makes the pattern visible to the Branch Manager, the Super
+    Admin and Customer Support.
+
+    Written inside the same transaction as the cancellation itself, so an
+    order can never be cancelled without a record of why -- and, because
+    ``order_id`` is UNIQUE, never recorded twice. That uniqueness is also what
+    makes a double-submit on a slow connection impossible to refund twice.
+    """
+
+    __tablename__ = "order_cancellations"
+
+    cancellation_id = Column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    order_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("orders.order_id", ondelete="CASCADE"),
+        nullable=False, unique=True,
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # 'customer' or 'admin'. An admin cancelling on someone's behalf is a
+    # normal operation and must never be counted against the customer.
+    cancelled_by = Column(String(20), nullable=False, default="customer")
+    actor_admin_id = Column(UUID(as_uuid=True), nullable=True)
+
+    reason = Column(Text, nullable=True)
+
+    # Where it came from. All nullable: an admin cancellation has no device,
+    # and a proxy may strip the client address.
+    ip_address = Column(String(64), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    device_id = Column(String(128), nullable=True)
+    client_platform = Column(String(40), nullable=True)
+
+    # Both timestamps, denormalised deliberately: the elapsed time is the
+    # interesting figure and must stay correct even if the order row is later
+    # touched.
+    order_placed_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    refund_amount = Column(Numeric(10, 2), nullable=False, default=0)
+    # 'wallet' when money moved, 'none' for a COD order where nothing was paid.
+    refund_destination = Column(String(20), nullable=False, default="none")
+
+    # Kept back when the parcel was already booked with SribeesExpress. Stored
+    # apart from refund_amount so the pair reads as "they paid X, we kept Y for
+    # the courier" rather than one net figure nobody can reconcile.
+    courier_fee = Column(Numeric(10, 2), nullable=False, default=0)
+
+    # Set when the pattern is worth a human look. Never blocks the
+    # cancellation or the refund: nobody is made to wait while somebody
+    # decides whether they are a fraud.
+    flagged = Column(Boolean, nullable=False, default=False)
+    flag_reason = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self):
+        return f"<OrderCancellation {self.order_id} by {self.cancelled_by}>"
