@@ -502,3 +502,14 @@ class ProfileResponse(BaseModel):
 
     success: bool = True
     user: UserResponse
+
+
+class ConfirmAccountDeletionRequest(BaseModel):
+    """Closing an account: the code, and optionally why."""
+
+    code: str = Field(..., min_length=4, max_length=8)
+    reason: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Why they left. Asked once, never required.",
+    )

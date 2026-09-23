@@ -173,6 +173,32 @@ class User(Base):
         default="customer",  # customer, admin, manager
         nullable=False,
     )
+    # --- Account closure (Google Play requires an in-app delete) ------------
+    #
+    # A SOFT delete, and not out of laziness. The NIC is this business's
+    # identity key: if closing an account erased what that NIC had done,
+    # anyone who cancelled orders on a loop could close, reopen and arrive
+    # clean, and the cancellation review would show a first-time customer
+    # every time.
+    #
+    # So the row stays and the history stays attached to it. What goes is
+    # everything that makes the account usable, plus the contact details --
+    # released to NULL so the person can register again and so those numbers
+    # are free for whoever holds them next.
+    deleted_at: Optional[datetime] = Column(
+        DateTime(timezone=True), nullable=True
+    )
+    deletion_reason: Optional[str] = Column(Text, nullable=True)
+    # What they held when they closed it. Out of the unique columns on purpose
+    # -- kept so support can answer "this number used to be mine", without
+    # keeping the number reserved.
+    deleted_phone: Optional[str] = Column(String(20), nullable=True)
+    deleted_email: Optional[str] = Column(String(255), nullable=True)
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
+
     is_active: bool = Column(
         Boolean,
         default=True,

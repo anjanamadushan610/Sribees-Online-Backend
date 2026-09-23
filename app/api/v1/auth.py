@@ -15,6 +15,7 @@ from app.models.user import User
 from app.schemas.auth import (
     AuthResponse,
     ChangePasswordRequest,
+    ConfirmAccountDeletionRequest,
     ForgotPasswordRequest,
     LoginRequest,
     MessageResponse,
@@ -486,3 +487,98 @@ async def revoke_session(
     Cannot revoke the current session (use logout instead).
     """
     return await AuthService.revoke_session(current_user, session_id, db)
+
+
+# ============================================================================
+# Account closure (required by Google Play for any app with sign-up)
+# ============================================================================
+
+
+@router.post(
+    "/account/deletion/request-otp",
+    response_model=RequestOTPResponse,
+    summary="Send a code to confirm closing this account",
+    description=(
+        "Sends a 6-digit code to one of the numbers on the account. Closing "
+        "an account is irreversible for the person doing it, so it is gated "
+        "on proving control of the phone rather than on a password somebody "
+        "may have left signed in on a shared handset."
+    ),
+)
+async def request_account_deletion_otp(
+    current_user: CurrentUser,
+    redis: Redis = Depends(get_redis),
+) -> RequestOTPResponse:
+    from fastapi import HTTPException
+
+    # Either number on the account. A customer who changed their main number
+    # and cannot receive on it must still be able to close the account, and
+    # the alternate is one they already proved at some point.
+    phone = current_user.phone or current_user.alternate_phone
+    if not phone:
+        # A Google or Apple sign-up that never added a number. They have no
+        # second factor to prove, so this has to be a support conversation
+        # rather than a silently weaker path.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Add a phone number in Settings before closing your account, "
+                "or contact support."
+            ),
+        )
+
+    await OTPService.request_otp(
+        redis,
+        key=RedisKeys.account_deletion_otp(str(current_user.user_id)),
+        phone=phone,
+    )
+    return RequestOTPResponse(
+        message="Verification code sent",
+        expires_in_seconds=RedisTTL.PHONE_OTP,
+    )
+
+
+@router.post(
+    "/account/deletion/confirm",
+    response_model=MessageResponse,
+    summary="Close this account",
+    description=(
+        "Verifies the code and closes the account. The login, the phone "
+        "numbers, the email and every push token go. Order history, the "
+        "wallet ledger and the NIC stay: those are financial records with "
+        "obligations attached, and they belong to the transaction rather "
+        "than to the account."
+    ),
+)
+async def confirm_account_deletion(
+    data: ConfirmAccountDeletionRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> MessageResponse:
+    from fastapi import HTTPException
+
+    from app.services.account_deletion_service import (
+        AccountDeletionError,
+        close_account,
+    )
+
+    ok = await OTPService.verify_otp(
+        redis,
+        RedisKeys.account_deletion_otp(str(current_user.user_id)),
+        data.code,
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That code is not right, or it has expired.",
+        )
+
+    try:
+        await close_account(db, current_user.user_id, reason=data.reason)
+    except AccountDeletionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    return MessageResponse(message="Your account has been closed.")

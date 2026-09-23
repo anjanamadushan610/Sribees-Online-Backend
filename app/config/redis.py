@@ -218,6 +218,16 @@ class RedisKeys:
         return f"otp:phone:{user_id}"
 
     @staticmethod
+    def account_deletion_otp(user_id: str) -> str:
+        """Short-lived OTP key for confirming an account closure.
+
+        Keyed by user, not by phone: the code proves THIS account's owner is
+        asking, and a phone-keyed code could be requested by anyone who knows
+        the number.
+        """
+        return f"otp:delete:{user_id}"
+
+    @staticmethod
     def phone_registration_otp(phone: str) -> str:
         """Short-lived OTP key for phone-first registration (no account yet)."""
         return f"otp:register:{phone}"
