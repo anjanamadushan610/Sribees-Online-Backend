@@ -24,6 +24,7 @@ from app.api.v1 import (
     admin_roles,
     admin_settings,
     admin_staff,
+    admin_support,
     admin_transfers,
     admin_users,
     app_public,
@@ -47,6 +48,7 @@ from app.api.v1 import (
     reviews,
     search,
     session,
+    support,
     user_addresses,
     wallet,
     wishlist,
@@ -384,4 +386,17 @@ router.include_router(
     app_public.router,
     prefix="/app",
     tags=["App Configuration"],
+)
+
+# Customer support tickets (/support)
+router.include_router(
+    support.router,
+    tags=["Customer Support"],
+)
+
+# Admin support ticket management (/admin/support)
+router.include_router(
+    admin_support.router,
+    prefix="/admin/support",
+    tags=["Admin Support Tickets"],
 )

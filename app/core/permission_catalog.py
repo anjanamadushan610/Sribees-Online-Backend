@@ -25,6 +25,7 @@ DELEGATABLE_PERMISSIONS: set[tuple[str, str]] = {
     ("transfers", "create"), ("transfers", "read"), ("transfers", "update"),
     ("marketing", "create"), ("marketing", "read"), ("marketing", "update"), ("marketing", "delete"),
     ("banners", "create"), ("banners", "read"), ("banners", "update"), ("banners", "delete"),
+    ("support", "read"), ("support", "update"),
 }
 
 # Resources that are never delegatable regardless of what a creator holds —
@@ -49,6 +50,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, set[tuple[str, str]]] = {
         ("watchlist", "read"),
         ("reviews", "read"), ("reviews", "update"),
         ("transfers", "create"), ("transfers", "read"),
+        ("support", "read"), ("support", "update"),
     },
     "marketing_manager": {
         ("dashboard", "read"),
@@ -65,6 +67,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, set[tuple[str, str]]] = {
         ("orders", "read"), ("orders", "update"),
         ("customers", "read"), ("customers", "update"),
         ("reviews", "read"), ("reviews", "update"),
+        ("support", "read"), ("support", "update"),
     },
     "inventory_manager": {
         ("dashboard", "read"),
