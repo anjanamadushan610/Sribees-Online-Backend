@@ -1154,7 +1154,8 @@ class OrderService:
             select(Order)
             .options(
                 selectinload(Order.items),
-                selectinload(Order.delivery_address)
+                selectinload(Order.delivery_address),
+                selectinload(Order.status_history),
             )
             .where(Order.order_id == order_id)
         )
@@ -1176,7 +1177,8 @@ class OrderService:
             select(Order)
             .options(
                 selectinload(Order.items),
-                selectinload(Order.delivery_address)
+                selectinload(Order.delivery_address),
+                selectinload(Order.status_history),
             )
             .where(Order.order_number == order_number)
         )
@@ -1198,7 +1200,10 @@ class OrderService:
         """Get user's orders."""
         query = (
             select(Order)
-            .options(selectinload(Order.items))
+            .options(
+                selectinload(Order.items),
+                selectinload(Order.status_history),
+            )
             .where(Order.user_id == user_id)
         )
 

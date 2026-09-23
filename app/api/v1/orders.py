@@ -71,9 +71,10 @@ _STATUS_FLOW = [
     ("delivered", "Delivered"),
 ]
 
-# Known timestamp column per status (others are inferred, timestamp None).
+# Known timestamp column per status (others are inferred or fetched from status history).
 _STATUS_TIMESTAMPS = {
     "pending": "created_at",
+    "confirmed": "gateway_confirmed_at",
     "packed": "packed_at",
     "ready_for_pickup": "ready_for_pickup_at",
     "handed_to_courier": "handed_to_courier_at",
@@ -95,30 +96,45 @@ def build_status_timeline(order) -> list:
     """
     Build an ordered status timeline for the order.
 
-    There is no dedicated status-history table, so the timeline is derived from
-    the order's current status and the timestamp columns it does have
-    (created_at, shipped_at, delivered_at, cancelled_at). Each step reports
-    whether it is completed and which one is current.
+    Combines order status history records (from internal actions & SribeesExpress courier sync)
+    and order timestamp columns (created_at, packed_at, ready_for_pickup_at, etc.).
+    Each step reports whether it is completed and which one is current.
     """
-    def ts(field: str):
+    def ts(field: Optional[str]):
+        if not field:
+            return None
         value = getattr(order, field, None)
         return value.isoformat() if value else None
+
+    # Status history map from order.status_history (records exact transition time)
+    history_map = {}
+    if hasattr(order, "status_history") and order.status_history:
+        for h in order.status_history:
+            if getattr(h, "created_at", None) and getattr(h, "new_status", None):
+                status_name = _effective_status(h.new_status)
+                if status_name not in history_map:
+                    history_map[status_name] = h.created_at.isoformat()
 
     # Terminal states short-circuit the normal flow.
     if order.status in ("cancelled", "refunded"):
         label = "Cancelled" if order.status == "cancelled" else "Refunded"
+        cancelled_ts = (
+            history_map.get(order.status)
+            or ts(_STATUS_TIMESTAMPS.get(order.status, "cancelled_at"))
+            or ts("updated_at")
+        )
         return [
             {
                 "status": "pending",
                 "label": "Order Placed",
-                "timestamp": ts("created_at"),
+                "timestamp": history_map.get("pending") or ts("created_at"),
                 "completed": True,
                 "current": False,
             },
             {
                 "status": order.status,
                 "label": label,
-                "timestamp": ts(_STATUS_TIMESTAMPS.get(order.status, "updated_at")),
+                "timestamp": cancelled_ts,
                 "completed": True,
                 "current": True,
             },
@@ -135,21 +151,21 @@ def build_status_timeline(order) -> list:
             {
                 "status": "pending",
                 "label": "Order Placed",
-                "timestamp": ts("created_at"),
+                "timestamp": history_map.get("pending") or ts("created_at"),
                 "completed": True,
                 "current": False,
             },
             {
                 "status": "delivered",
                 "label": "Delivered",
-                "timestamp": ts("delivered_at"),
+                "timestamp": history_map.get("delivered") or ts("delivered_at"),
                 "completed": True,
                 "current": False,
             },
             {
                 "status": order.status,
                 "label": label,
-                "timestamp": ts("return_requested_at"),
+                "timestamp": ts("return_requested_at") or ts("updated_at"),
                 "completed": True,
                 "current": True,
             },
@@ -161,13 +177,61 @@ def build_status_timeline(order) -> list:
 
     timeline = []
     for rank, (status_key, label) in enumerate(_STATUS_FLOW):
-        timestamp_field = _STATUS_TIMESTAMPS.get(status_key)
+        step_completed = rank <= current_rank
+        step_current = rank == current_rank
+        step_timestamp = None
+
+        if step_completed:
+            # 1. Exact timestamp from status change history
+            step_timestamp = history_map.get(status_key)
+
+            # 2. Known column timestamp
+            if not step_timestamp:
+                timestamp_field = _STATUS_TIMESTAMPS.get(status_key)
+                if timestamp_field:
+                    step_timestamp = ts(timestamp_field)
+
+            # 3. Contextual / transitional fallbacks
+            if not step_timestamp:
+                if status_key == "pending":
+                    step_timestamp = ts("created_at")
+                elif status_key == "confirmed":
+                    step_timestamp = (
+                        ts("gateway_confirmed_at")
+                        or ts("courier_quote_confirmed_at")
+                        or history_map.get("pending")
+                        or ts("created_at")
+                    )
+                elif status_key == "packing":
+                    step_timestamp = (
+                        history_map.get("packing")
+                        or history_map.get("processing")
+                        or ts("packed_at")
+                        or history_map.get("confirmed")
+                        or ts("created_at")
+                    )
+                elif status_key == "shipped":
+                    step_timestamp = (
+                        ts("shipped_at")
+                        or history_map.get("shipped")
+                        or ts("handed_to_courier_at")
+                        or history_map.get("handed_to_courier")
+                        or ts("courier_tracking_updated_at")
+                    )
+                elif status_key == "out_for_delivery":
+                    step_timestamp = (
+                        history_map.get("out_for_delivery")
+                        or ts("courier_tracking_updated_at")
+                        or history_map.get("delivered")
+                        or ts("delivered_at")
+                    )
+
         timeline.append({
             "status": status_key,
             "label": label,
-            "timestamp": ts(timestamp_field) if timestamp_field else None,
-            "completed": rank <= current_rank,
-            "current": rank == current_rank,
+            "timestamp": step_timestamp,
+            "completed": step_completed,
+            "current": step_current,
         })
     return timeline
 
