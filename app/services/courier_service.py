@@ -505,9 +505,29 @@ class CourierService:
     async def cancel_shipment(shipment_id: str) -> dict:
         """
         ``POST /ecommerce/shipments/{id}/cancel`` (section 9). Legal only
-        before pickup; past that it is a ``409`` and a support conversation.
+        before pickup; past that it is a ``409`` -- use
+        :meth:`request_cancellation` instead.
         """
         return await CourierService._request("POST", f"/shipments/{shipment_id}/cancel")
+
+    @staticmethod
+    async def request_cancellation(shipment_id: str, reason: Optional[str] = None) -> dict:
+        """
+        ``POST /ecommerce/shipments/{id}/cancellation-request``.
+
+        For the case ``cancel_shipment`` cannot serve: a rider is already
+        carrying the parcel, so it cannot simply be marked cancelled -- the
+        goods are in somebody's bag, halfway down a road. This raises the
+        request with that rider, who stops the delivery and runs their own
+        cancellation.
+
+        Idempotent on their side: calling it twice keeps the first request.
+        """
+        return await CourierService._request(
+            "POST",
+            f"/shipments/{shipment_id}/cancellation-request",
+            json={"reason": reason} if reason else {},
+        )
 
     # ------------------------------------------------------------------
     # Section 14 -- COD remittances (read-only)

@@ -1471,10 +1471,26 @@ class OrderService:
         raised NameError after the cancellation had committed — the customer saw
         a 500, and the rider was still sent.
         """
+        rider_has_it = OrderService._rider_already_has_it(order)
         try:
             async with courier_credentials.for_branch(db, order.branch_id):
-                await CourierService.cancel_shipment(order.courier_shipment_id)
-            logger.info(f"Courier shipment cancelled for order {order.order_number}")
+                if rider_has_it:
+                    # The parcel is on a motorbike. SribeesExpress refuses a
+                    # cancel past pickup -- correctly, because an order marked
+                    # cancelled while the goods are still moving would be read
+                    # as fact by their rider app, their branch screens and
+                    # their invoice. A request reaches the rider carrying it,
+                    # who hands nothing over and brings it back.
+                    await CourierService.request_cancellation(
+                        order.courier_shipment_id,
+                        reason="Customer cancelled the order",
+                    )
+                    logger.info(
+                        f"Cancellation requested with the rider for order {order.order_number}"
+                    )
+                else:
+                    await CourierService.cancel_shipment(order.courier_shipment_id)
+                    logger.info(f"Courier shipment cancelled for order {order.order_number}")
         except (
             CourierUnavailableError,
             CourierError,
@@ -1559,18 +1575,23 @@ class OrderService:
         delivery charge does not come back. The button stays, in red, and the
         app has to say why before the customer confirms.
 
-        ``blocked`` -- from ``handed_to_courier`` on, a rider is carrying the
-        parcel and SribeesExpress refuses a cancel past pickup. Also every
-        terminal state: an order already cancelled, delivered or in a return
-        has nothing left to cancel.
+        ``fee`` also covers a parcel a rider is already carrying. The courier
+        cannot simply mark it cancelled at that point -- the goods are in
+        somebody's bag, halfway down a road -- so we raise a cancellation
+        REQUEST with SribeesExpress, their rider sees it, hands nothing over
+        and brings it back. The customer's side is settled either way: they
+        paid for goods they are not receiving, so the goods money comes back
+        and only the delivery charge is kept.
 
-        The booking, not the status word, decides the first two: a status can
-        be moved by hand, a waybill cannot.
+        ``blocked`` -- the parcel reached the customer, or there is nothing
+        left to cancel. Past the doorstep the goods have changed hands and it
+        is a return, which is different machinery with its own window, its own
+        waybill and its own fee.
+
+        The booking, not the status word, decides between free and fee: a
+        status can be moved by hand, a waybill cannot.
         """
         terminal = (
-            OrderStatus.HANDED_TO_COURIER.value,
-            OrderStatus.SHIPPED.value,
-            OrderStatus.OUT_FOR_DELIVERY.value,
             OrderStatus.DELIVERED.value,
             OrderStatus.DELIVERY_FAILED.value,
             OrderStatus.RTO_INITIATED.value,
@@ -1582,10 +1603,26 @@ class OrderService:
         if order.status in terminal:
             return OrderService.CANCEL_BLOCKED
 
-        if order.courier_shipment_id or order.status == OrderStatus.READY_FOR_PICKUP.value:
+        in_transit = (
+            OrderStatus.READY_FOR_PICKUP.value,
+            OrderStatus.HANDED_TO_COURIER.value,
+            OrderStatus.SHIPPED.value,
+            OrderStatus.OUT_FOR_DELIVERY.value,
+        )
+        if order.courier_shipment_id or order.status in in_transit:
             return OrderService.CANCEL_WITH_FEE
 
         return OrderService.CANCEL_FREE
+
+    @staticmethod
+    def _rider_already_has_it(order: Order) -> bool:
+        """Whether a rider is carrying the parcel, so cancelling it with the
+        courier has to be a request rather than an instruction."""
+        return order.status in (
+            OrderStatus.HANDED_TO_COURIER.value,
+            OrderStatus.SHIPPED.value,
+            OrderStatus.OUT_FOR_DELIVERY.value,
+        )
 
     @staticmethod
     def customer_can_cancel(order: Order) -> bool:

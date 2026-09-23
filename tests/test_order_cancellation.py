@@ -59,14 +59,47 @@ def test_a_booked_parcel_can_still_be_cancelled_but_not_for_free():
 
 
 @pytest.mark.parametrize(
-    "status",
-    ["handed_to_courier", "shipped", "out_for_delivery", "delivered",
-     "cancelled", "refunded", "return_requested"],
+    "status", ["handed_to_courier", "shipped", "out_for_delivery"],
 )
-def test_everything_past_pickup_is_a_support_conversation(status):
+def test_a_parcel_on_a_motorbike_can_still_be_stopped(status):
+    """The courier cannot mark it cancelled -- the goods are in somebody's bag
+    -- so we raise a REQUEST their rider acts on. The customer's side settles
+    either way: they paid for goods they are not receiving."""
+    order = _order(status=status, courier_shipment_id="WB-1")
+    assert OrderService.customer_cancel_state(order) == OrderService.CANCEL_WITH_FEE
+    assert OrderService._rider_already_has_it(order) is True
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["delivered", "cancelled", "refunded", "return_requested",
+     "return_approved", "delivery_failed", "rto_initiated"],
+)
+def test_past_the_doorstep_it_is_a_return_not_a_cancellation(status):
+    """The goods have changed hands. That is different machinery, with its own
+    window, its own waybill and its own fee."""
     order = _order(status=status)
     assert OrderService.customer_cancel_state(order) == OrderService.CANCEL_BLOCKED
     assert OrderService.customer_can_cancel(order) is False
+
+
+def test_a_parcel_not_yet_collected_is_cancelled_outright_not_requested():
+    """Before pickup the courier can simply cancel the booking -- no rider is
+    carrying anything, so there is nobody to ask."""
+    order = _order(status=OrderStatus.READY_FOR_PICKUP.value, courier_shipment_id="WB-1")
+    assert OrderService._rider_already_has_it(order) is False
+
+
+def test_the_goods_money_still_comes_back_from_a_rider_stage_cancellation():
+    """Only the delivery charge is kept. The customer paid for goods they are
+    not going to receive."""
+    order = _order(
+        status=OrderStatus.OUT_FOR_DELIVERY.value,
+        courier_shipment_id="WB-1",
+        total_amount=Decimal("5000"),
+        shipping_amount=Decimal("350"),
+    )
+    assert OrderService.cancellation_refund_preview(order) == Decimal("4650")
 
 
 def test_a_shipment_id_charges_the_fee_whatever_the_status_says():
