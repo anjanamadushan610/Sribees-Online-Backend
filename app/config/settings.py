@@ -305,6 +305,17 @@ class Settings(BaseSettings):
         default=None,
         description="Path to Firebase service account JSON file"
     )
+    firebase_credentials_json: Optional[str] = Field(
+        default=None,
+        description=(
+            "The service account JSON itself, as a string. Preferred over "
+            "firebase_credentials_path in a container: it lives with every "
+            "other secret in the deploy's env file instead of needing a file "
+            "written to the host and a volume mounted to the right path. A "
+            "mount that silently fails leaves push notifications dead with no "
+            "error anywhere."
+        ),
+    )
     fcm_server_key: Optional[str] = Field(
         default=None,
         description="FCM server key (deprecated, use service account)"

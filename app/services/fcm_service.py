@@ -42,19 +42,41 @@ class FCMService:
             logger.warning("Firebase Admin SDK not available")
             return False
 
-        cred_path = getattr(settings, 'firebase_credentials_path', None)
+        # The JSON itself, if we were given it. Preferred in a container:
+        # no file on the host, no volume to mount, no path to get wrong -- and
+        # a mount that silently fails leaves push dead with no error anywhere.
+        cred_json = getattr(settings, 'firebase_credentials_json', None)
+        cred_source = None
 
-        if not cred_path:
-            logger.warning("FIREBASE_CREDENTIALS_PATH not configured")
-            return False
+        if cred_json:
+            import json as _json
 
-        cred_file = Path(cred_path)
-        if not cred_file.exists():
-            logger.error(f"Firebase credentials file not found: {cred_path}")
-            return False
+            try:
+                cred_source = _json.loads(cred_json)
+            except ValueError:
+                logger.error(
+                    "FIREBASE_CREDENTIALS_JSON is not valid JSON -- push "
+                    "notifications are disabled. Check the secret was pasted "
+                    "whole, including its newlines."
+                )
+                return False
+        else:
+            cred_path = getattr(settings, 'firebase_credentials_path', None)
+            if not cred_path:
+                logger.warning(
+                    "Neither FIREBASE_CREDENTIALS_JSON nor "
+                    "FIREBASE_CREDENTIALS_PATH is configured -- push disabled"
+                )
+                return False
+
+            cred_file = Path(cred_path)
+            if not cred_file.exists():
+                logger.error(f"Firebase credentials file not found: {cred_path}")
+                return False
+            cred_source = str(cred_file)
 
         try:
-            cred = credentials.Certificate(str(cred_file))
+            cred = credentials.Certificate(cred_source)
             firebase_admin.initialize_app(cred)
             cls._initialized = True
             logger.info("Firebase Admin SDK initialized")
