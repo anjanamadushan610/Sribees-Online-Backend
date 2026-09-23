@@ -1539,30 +1539,93 @@ class OrderService:
         paid = (order.total_amount or Decimal("0")) - (order.wallet_deduction or Decimal("0"))
         return paid if paid > 0 else Decimal("0")
 
+    # Cancelling has three states, not two, and the middle one is the point.
+    CANCEL_FREE = "free"        # nothing booked yet -- everything paid comes back
+    CANCEL_WITH_FEE = "fee"     # booked, not collected -- minus the delivery charge
+    CANCEL_BLOCKED = "blocked"  # a rider has it, or there is nothing to cancel
+
+    @staticmethod
+    def customer_cancel_state(order: Order) -> str:
+        """
+        Whether the customer may still cancel, and on what terms.
+
+        Three states:
+
+        ``free`` -- no courier booked. We have spent nothing on this parcel,
+        so everything paid comes back.
+
+        ``fee`` -- booked with SribeesExpress but no rider has collected it.
+        The booking is real and the delivery has been arranged, so the
+        delivery charge does not come back. The button stays, in red, and the
+        app has to say why before the customer confirms.
+
+        ``blocked`` -- from ``handed_to_courier`` on, a rider is carrying the
+        parcel and SribeesExpress refuses a cancel past pickup. Also every
+        terminal state: an order already cancelled, delivered or in a return
+        has nothing left to cancel.
+
+        The booking, not the status word, decides the first two: a status can
+        be moved by hand, a waybill cannot.
+        """
+        terminal = (
+            OrderStatus.HANDED_TO_COURIER.value,
+            OrderStatus.SHIPPED.value,
+            OrderStatus.OUT_FOR_DELIVERY.value,
+            OrderStatus.DELIVERED.value,
+            OrderStatus.DELIVERY_FAILED.value,
+            OrderStatus.RTO_INITIATED.value,
+            OrderStatus.RETURN_REQUESTED.value,
+            OrderStatus.RETURN_APPROVED.value,
+            OrderStatus.REFUNDED.value,
+            OrderStatus.CANCELLED.value,
+        )
+        if order.status in terminal:
+            return OrderService.CANCEL_BLOCKED
+
+        if order.courier_shipment_id or order.status == OrderStatus.READY_FOR_PICKUP.value:
+            return OrderService.CANCEL_WITH_FEE
+
+        return OrderService.CANCEL_FREE
+
     @staticmethod
     def customer_can_cancel(order: Order) -> bool:
-        """
-        Whether the customer's own Cancel button should exist for this order.
+        """Whether the customer's own Cancel button should exist at all."""
+        return OrderService.customer_cancel_state(order) != OrderService.CANCEL_BLOCKED
 
-        The line is the courier booking, not a status name. `ready_for_pickup`
-        IS the booking -- the parcel is registered with SribeesExpress and a
-        rider may already be on the way -- so a customer cancelling there is
-        cancelling something that exists in somebody else's system. Past that
-        it is a support conversation.
-
-        Checked against ``courier_shipment_id`` as well as the status, because
-        the booking is what actually matters and a status can be moved by
-        hand.
+    @staticmethod
+    def cancellation_courier_fee(order: Order) -> Decimal:
         """
-        if order.courier_shipment_id:
-            return False
-        return order.status in (
-            OrderStatus.PENDING.value,
-            OrderStatus.CONFIRMED.value,
-            OrderStatus.PROCESSING.value,
-            OrderStatus.PACKING.value,
-            OrderStatus.PACKED.value,
-        )
+        The delivery charge kept back when the parcel was already booked.
+
+        ``shipping_amount`` -- what the CUSTOMER was billed for delivery --
+        rather than ``courier_quote_amount``, which is what SribeesExpress
+        charges us. The two are equal at checkout and differ only when a
+        booking had to re-quote after the hold lapsed. Deducting the re-quote
+        would take more from the customer than they ever agreed to pay for
+        delivery, over a change in price they never saw.
+
+        Zero before a booking exists: there is nothing to have spent.
+        """
+        if OrderService.customer_cancel_state(order) != OrderService.CANCEL_WITH_FEE:
+            return Decimal("0")
+        fee = order.shipping_amount or Decimal("0")
+        return fee if fee > 0 else Decimal("0")
+
+    @staticmethod
+    def cancellation_refund_preview(order: Order) -> Decimal:
+        """
+        What would actually land in the wallet, so the confirmation can name
+        the real figure instead of saying "your money".
+
+        Everything paid, minus the delivery charge if one was incurred, and
+        never below zero -- see :meth:`_apply_cancellation_effects` for why
+        the fee is capped at what was paid rather than clawed out of an
+        unrelated balance.
+        """
+        paid = OrderService.gateway_paid_amount(order) + (order.wallet_deduction or Decimal("0"))
+        fee = min(OrderService.cancellation_courier_fee(order), paid)
+        refund = paid - fee
+        return refund if refund > 0 else Decimal("0")
 
     @staticmethod
     async def _record_cancellation(
@@ -1571,7 +1634,8 @@ class OrderService:
         *,
         reason: Optional[str],
         refund_amount: Decimal,
-        cancelled_by: str,
+        courier_fee: Decimal = Decimal("0"),
+        cancelled_by: str = "customer",
         actor_admin_id=None,
         context: Optional[dict] = None,
     ) -> None:
@@ -1621,6 +1685,24 @@ class OrderService:
             if refund_amount > 0 and recent_count >= 1:
                 flags.append("repeat cancellation with money refunded")
 
+            # The expensive habit. Cancelling before we book anything costs a
+            # picker's time; cancelling after costs a courier booking, every
+            # time, and a customer doing it twice in a month is doing it on
+            # purpose.
+            if courier_fee > 0:
+                booked_before = await db.execute(
+                    select(func.count())
+                    .select_from(OrderCancellation)
+                    .where(
+                        OrderCancellation.user_id == order.user_id,
+                        OrderCancellation.cancelled_by == "customer",
+                        OrderCancellation.courier_fee > 0,
+                        OrderCancellation.cancelled_at >= cancelled_at - timedelta(days=30),
+                    )
+                )
+                if (booked_before.scalar() or 0) >= 1:
+                    flags.append("second cancellation after a courier booking in 30 days")
+
         db.add(
             OrderCancellation(
                 order_id=order.order_id,
@@ -1635,6 +1717,7 @@ class OrderService:
                 order_placed_at=placed_at,
                 cancelled_at=cancelled_at,
                 refund_amount=refund_amount,
+                courier_fee=courier_fee,
                 refund_destination="wallet" if refund_amount > 0 else "none",
                 flagged=bool(flags),
                 flag_reason="; ".join(flags) or None,
@@ -1752,11 +1835,39 @@ class OrderService:
             order.refund_amount = (order.refund_amount or Decimal("0")) + gateway_refund
             order.refunded_at = datetime.utcnow()
 
+        # The delivery charge, when the parcel had already been booked.
+        #
+        # Taken as a SEPARATE wallet debit rather than by shrinking the refunds
+        # above. Two reasons. The ledger then reads as what actually happened
+        # -- everything came back, then the delivery was charged -- instead of
+        # a smaller refund nobody can reconcile against the order. And it works
+        # for every payment mix: an order paid entirely from the wallet has no
+        # gateway refund to shrink, and shrinking only the gateway portion
+        # would have let that customer cancel a booked parcel for free.
+        #
+        # Capped at what was actually paid. A COD order has paid us nothing, so
+        # there is nothing to deduct from -- and taking the courier's fee out
+        # of a wallet balance the customer earned elsewhere would be charging
+        # them for money they never gave us.
+        paid_total = gateway_refund + (order.wallet_deduction or Decimal("0"))
+        fee = min(OrderService.cancellation_courier_fee(order), paid_total)
+        if fee > 0:
+            await WalletService.apply_transaction(
+                db,
+                user_id=order.user_id,
+                tx_type=WalletTransactionType.SPENT,
+                amount=fee,
+                title="Delivery charge on cancelled order",
+                order_id=order.order_id,
+                order_number=order.order_number,
+            )
+
         await OrderService._record_cancellation(
             db,
             order,
             reason=reason,
-            refund_amount=gateway_refund + (order.wallet_deduction or Decimal("0")),
+            refund_amount=paid_total - fee,
+            courier_fee=fee,
             cancelled_by=cancelled_by,
             actor_admin_id=actor_admin_id,
             context=context,

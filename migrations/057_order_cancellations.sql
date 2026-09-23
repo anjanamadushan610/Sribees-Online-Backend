@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS order_cancellations (
     refund_amount    NUMERIC(10, 2) NOT NULL DEFAULT 0,
     refund_destination VARCHAR(20) NOT NULL DEFAULT 'none',
 
+    -- The delivery charge kept back when the parcel had already been booked
+    -- with SribeesExpress. Recorded separately from refund_amount so the pair
+    -- reads as "they paid X, we kept Y for the courier" rather than one net
+    -- figure nobody can reconcile against the order.
+    courier_fee      NUMERIC(10, 2) NOT NULL DEFAULT 0,
+
     -- Set by the service when the pattern is worth a human look. Never blocks
     -- the cancellation or the refund: the customer is not made to wait while
     -- somebody decides whether they are a fraud.
@@ -83,3 +89,8 @@ CREATE INDEX IF NOT EXISTS ix_order_cancellations_ip
 CREATE INDEX IF NOT EXISTS ix_order_cancellations_flagged
     ON order_cancellations (cancelled_at DESC)
     WHERE flagged;
+
+-- Added after the table first shipped to development. Separate statement so a
+-- database that already has the table picks the column up on the next deploy.
+ALTER TABLE order_cancellations
+    ADD COLUMN IF NOT EXISTS courier_fee NUMERIC(10, 2) NOT NULL DEFAULT 0;

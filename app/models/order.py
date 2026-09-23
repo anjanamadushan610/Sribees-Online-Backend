@@ -387,6 +387,11 @@ class OrderCancellation(Base):
     # 'wallet' when money moved, 'none' for a COD order where nothing was paid.
     refund_destination = Column(String(20), nullable=False, default="none")
 
+    # Kept back when the parcel was already booked with SribeesExpress. Stored
+    # apart from refund_amount so the pair reads as "they paid X, we kept Y for
+    # the courier" rather than one net figure nobody can reconcile.
+    courier_fee = Column(Numeric(10, 2), nullable=False, default=0)
+
     # Set when the pattern is worth a human look. Never blocks the
     # cancellation or the refund: nobody is made to wait while somebody
     # decides whether they are a fraud.

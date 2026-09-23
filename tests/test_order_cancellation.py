@@ -30,6 +30,8 @@ def _order(**extra):
         payment_method="MARX_OTHER",
         total_amount=Decimal("5000.00"),
         wallet_deduction=Decimal("0"),
+        shipping_amount=Decimal("0"),
+        courier_quote_amount=None,
         courier_shipment_id=None,
     )
     fields.update(extra)
@@ -47,13 +49,13 @@ def test_the_customer_can_cancel_while_nothing_has_been_booked(status):
     assert OrderService.customer_can_cancel(_order(status=status)) is True
 
 
-def test_a_booked_parcel_is_no_longer_the_customers_to_cancel():
-    """`ready_for_pickup` IS the courier booking. A rider may already be on the
-    way, and the cancellation would be of something in somebody else's
-    system."""
-    assert OrderService.customer_can_cancel(
-        _order(status=OrderStatus.READY_FOR_PICKUP.value)
-    ) is False
+def test_a_booked_parcel_can_still_be_cancelled_but_not_for_free():
+    """`ready_for_pickup` IS the courier booking. The customer may still
+    change their mind -- no rider has the parcel yet -- but the delivery has
+    been arranged and paid for, so the charge does not come back."""
+    order = _order(status=OrderStatus.READY_FOR_PICKUP.value)
+    assert OrderService.customer_cancel_state(order) == OrderService.CANCEL_WITH_FEE
+    assert OrderService.customer_can_cancel(order) is True
 
 
 @pytest.mark.parametrize(
@@ -62,14 +64,85 @@ def test_a_booked_parcel_is_no_longer_the_customers_to_cancel():
      "cancelled", "refunded", "return_requested"],
 )
 def test_everything_past_pickup_is_a_support_conversation(status):
-    assert OrderService.customer_can_cancel(_order(status=status)) is False
-
-
-def test_a_shipment_id_closes_the_button_whatever_the_status_says():
-    """The booking is what matters, and a status can be moved by hand. An
-    order carrying a waybill is booked, full stop."""
-    order = _order(status=OrderStatus.CONFIRMED.value, courier_shipment_id="WB-99")
+    order = _order(status=status)
+    assert OrderService.customer_cancel_state(order) == OrderService.CANCEL_BLOCKED
     assert OrderService.customer_can_cancel(order) is False
+
+
+def test_a_shipment_id_charges_the_fee_whatever_the_status_says():
+    """The booking is what matters, and a status can be moved by hand. An
+    order carrying a waybill has been booked, whatever its status word."""
+    order = _order(status=OrderStatus.CONFIRMED.value, courier_shipment_id="WB-99")
+    assert OrderService.customer_cancel_state(order) == OrderService.CANCEL_WITH_FEE
+
+
+# --- the delivery charge, once a parcel is booked ---------------------------
+
+
+def test_nothing_is_kept_back_before_a_booking():
+    """We have spent nothing on this parcel yet."""
+    order = _order(shipping_amount=Decimal("350"))
+    assert OrderService.cancellation_courier_fee(order) == Decimal("0")
+    assert OrderService.cancellation_refund_preview(order) == Decimal("5000")
+
+
+def test_the_delivery_charge_is_kept_back_once_booked():
+    order = _order(
+        status=OrderStatus.READY_FOR_PICKUP.value,
+        shipping_amount=Decimal("350"),
+    )
+    assert OrderService.cancellation_courier_fee(order) == Decimal("350")
+    assert OrderService.cancellation_refund_preview(order) == Decimal("4650")
+
+
+def test_the_fee_is_what_the_customer_was_billed_not_the_requote():
+    """shipping_amount is the number on the customer's bill.
+    courier_quote_amount is what SribeesExpress charges us, and can be higher
+    after a re-quote. Deducting that would take more than the customer ever
+    agreed to pay for delivery, over a price change they never saw."""
+    order = _order(
+        status=OrderStatus.READY_FOR_PICKUP.value,
+        shipping_amount=Decimal("350"),
+        courier_quote_amount=Decimal("900"),
+    )
+    assert OrderService.cancellation_courier_fee(order) == Decimal("350")
+
+
+def test_a_cod_customer_is_not_charged_a_fee_they_never_paid():
+    """Nothing was paid, so there is nothing to deduct from. Taking the
+    courier's fee out of a wallet balance earned elsewhere would be charging
+    them for money they never gave us."""
+    order = _order(
+        status=OrderStatus.READY_FOR_PICKUP.value,
+        payment_method="COD",
+        payment_status=PaymentStatus.PENDING.value,
+        shipping_amount=Decimal("350"),
+    )
+    assert OrderService.cancellation_refund_preview(order) == Decimal("0")
+
+
+def test_the_fee_never_pushes_the_refund_below_zero():
+    """A fee larger than everything paid must leave zero, not a debt."""
+    order = _order(
+        status=OrderStatus.READY_FOR_PICKUP.value,
+        total_amount=Decimal("200"),
+        shipping_amount=Decimal("350"),
+    )
+    assert OrderService.cancellation_refund_preview(order) == Decimal("0")
+
+
+def test_a_wallet_paid_order_still_pays_the_delivery_charge():
+    """The fee is charged against everything paid, not just the card portion.
+    Shrinking only the gateway refund would let a wallet-paid customer cancel
+    a booked parcel for free."""
+    order = _order(
+        status=OrderStatus.READY_FOR_PICKUP.value,
+        total_amount=Decimal("2000"),
+        wallet_deduction=Decimal("2000"),
+        shipping_amount=Decimal("350"),
+    )
+    assert OrderService.gateway_paid_amount(order) == Decimal("0")
+    assert OrderService.cancellation_refund_preview(order) == Decimal("1650")
 
 
 # --- what comes back --------------------------------------------------------

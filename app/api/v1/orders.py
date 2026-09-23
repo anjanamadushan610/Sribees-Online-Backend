@@ -222,17 +222,21 @@ def format_order(
         "return_reason": order.return_reason,
         "return_comments": order.return_comments,
         "return_images": [media_url(p) for p in (order.return_images or [])],
-        # Whether the app should draw a Cancel button, decided HERE.
-        # The rule is "no courier booked yet", and it involves fields the
-        # app does not have. Re-implementing it client-side would mean two
-        # copies drifting apart, and the one on the phone cannot be fixed
+        # Everything the app needs to draw the Cancel button, decided HERE.
+        # The rules involve the courier booking and the payment mix, which the
+        # app does not have -- and a second copy on the phone cannot be fixed
         # for a fortnight once the store has the build.
+        #
+        #   free    -> plain button, everything paid comes back
+        #   fee     -> RED button, and the confirmation must say the parcel is
+        #              already booked and the delivery charge is kept back
+        #   blocked -> no button
         "can_cancel": OrderService.customer_can_cancel(order),
-        # What tapping it would return, so the confirmation can name the
-        # real figure instead of saying "your money".
-        "cancel_refund_amount": float(
-            OrderService.gateway_paid_amount(order) + (order.wallet_deduction or 0)
-        ),
+        "cancel_state": OrderService.customer_cancel_state(order),
+        # The real figures, so the confirmation names them instead of saying
+        # "your money".
+        "cancel_refund_amount": float(OrderService.cancellation_refund_preview(order)),
+        "cancel_courier_fee": float(OrderService.cancellation_courier_fee(order)),
         "return_requested_at": order.return_requested_at.isoformat() if order.return_requested_at else None,
         "refund_amount": float(order.refund_amount) if order.refund_amount is not None else None,
         # When the 12-hour window closes, so the app can show a live countdown
@@ -747,8 +751,8 @@ async def cancel_order(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "This order is already with our courier and can no longer be "
-                    "cancelled here. Please contact support."
+                    "A rider is already carrying this parcel, so it can no longer "
+                    "be cancelled here. Please contact support."
                 ),
             )
 

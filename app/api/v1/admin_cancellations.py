@@ -110,6 +110,13 @@ async def list_cancellations(
                 "order_total": float(total or 0),
                 "payment_method": method,
                 "refund_amount": float(c.refund_amount or 0),
+                "courier_fee": float(c.courier_fee or 0),
+                # The expensive kind: cancelled AFTER we booked a parcel with
+                # SribeesExpress. Worth separating on the screen -- a customer
+                # who repeatedly cancels before booking costs a picker's time,
+                # one who repeatedly cancels after it costs a courier booking
+                # every time.
+                "cancelled_after_booking": float(c.courier_fee or 0) > 0,
                 "refund_destination": c.refund_destination,
                 "ip_address": c.ip_address,
                 "device_id": c.device_id,
@@ -154,6 +161,12 @@ async def cancellation_leaderboard(
             User.nic,
             func.count().label("cancellations"),
             func.coalesce(func.sum(OrderCancellation.refund_amount), 0).label("refunded"),
+            func.coalesce(func.sum(OrderCancellation.courier_fee), 0).label("courier_fees"),
+            # Cancellations that cost us a courier booking, which is the
+            # expensive habit and the one worth spotting early.
+            func.sum(
+                case((OrderCancellation.courier_fee > 0, 1), else_=0)
+            ).label("after_booking"),
             func.sum(case((OrderCancellation.flagged.is_(True), 1), else_=0)).label("flagged"),
             func.min(OrderCancellation.cancelled_at).label("first_seen"),
             func.max(OrderCancellation.cancelled_at).label("last_seen"),
@@ -190,6 +203,8 @@ async def cancellation_leaderboard(
                     "customer_nic": r.nic,
                     "cancellations": r.cancellations,
                     "refunded_total": float(r.refunded or 0),
+                    "courier_fees_charged": float(r.courier_fees or 0),
+                    "cancelled_after_booking": int(r.after_booking or 0),
                     "flagged": int(r.flagged or 0),
                     "distinct_ips": r.distinct_ips,
                     "distinct_devices": r.distinct_devices,
