@@ -1963,6 +1963,15 @@ class OrderService:
         compute their own way is a support ticket that nobody can reproduce.
         """
         delivered_at = order.delivered_at
+        if delivered_at is None and getattr(order, "status", None) == OrderStatus.DELIVERED.value:
+            if hasattr(order, "status_history") and order.status_history:
+                for h in order.status_history:
+                    if getattr(h, "new_status", None) == "delivered" and getattr(h, "created_at", None):
+                        delivered_at = h.created_at
+                        break
+            if delivered_at is None:
+                delivered_at = getattr(order, "updated_at", None) or getattr(order, "created_at", None)
+
         if delivered_at is None:
             return None
         if delivered_at.tzinfo is None:
