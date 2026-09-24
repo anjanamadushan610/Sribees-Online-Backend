@@ -19,6 +19,7 @@ from app.api.v1 import (
     admin_customer_promos,
     admin_dashboard,
     admin_inventory,
+    admin_location_rollout,
     admin_locations,
     admin_orders,
     admin_partners,
@@ -341,6 +342,12 @@ router.include_router(
     admin_locations.router,
     prefix="/admin/locations",
     tags=["Admin Location Management"],
+)
+
+router.include_router(
+    admin_location_rollout.router,
+    prefix="/admin/service-areas",
+    tags=["Admin Service Areas"],
 )
 
 router.include_router(

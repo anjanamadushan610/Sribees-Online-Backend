@@ -28,17 +28,26 @@ router = APIRouter()
     response_model=dict,
     summary="List all served provinces",
     description=(
-        "Returns every province that has at least one active branch mapping, "
-        "along with AI-friendly coverage metadata (district count, post-office "
+        "Returns every province a customer can be served in (unlocked, with at "
+        "least one active postal area). With include_upcoming, every province, "
+        "each marked available, so locked ones can be shown as Coming soon. "
+        "Each carries coverage metadata (district count, post-office "
         "count, branch count, and a plain-English coverage summary). "
         "Works for both authenticated and guest users."
     ),
 )
 async def list_provinces(
+    include_upcoming: bool = Query(
+        False,
+        description=(
+            "Also list locked ones, marked available=false, so the app can show "
+            "them as Coming soon."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user_optional),
 ):
-    provinces = await branch_service.list_provinces(db)
+    provinces = await branch_service.list_provinces(db, include_upcoming=include_upcoming)
 
     return {
         "success": True,
@@ -67,10 +76,17 @@ async def list_districts(
         min_length=1,
         description="Province name (title-case normalised automatically)",
     ),
+    include_upcoming: bool = Query(
+        False,
+        description=(
+            "Also list locked ones, marked available=false, so the app can show "
+            "them as Coming soon."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user_optional),
 ):
-    districts = await branch_service.list_districts(db, province)
+    districts = await branch_service.list_districts(db, province, include_upcoming=include_upcoming)
 
     return {
         "success": True,

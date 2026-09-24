@@ -20,7 +20,7 @@ from typing import Optional
 from uuid import UUID
 
 from redis.asyncio import Redis
-from sqlalchemy import distinct, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -36,6 +36,7 @@ from app.models.branch import (
     PostalCityDirectory,
 )
 from app.models.user import Address
+from app.services import location_rollout_service
 from app.utils.logger import logger
 
 
@@ -62,81 +63,22 @@ def _build_branch_context(
 # Hierarchical Location Discovery  (for cascading dropdowns)
 # ============================================================================
 
-async def list_provinces(db: AsyncSession) -> list[dict]:
+async def list_provinces(db: AsyncSession, *, include_upcoming: bool = False) -> list[dict]:
     """
-    Return every province that has at least one active mapping,
-    together with AI-friendly coverage metadata.
+    Provinces for the address picker, in rollout order.
+
+    Without ``include_upcoming``: only provinces a customer can be served in
+    (the shape older app builds expect). With it: all of them, each marked
+    ``available``, so the app can show the rest as "Coming soon".
     """
-    rows = await db.execute(
-        select(
-            PostalCityBranchMapping.province,
-            func.count(distinct(PostalCityBranchMapping.district)).label("district_count"),
-            func.count(PostalCityBranchMapping.postal_city).label("postal_city_count"),
-            func.count(distinct(PostalCityBranchMapping.branch_id)).label("branch_count"),
-        )
-        .where(
-            PostalCityBranchMapping.is_active.is_(True),
-            PostalCityBranchMapping.province.isnot(None),
-        )
-        .group_by(PostalCityBranchMapping.province)
-        .order_by(PostalCityBranchMapping.province)
+    return await location_rollout_service.customer_provinces(db, include_upcoming=include_upcoming)
+
+
+async def list_districts(db: AsyncSession, province: str, *, include_upcoming: bool = False) -> list[dict]:
+    """Districts of a province for the address picker; see :func:`list_provinces`."""
+    return await location_rollout_service.customer_districts(
+        db, province, include_upcoming=include_upcoming
     )
-
-    result = []
-    for row in rows.all():
-        province, dist_ct, pc_ct, br_ct = row
-        result.append({
-            "province": province,
-            "districtCount": dist_ct,
-            "postalCityCount": pc_ct,
-            "postOfficeCount": pc_ct,  # legacy key, see module docstring
-            "branchCount": br_ct,
-            "coverageSummary": (
-                f"{province} is served by {br_ct} branch(es) covering "
-                f"{dist_ct} district(s) and {pc_ct} postal city(ies)."
-            ),
-        })
-    return result
-
-
-async def list_districts(db: AsyncSession, province: str) -> list[dict]:
-    """
-    Return districts within a province together with coverage metadata.
-    """
-    normalized = province.strip().title()
-
-    rows = await db.execute(
-        select(
-            PostalCityBranchMapping.district,
-            PostalCityBranchMapping.province,
-            func.count(PostalCityBranchMapping.postal_city).label("postal_city_count"),
-            func.array_agg(distinct(PostalCityBranchMapping.branch_name)).label("branch_names"),
-        )
-        .where(
-            PostalCityBranchMapping.is_active.is_(True),
-            PostalCityBranchMapping.province == normalized,
-            PostalCityBranchMapping.district.isnot(None),
-        )
-        .group_by(PostalCityBranchMapping.district, PostalCityBranchMapping.province)
-        .order_by(PostalCityBranchMapping.district)
-    )
-
-    result = []
-    for row in rows.all():
-        district, prov, pc_ct, branch_names = row
-        names_list = sorted(branch_names) if branch_names else []
-        result.append({
-            "district": district,
-            "province": prov,
-            "postalCityCount": pc_ct,
-            "postOfficeCount": pc_ct,  # legacy key, see module docstring
-            "branchNames": names_list,
-            "coverageSummary": (
-                f"{district} district in {prov} has {pc_ct} postal city(ies) "
-                f"served by: {', '.join(names_list)}."
-            ),
-        })
-    return result
 
 
 async def list_postal_cities_for_district(
@@ -153,8 +95,8 @@ async def list_postal_cities_for_district(
         select(PostalCityBranchMapping)
         .options(joinedload(PostalCityBranchMapping.branch))
         .where(
-            PostalCityBranchMapping.is_active.is_(True),
-            PostalCityBranchMapping.district == normalized,
+            location_rollout_service.served_mapping_clause(),
+            func.lower(PostalCityBranchMapping.district) == normalized.lower(),
         )
         .order_by(PostalCityBranchMapping.postal_city)
     )
@@ -197,14 +139,18 @@ async def resolve_branch_by_postal_city(
     db: AsyncSession,
     postal_city_name: str,
 ) -> Optional[PostalCityBranchMapping]:
-    """Look up which branch serves the given postal city (active only)."""
+    """Look up which branch serves the given postal city.
+
+    Served means active AND in an unlocked district of an unlocked province
+    (location_rollout_service): locking a district stops orders there at once.
+    """
     normalized = postal_city_name.strip().lower()
     result = await db.execute(
         select(PostalCityBranchMapping)
         .options(joinedload(PostalCityBranchMapping.branch))
         .where(
             func.lower(PostalCityBranchMapping.postal_city) == normalized,
-            PostalCityBranchMapping.is_active.is_(True),
+            location_rollout_service.served_mapping_clause(),
         )
     )
     return result.unique().scalar_one_or_none()
@@ -232,7 +178,7 @@ async def resolve_branch_by_location_triplet(
         .options(joinedload(PostalCityBranchMapping.branch))
         .where(
             func.lower(PostalCityBranchMapping.postal_city) == pc,
-            PostalCityBranchMapping.is_active.is_(True),
+            location_rollout_service.served_mapping_clause(),
         )
     )
     if dist:
@@ -259,7 +205,7 @@ async def list_served_postal_cities(db: AsyncSession) -> list[str]:
     """Return a sorted list of all actively-served postal city names."""
     result = await db.execute(
         select(PostalCityBranchMapping.postal_city)
-        .where(PostalCityBranchMapping.is_active.is_(True))
+        .where(location_rollout_service.served_mapping_clause())
         .order_by(PostalCityBranchMapping.postal_city)
     )
     return [row[0] for row in result.all()]
@@ -883,7 +829,9 @@ async def sync_branch_coverage(
             mapping.branch_name = branch.name
             mapping.district = district
             mapping.province = province
-            mapping.is_active = True
+            # is_active is left as it is: whether an area is live is the
+            # Service Areas switch, and re-saving a branch form must not turn
+            # back on an area a Super Admin switched off.
         else:
             db.add(
                 PostalCityBranchMapping(

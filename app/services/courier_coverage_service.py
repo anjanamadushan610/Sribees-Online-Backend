@@ -39,6 +39,7 @@ from app.models.branch import PostalCityDirectory
 from app.models.user import Address
 from app.services import courier_credentials
 from app.services.courier_service import CourierService
+from app.services.location_rollout_service import canonical_province
 
 
 @dataclass
@@ -166,7 +167,8 @@ async def sync(db: AsyncSession) -> CoverageSyncResult:
     for key, row in offered.items():
         name = (row.get("name") or "").strip()
         district = (row.get("district") or "").strip()
-        province = (row.get("province") or "").strip()
+        # "Western Province" -> "Western": the spelling used everywhere here.
+        province = canonical_province(row.get("province"))
         courier_id = row.get("id")
         entry = by_key.get(key)
 

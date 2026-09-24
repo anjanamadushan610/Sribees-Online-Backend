@@ -21,6 +21,7 @@ from app.models.escalation import (
     EscalationStatus,
     OrderEscalation,
 )
+from app.models.location import LocationDistrict, LocationProvince
 from app.models.notification import Notification, NotificationType, PushToken
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
@@ -113,6 +114,8 @@ __all__ = [
     "Branch",
     "PostalCityBranchMapping",
     "PostalCityDirectory",
+    "LocationProvince",
+    "LocationDistrict",
     # App settings
     "AppSetting",
     # Stock transfers
