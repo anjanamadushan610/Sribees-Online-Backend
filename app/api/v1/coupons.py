@@ -137,6 +137,15 @@ def _serialize_coupon(
     }
 
 
+def _audience_allows(coupon: Coupon, current_user) -> bool:
+    """A 'specific' coupon is shown only to the customers on its list."""
+    return CouponService.whitelist_allows(
+        coupon,
+        current_user.user_id if current_user else None,
+        getattr(current_user, "phone", None),
+    )
+
+
 def _level_allows(coupon: Coupon, points: Optional[int]) -> bool:
     """A members-only coupon is shown only to members; guests never see one."""
     if coupon.min_tier_id is None:
@@ -200,7 +209,7 @@ async def get_available_coupons(
 
         valid_coupons = []
         for c in coupons:
-            if not _level_allows(c, points):
+            if not _level_allows(c, points) or not _audience_allows(c, current_user):
                 continue
             vu = _as_utc(c.valid_until)
             vf = _as_utc(c.valid_from)
@@ -274,7 +283,7 @@ async def get_collected_coupons(
 
         user_coupons = []
         for c in coupons:
-            if _level_allows(c, points):
+            if _level_allows(c, points) and _audience_allows(c, current_user):
                 user_redemptions = await CouponService.redemptions_by_user(
                     db, c.code, current_user.user_id
                 )
@@ -336,6 +345,21 @@ async def collect_coupon(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="This coupon is not active or has expired.",
+            )
+
+        # Checked here too, not only at checkout: an offer that sits in
+        # My Coupons and then fails at payment is worse than being told now.
+        if not _audience_allows(coupon, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This offer is only for selected customers.",
+            )
+        points = await LoyaltyService.get_points(db, current_user.user_id)
+        if not _level_allows(coupon, points):
+            level = coupon.min_tier.name if coupon.min_tier is not None else "a higher level"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"This offer is for {level} members and above.",
             )
 
         user_id = str(current_user.user_id)

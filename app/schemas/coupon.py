@@ -4,7 +4,7 @@ Coupon Pydantic Schemas
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -20,6 +20,17 @@ def _validate_discount(discount_type: CouponDiscountType, value: Decimal) -> Non
         raise ValueError("discount_value must be greater than 0")
     if discount_type == CouponDiscountType.PERCENTAGE and value > 100:
         raise ValueError("Percentage discount cannot exceed 100")
+
+
+TargetCustomerType = Literal["all", "specific", "tier"]
+
+
+class WhitelistedCustomerIn(BaseModel):
+    """One listed customer. The phone is what the coupon is checked against."""
+    name: Optional[str] = Field(default=None, max_length=255)
+    phone: str = Field(..., min_length=1, max_length=30)
+    email: Optional[str] = None
+    user_id: Optional[UUID] = None
 
 
 class CouponCreate(BaseModel):
@@ -57,6 +68,9 @@ class CouponCreate(BaseModel):
     is_public: bool = True
     # Members-only: redeemable from this loyalty level up. NULL = everyone.
     min_tier_id: Optional[UUID] = None
+    # 'specific' limits it to whitelisted_customers; 'tier' to min_tier_id.
+    target_customer_type: TargetCustomerType = "all"
+    whitelisted_customers: Optional[list[WhitelistedCustomerIn]] = None
     # Empty/omitted = the entire catalog. Naming either narrows the coupon to
     # the union of the two.
     category_ids: Optional[list[UUID]] = None
@@ -110,6 +124,9 @@ class CouponUpdate(BaseModel):
     is_public: Optional[bool] = None
     # An explicit null opens a members-only coupon to everyone again.
     min_tier_id: Optional[UUID] = None
+    target_customer_type: Optional[TargetCustomerType] = None
+    # Sent with 'specific': replaces the whole list.
+    whitelisted_customers: Optional[list[WhitelistedCustomerIn]] = None
     # Sending either replaces that eligibility set entirely; omitting it leaves
     # the set alone. An explicit empty list widens the coupon back to the whole
     # catalog, which is the only way to undo a restriction.

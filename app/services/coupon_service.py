@@ -36,6 +36,19 @@ def _as_aware_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+
+def _canonical_mobile(value: Optional[str]) -> Optional[str]:
+    """+94 form, or the input stripped when it is not a mobile number."""
+    if not value:
+        return None
+    from app.utils.identity import normalize_mobile
+
+    try:
+        return normalize_mobile(value)
+    except ValueError:
+        return value.strip() or None
+
+
 class CouponService:
     """Business logic for validating and redeeming coupons."""
 
@@ -217,6 +230,7 @@ class CouponService:
         user_redemptions: Optional[int] = None,
         user_has_completed_order: Optional[bool] = None,
         user_points: Optional[int] = None,
+        user_phone: Optional[str] = None,
     ) -> None:
         """
         Enforce all coupon rules. Raises :class:`CouponValidationError` with a
@@ -306,6 +320,13 @@ class CouponService:
                 "This coupon is only valid on a customer's first order."
             )
 
+        # A 'specific' coupon is for the customers on its list. Fails closed
+        # like the level check below: no customer, no match, no coupon.
+        if not CouponService.whitelist_allows(coupon, user_id, user_phone):
+            raise CouponValidationError(
+                "This coupon is only for selected customers."
+            )
+
         if getattr(coupon, "min_tier_id", None) is not None:
             tier = getattr(coupon, "min_tier", None)
             if tier is None or user_points is None or user_points < tier.min_points:
@@ -323,6 +344,37 @@ class CouponService:
             raise CouponValidationError(
                 f"This coupon requires a minimum order of Rs {min_order:.2f}."
             )
+
+    @staticmethod
+    def whitelist_allows(
+        coupon: Coupon, user_id: Optional[UUID], user_phone: Optional[str]
+    ) -> bool:
+        """Is this customer on a 'specific' coupon's list? True for any other
+        coupon. Matched on the account it was listed for, or on the mobile
+        number -- both sides in canonical form, since older rows may hold a
+        number as typed."""
+        if (getattr(coupon, "target_customer_type", None) or "all") != "specific":
+            return True
+        if user_id is None:
+            return False
+        phone = _canonical_mobile(user_phone)
+        for entry in getattr(coupon, "whitelist", None) or []:
+            if entry.user_id is not None and entry.user_id == user_id:
+                return True
+            if phone is not None and _canonical_mobile(entry.phone) == phone:
+                return True
+        return False
+
+    @staticmethod
+    async def whitelist_phone(
+        db: AsyncSession, coupon: Coupon, user_id: Optional[UUID]
+    ) -> Optional[str]:
+        """The customer's mobile, fetched only when the coupon needs it."""
+        if user_id is None or getattr(coupon, "target_customer_type", None) != "specific":
+            return None
+        from app.models.user import User
+
+        return await db.scalar(select(User.phone).where(User.user_id == user_id))
 
     @staticmethod
     async def atomic_increment_usage(db: AsyncSession, coupon_id: UUID) -> bool:

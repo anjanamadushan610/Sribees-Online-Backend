@@ -27,7 +27,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.core.dependencies import BranchScope, inject_branch_filter, require_roles
-from app.models.coupon import Coupon, CouponCategory, CouponProduct
+from app.models.coupon import (
+    Coupon,
+    CouponCategory,
+    CouponProduct,
+    CouponWhitelistEntry,
+)
 from app.models.loyalty import LoyaltyTier
 from app.models.order import Order, OrderStatus
 from app.schemas.coupon import CouponCreate, CouponUpdate
@@ -100,6 +105,15 @@ def _format_coupon(c: Coupon, performance: dict | None = None) -> dict:
         "per_user_limit": c.per_user_limit,
         "is_public": c.is_public,
         "min_tier_id": str(c.min_tier_id) if getattr(c, "min_tier_id", None) else None,
+        "target_customer_type": _target_type(c),
+        "whitelisted_customers": [
+            {
+                "name": e.name or e.phone,
+                "phone": e.phone,
+                "user_id": str(e.user_id) if e.user_id else None,
+            }
+            for e in (getattr(c, "whitelist", None) or [])
+        ],
         "target_user_id": str(c.target_user_id) if c.target_user_id else None,
         "category_ids": [str(x.category_id) for x in (c.eligible_categories or [])],
         "product_ids": [str(x.product_id) for x in (c.eligible_products or [])],
@@ -226,6 +240,129 @@ async def _get_or_404(
             detail="Network-wide coupons can only be modified by a Super Admin.",
         )
     return coupon
+
+
+def _target_type(c: Coupon) -> str:
+    """Who the coupon is for. A level on it makes it 'tier' whatever the
+    column says -- the level is what checkout enforces."""
+    if getattr(c, "min_tier_id", None) is not None:
+        return "tier"
+    return getattr(c, "target_customer_type", None) or "all"
+
+
+async def _whitelist_rows(db: AsyncSession, customers: list) -> list[CouponWhitelistEntry]:
+    """
+    The listed customers as rows, keyed on the canonical mobile number.
+
+    Every number is checked before anything is saved: one mistyped number in a
+    CSV of two hundred should be named, not silently dropped -- a dropped
+    customer is someone told their coupon does not work.
+    """
+    from app.models.user import User
+    from app.utils.identity import normalize_mobile
+
+    bad: list[str] = []
+    rows: dict[str, CouponWhitelistEntry] = {}
+    for c in customers:
+        try:
+            phone = normalize_mobile(c.phone)
+        except ValueError:
+            bad.append(f"{c.name or '?'} ({c.phone})")
+            continue
+        if phone not in rows:
+            rows[phone] = CouponWhitelistEntry(
+                phone=phone, name=(c.name or "").strip()[:255] or None, user_id=c.user_id
+            )
+    if bad:
+        shown = ", ".join(bad[:10]) + (f" and {len(bad) - 10} more" if len(bad) > 10 else "")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"These are not Sri Lankan mobile numbers: {shown}",
+        )
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Add at least one customer to the whitelist.",
+        )
+
+    # Attach the account each number belongs to now, where there is one --
+    # looked up in every shape an account may have stored it in.
+    missing = [r for r in rows.values() if r.user_id is None]
+    if missing:
+        shapes = {}
+        for r in missing:
+            local = r.phone[3:]  # +94771234567 -> 771234567
+            for form in (r.phone, f"0{local}", f"94{local}", local):
+                shapes[form] = r.phone
+        found = (
+            await db.execute(
+                select(User.phone, User.user_id).where(
+                    User.phone.in_(list(shapes)),
+                    User.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        by_phone = {shapes[phone]: uid for phone, uid in found}
+        for r in missing:
+            r.user_id = by_phone.get(r.phone)
+    return list(rows.values())
+
+
+async def _apply_audience(
+    db: AsyncSession,
+    coupon: Coupon,
+    target: Optional[str],
+    customers: Optional[list],
+) -> None:
+    """
+    Set who the coupon is for. ``target`` None means "not in this request".
+
+    Choosing 'specific' requires the list; choosing anything else empties it,
+    so a coupon that is no longer for selected customers cannot keep a stale
+    list that would come back if someone flipped it again.
+    """
+    if target is None:
+        if customers is not None and coupon.target_customer_type == "specific":
+            target = "specific"
+        else:
+            return
+    if target == "tier" and coupon.min_tier_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Choose the loyalty level this coupon is for.",
+        )
+    if target != "tier":
+        coupon.min_tier_id = None
+
+    if target == "specific":
+        if customers is None:
+            listed = await db.scalar(
+                select(func.count()).where(
+                    CouponWhitelistEntry.coupon_id == coupon.coupon_id
+                )
+            )
+            if not listed:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Add at least one customer to the whitelist.",
+                )
+        else:
+            rows = await _whitelist_rows(db, customers)
+            await db.execute(
+                delete(CouponWhitelistEntry).where(
+                    CouponWhitelistEntry.coupon_id == coupon.coupon_id
+                )
+            )
+            for r in rows:
+                r.coupon_id = coupon.coupon_id
+                db.add(r)
+    else:
+        await db.execute(
+            delete(CouponWhitelistEntry).where(
+                CouponWhitelistEntry.coupon_id == coupon.coupon_id
+            )
+        )
+    coupon.target_customer_type = target
 
 
 async def _require_tier(db: AsyncSession, tier_id: Optional[UUID]) -> None:
@@ -365,6 +502,9 @@ async def create_coupon(
     db.add(coupon)
     await db.flush()
     await _sync_eligibility(db, coupon, data.category_ids, data.product_ids)
+    # A level alone still means 'tier', as it did before the choice was stored.
+    target = "tier" if data.min_tier_id is not None else data.target_customer_type
+    await _apply_audience(db, coupon, target, data.whitelisted_customers)
     await db.commit()
     await db.refresh(coupon)
     logger.info(
@@ -435,6 +575,9 @@ async def update_coupon(
     # relationship and silently detach the existing rows.
     category_ids = fields.pop("category_ids", None)
     product_ids = fields.pop("product_ids", None)
+    # Applied after the plain columns, below, because it reads min_tier_id.
+    target = fields.pop("target_customer_type", None)
+    fields.pop("whitelisted_customers", None)
     if fields.get("min_tier_id") is not None:
         await _require_tier(db, fields["min_tier_id"])
 
@@ -445,6 +588,9 @@ async def update_coupon(
             setattr(coupon, key, value)
 
     await _sync_eligibility(db, coupon, category_ids, product_ids)
+    if target is None and "min_tier_id" in fields:
+        target = "tier" if coupon.min_tier_id is not None else None
+    await _apply_audience(db, coupon, target, data.whitelisted_customers)
 
     await db.commit()
     await db.refresh(coupon)

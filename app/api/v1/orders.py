@@ -607,6 +607,7 @@ async def quote_order(
                     user_redemptions=user_redemptions,
                     user_has_completed_order=had_completed,
                     user_points=await LoyaltyService.get_points(db, current_user.user_id),
+                    user_phone=current_user.phone,
                 )
             except Exception:
                 quote_coupon = None

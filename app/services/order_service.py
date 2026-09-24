@@ -342,6 +342,7 @@ class OrderService:
                 user_redemptions=user_redemptions,
                 user_has_completed_order=had_completed,
                 user_points=await LoyaltyService.get_points(db, user_id),
+                user_phone=await CouponService.whitelist_phone(db, coupon_row, user_id),
             )
             coupon_for_pricing = {
                 "code": coupon_row.code,

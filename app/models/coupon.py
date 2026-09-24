@@ -136,6 +136,13 @@ class Coupon(Base):
         nullable=True,
     )
 
+    # Who may use it: 'all', 'tier' (min_tier_id) or 'specific' (the rows in
+    # coupon_whitelist). 'specific' with no rows admits nobody -- a whitelist
+    # that failed to save must never read as "everyone" (migration 069).
+    target_customer_type = Column(
+        String(20), nullable=False, default="all", server_default="all"
+    )
+
     is_active = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -153,6 +160,11 @@ class Coupon(Base):
     )
     eligible_products = relationship(
         "CouponProduct", cascade="all, delete-orphan", lazy="selectin"
+    )
+    # Loaded with the coupon for the same reason as min_tier: the synchronous
+    # validator decides from it without a query.
+    whitelist = relationship(
+        "CouponWhitelistEntry", cascade="all, delete-orphan", lazy="selectin"
     )
 
     @property
@@ -180,6 +192,33 @@ class CouponCategory(Base):
         UUID(as_uuid=True),
         ForeignKey("categories.category_id", ondelete="CASCADE"),
         primary_key=True,
+    )
+
+
+class CouponWhitelistEntry(Base):
+    """A customer a 'specific' coupon is for, by mobile number.
+
+    Keyed on the number rather than an account: the admin types or imports
+    numbers, and someone who signs up with a listed number after the coupon
+    was made is exactly who the campaign meant. ``user_id`` is the account the
+    number belonged to when it was listed, kept for display and as a second
+    match should the customer later change their number.
+    """
+
+    __tablename__ = "coupon_whitelist"
+
+    coupon_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("coupons.coupon_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # Canonical +94 form (app.utils.identity.normalize_mobile).
+    phone = Column(String(20), primary_key=True)
+    name = Column(String(255), nullable=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
     )
 
 
