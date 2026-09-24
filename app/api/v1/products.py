@@ -103,6 +103,15 @@ def format_product(
             if product.cashback_percentage is not None
             else float(settings.cashback_rate) * 100,
         ),
+        # The raw, unresolved override on the product itself (null = none set,
+        # inherits the platform rate). Distinct from the resolved value above —
+        # the admin edit form needs this one so saving without touching the
+        # field doesn't silently pin whatever the platform rate happened to be.
+        "global_cashback_percentage": (
+            float(product.cashback_percentage)
+            if product.cashback_percentage is not None
+            else None
+        ),
         "is_on_sale": eff.get("is_on_sale", product.is_on_sale),
         # The branch's own price, distinct from the resolved `price` above:
         # null means this branch has set no override and is selling at the

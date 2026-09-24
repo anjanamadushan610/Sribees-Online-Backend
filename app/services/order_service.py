@@ -580,9 +580,13 @@ class OrderService:
             )).all()
         } if order_items else {}
 
-        # Create order items
-        for item in order_items:
+        # Create order items — from priced_items, not the raw order_items, so
+        # each line carries the cashback % actually resolved for checkout
+        # (branch override -> product default -> platform rate), frozen the
+        # way unit_price already is.
+        for item in priced_items:
             unit_price_val = item.get("price") if "price" in item else item.get("unit_price", 0)
+            rate = item.get("cashback_percentage")
             order_item = OrderItem(
                 order_id=order.order_id,
                 product_id=UUID(str(item["product_id"])),
@@ -594,6 +598,7 @@ class OrderService:
                 unit_price=Decimal(str(unit_price_val)),
                 subtotal=Decimal(str(unit_price_val * item["quantity"])),
                 is_returnable=returnable.get(UUID(str(item["product_id"])), True),
+                cashback_percentage=Decimal(str(rate)) if rate is not None else None,
             )
             db.add(order_item)
 

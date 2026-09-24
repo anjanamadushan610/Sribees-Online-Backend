@@ -302,6 +302,11 @@ class OrderItem(Base):
     # OrderItem(is_returnable=...) construction in order_service.py raised
     # TypeError and broke order placement entirely.
     is_returnable = Column(Boolean, nullable=False, default=True, server_default="true")
+    # Snapshot of the effective cashback % resolved at checkout for this
+    # line (branch override -> product default -> platform rate). See
+    # migration 065. Null for orders placed before this column existed.
+    cashback_percentage = Column(Numeric(5, 2), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

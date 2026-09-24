@@ -107,6 +107,16 @@ class ProductCreate(BaseModel):
     )
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
+    cashback_percentage: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description=(
+            "Bonus cashback % for this product across all branches. "
+            "Null falls back to the platform default rate; a branch may "
+            "still override this per product."
+        ),
+    )
     # Required: an uncategorised product is invisible to storefront/mobile
     # category filtering and inventory sync silently disagrees on what
     # "this product" even is without a SKU.
@@ -160,6 +170,16 @@ class ProductUpdate(BaseModel):
     )
     compare_at_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
+    cashback_percentage: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description=(
+            "Bonus cashback % for this product across all branches. "
+            "Null falls back to the platform default rate; a branch may "
+            "still override this per product."
+        ),
+    )
     category_id: Optional[UUID] = None
     subcategory_id: Optional[UUID] = Field(
         None,

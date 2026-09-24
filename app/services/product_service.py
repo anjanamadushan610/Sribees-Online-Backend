@@ -304,7 +304,7 @@ class ProductService:
             sku=data.sku,
             price=data.price if data.price is not None else Decimal("0.00"),
             stock_quantity=0,
-            cashback_percentage=None,
+            cashback_percentage=data.cashback_percentage,
             compare_at_price=data.compare_at_price,
             cost_price=data.cost_price,
             category_id=data.category_id,

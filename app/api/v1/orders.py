@@ -376,6 +376,22 @@ def format_order(
                 "tax_amount": float(item.tax_amount) if item.tax_amount else 0,
                 "is_reviewed": item.product_id in reviewed,
                 "is_returnable": bool(getattr(item, "is_returnable", True)),
+                # Snapshotted at checkout (see migration 065) — null for
+                # orders placed before this was tracked, in which case the
+                # app shows no per-item cashback rather than guessing one.
+                "cashback_percentage": (
+                    float(item.cashback_percentage)
+                    if getattr(item, "cashback_percentage", None) is not None
+                    else None
+                ),
+                "cashback_earned": (
+                    float(
+                        (item.unit_price * item.quantity * item.cashback_percentage / 100)
+                        .quantize(Decimal("0.01"))
+                    )
+                    if getattr(item, "cashback_percentage", None) is not None
+                    else None
+                ),
             }
             for item in order.items
         ]

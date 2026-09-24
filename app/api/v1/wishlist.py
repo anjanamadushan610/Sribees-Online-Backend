@@ -58,6 +58,14 @@ def format_wishlist_item(item, cashback_map: Optional[dict] = None) -> dict:
                     else float(settings.cashback_rate) * 100
                 )
             ),
+            # The raw, unresolved override (null = no bonus set) — the app
+            # uses this, not the resolved rate above, to decide whether to
+            # show the cashback badge at all.
+            "global_cashback_percentage": (
+                float(item.product.cashback_percentage)
+                if item.product.cashback_percentage is not None
+                else None
+            ),
             "images": [
                 {"image_url": media_url(img.image_url), "is_primary": img.is_primary}
                 for img in (item.product.images or [])[:1]  # Just primary image
