@@ -195,6 +195,7 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
                 "quantity": it.quantity,
                 "unit_price": float(it.unit_price or 0),
                 "subtotal": float(it.subtotal or 0),
+                "is_returnable": bool(getattr(it, "is_returnable", True)),
             }
             for it in (order.items or [])
         ],

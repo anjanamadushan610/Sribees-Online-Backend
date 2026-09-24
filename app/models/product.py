@@ -96,6 +96,16 @@ class Product(Base):
         server_default="false",
         comment="Short shelf life — the stock Quick Sale exists to clear before it spoils",
     )
+    is_returnable = Column(
+        Boolean,
+        default=True,
+        nullable=False,
+        server_default="true",
+        comment=(
+            "Whether a customer may return this product after delivery. "
+            "Copied onto each order item at checkout; see OrderItem.is_returnable."
+        ),
+    )
 
     # Global-level marketing defaults (fallback when no branch override exists)
     discount_percentage = Column(

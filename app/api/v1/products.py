@@ -89,6 +89,7 @@ def format_product(
         "description": localized(product, "description", lang),
         "short_description": localized(product, "short_description", lang),
         "sku": product.sku,
+        "is_returnable": bool(getattr(product, "is_returnable", True)),
         "price": eff.get("effective_price", float(product.price) if product.price else 0),
         "global_price": float(product.price) if product.price else 0,
         "compare_at_price": float(product.compare_at_price) if product.compare_at_price else None,

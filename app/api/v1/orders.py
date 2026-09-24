@@ -364,6 +364,7 @@ def format_order(
                 "subtotal": float(item.subtotal),
                 "tax_amount": float(item.tax_amount) if item.tax_amount else 0,
                 "is_reviewed": item.product_id in reviewed,
+                "is_returnable": bool(getattr(item, "is_returnable", True)),
             }
             for item in order.items
         ]

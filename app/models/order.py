@@ -87,6 +87,10 @@ class Order(Base):
     # Amounts
     subtotal = Column(Numeric(10, 2), nullable=False)
     tax_amount = Column(Numeric(10, 2), default=0)
+    # Snapshot of Product.is_returnable when the order was placed, like
+    # unit_price: the customer bought under the terms shown then, and an
+    # admin changing the product afterwards must not change them.
+    is_returnable = Column(Boolean, nullable=False, default=True, server_default="true")
     shipping_amount = Column(Numeric(10, 2), default=0)
     discount_amount = Column(Numeric(10, 2), default=0)
     # Wallet balance applied to this order + cashback credited for it.

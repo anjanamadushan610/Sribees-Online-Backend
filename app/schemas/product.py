@@ -124,6 +124,10 @@ class ProductCreate(BaseModel):
         False,
         description="Short shelf life — the stock Quick Sale exists to clear before it spoils",
     )
+    is_returnable: bool = Field(
+        True,
+        description="Whether customers may return this product after delivery",
+    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
     images: Optional[List[ProductImageCreate]] = Field(
@@ -169,6 +173,10 @@ class ProductUpdate(BaseModel):
     is_perishable: Optional[bool] = Field(
         None,
         description="Short shelf life — the stock Quick Sale exists to clear before it spoils",
+    )
+    is_returnable: Optional[bool] = Field(
+        None,
+        description="Whether customers may return this product after delivery",
     )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None

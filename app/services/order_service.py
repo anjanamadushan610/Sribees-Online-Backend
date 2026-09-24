@@ -568,6 +568,18 @@ class OrderService:
                             )
                     inv.stock_quantity = max(0, inv.stock_quantity - item["quantity"])
 
+        # Whether each product may be returned, read from the catalog rather
+        # than the cart payload (which the client wrote), and frozen onto the
+        # order item: the terms are the ones in force at checkout.
+        returnable = {
+            row.product_id: row.is_returnable
+            for row in (await db.execute(
+                select(Product.product_id, Product.is_returnable).where(
+                    Product.product_id.in_({UUID(str(i["product_id"])) for i in order_items})
+                )
+            )).all()
+        } if order_items else {}
+
         # Create order items
         for item in order_items:
             unit_price_val = item.get("price") if "price" in item else item.get("unit_price", 0)
@@ -580,7 +592,8 @@ class OrderService:
                 product_image=item.get("image") or item.get("imageUrl") or item.get("product_image"),
                 quantity=item["quantity"],
                 unit_price=Decimal(str(unit_price_val)),
-                subtotal=Decimal(str(unit_price_val * item["quantity"]))
+                subtotal=Decimal(str(unit_price_val * item["quantity"])),
+                is_returnable=returnable.get(UUID(str(item["product_id"])), True),
             )
             db.add(order_item)
 
@@ -1979,6 +1992,43 @@ class OrderService:
         return delivered_at + RETURN_WINDOW
 
     @staticmethod
+    def _returnable_selection(order: Order, items: Optional[list]) -> Optional[list]:
+        """
+        The ``return_items`` to record, with non-returnable products kept out.
+
+        Naming a non-returnable item is refused outright, so the customer
+        learns which one and why. An empty selection means "the whole order";
+        when some of it cannot come back, that becomes an explicit list of
+        the items that can, so the refund (``_compute_return_refund``) never
+        counts goods that stay with the customer.
+        """
+        order_items = order.items or []
+        by_id = {str(i.order_item_id): i for i in order_items}
+
+        def returnable(item) -> bool:
+            return getattr(item, "is_returnable", True) is not False
+
+        if items:
+            refused = [
+                by_id[str(i.order_item_id)].product_name
+                for i in items
+                if str(i.order_item_id) in by_id and not returnable(by_id[str(i.order_item_id)])
+            ]
+            if refused:
+                raise ValueError(
+                    f"{', '.join(refused)} cannot be returned. "
+                    "Please remove it from your return request."
+                )
+            return [{"order_item_id": str(i.order_item_id), "quantity": i.quantity} for i in items]
+
+        if all(returnable(i) for i in order_items):
+            return None  # the whole order, as before
+        allowed = [i for i in order_items if returnable(i)]
+        if not allowed:
+            raise ValueError("None of the items in this order can be returned.")
+        return [{"order_item_id": str(i.order_item_id), "quantity": i.quantity} for i in allowed]
+
+    @staticmethod
     async def request_return(
         db: AsyncSession,
         order: Order,
@@ -2016,14 +2066,12 @@ class OrderService:
                 "Please contact support if you still need help."
             )
 
+        return_items = OrderService._returnable_selection(order, items)
+
         order.status = OrderStatus.RETURN_REQUESTED.value
         order.return_reason = reason
         order.return_comments = comments
-        order.return_items = (
-            [{"order_item_id": str(i.order_item_id), "quantity": i.quantity} for i in items]
-            if items
-            else None
-        )
+        order.return_items = return_items
         # Relative paths, already checked by the router to belong to this
         # order. Stored in the order the customer added them, because the
         # first photo is usually the one they framed as the problem.

@@ -315,6 +315,7 @@ class ProductService:
             is_active=data.is_active,
             is_featured=data.is_featured,
             is_perishable=data.is_perishable,
+            is_returnable=data.is_returnable,
             meta_title=data.meta_title,
             meta_description=data.meta_description
         )
@@ -367,6 +368,9 @@ class ProductService:
         if exclude:
             for key in exclude:
                 update_data.pop(key, None)
+        # NOT NULL: an explicit null means "not changing it", not "unknown".
+        if "is_returnable" in update_data and update_data["is_returnable"] is None:
+            update_data.pop("is_returnable")
 
         for field, value in update_data.items():
             setattr(product, field, value)
