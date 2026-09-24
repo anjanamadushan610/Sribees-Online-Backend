@@ -70,6 +70,7 @@ def recorded(monkeypatch):
 
 def test_scripts_and_spellings_share_one_inbox_row():
     assert insights.miss_key("Seeni") == insights.miss_key("සීනි") == insights.miss_key("sini")
+    assert insights.miss_key("rasa kavili") == insights.miss_key("Rasakavili")
 
 
 @pytest.mark.parametrize("query", ["a", "ab", "500", "x" * 100, "a b c d e f g h"])
@@ -86,7 +87,7 @@ async def test_search_that_found_something_is_not_a_miss(recorded):
 async def test_miss_is_recorded_once_typing_stops(recorded):
     log, maker = recorded
     await insights.note_search(maker, FakeRedis(), "guest:1", "kottu mee", 0, None)
-    assert log == ["kotu mi"]
+    assert log == ["kotumi"]
 
 
 async def test_word_on_its_way_somewhere_is_not_recorded(recorded):

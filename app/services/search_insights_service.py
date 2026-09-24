@@ -15,8 +15,9 @@ Noise control, because a search box is typed into one letter at a time:
   somewhere, not a request;
 - each shopper counts once per query per day (Redis), so ``shoppers`` means
   people, not retries;
-- misses are grouped by their folded words, so "Seeni", "seeni" and "සීනි"
-  are one inbox row;
+- misses are grouped by their folded words, spaces ignored, so "Seeni",
+  "seeni" and "සීනි" are one inbox row, and so are "rasa kavili" and
+  "rasakavili";
 - one-shopper misses nobody acted on are pruned after ``PRUNE_AFTER_DAYS``.
 
 No shopper identity reaches the database; Redis holds only a truncated hash
@@ -58,7 +59,8 @@ def miss_key(raw_query: str) -> Optional[str]:
         return None
     if not any(word.isalpha() for word in parsed.required):
         return None  # "500", "kg": nothing an admin could attach to a product
-    key = " ".join(parsed.required)
+    # Run together, so "rasa kavili" and "rasakavili" are one row too.
+    key = parsed.phrase
     return key if len(key) >= 3 else None
 
 

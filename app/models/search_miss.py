@@ -20,7 +20,8 @@ class SearchMiss(Base):
     """
     One zero-result search, aggregated by what it means rather than how it
     was typed: "Seeni", "seeni" and "සීනි" share ``query_key`` (the folded
-    words from app.services.search_text), so an admin sees one row.
+    words from app.services.search_text, run together), so an admin sees
+    one row.
 
     Holds no shopper identity. ``shoppers`` counts distinct shoppers per day
     (deduplicated in Redis), so one person retrying ten times is one.
