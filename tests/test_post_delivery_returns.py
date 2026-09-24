@@ -28,7 +28,7 @@ class _FakeSession:
     async def commit(self) -> None:
         self.commits += 1
 
-    async def refresh(self, _obj) -> None:
+    async def refresh(self, _obj, attribute_names=None) -> None:
         return None
 
     def add(self, _obj) -> None:

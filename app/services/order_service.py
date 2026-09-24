@@ -1012,6 +1012,14 @@ class OrderService:
         return None
 
     @staticmethod
+    async def get_by_return_waybill(db: AsyncSession, return_id: str) -> Optional[Order]:
+        """The order a SribeesExpress return leg (its SXR waybill) belongs to."""
+        result = await db.execute(
+            select(Order).where(Order.return_waybill_number == return_id)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def get_by_courier_shipment_id(db: AsyncSession, shipment_id: str) -> Optional[Order]:
         """Look up an order by the courier's shipment id (for inbound webhooks)."""
         result = await db.execute(
@@ -2338,6 +2346,13 @@ class OrderService:
                 f"'{order.status}', not an open return."
             )
             return order
+
+        # The refund, the cashback reduction and the referral reduction all
+        # price the returned lines from `order.items`. The webhook and the
+        # return sweep load the order with a plain select, and a lazy load
+        # inside an async session raises instead of querying -- so the refund
+        # a customer was waiting for would have died here. Loaded explicitly.
+        await db.refresh(order, attribute_names=["items"])
 
         order.return_received_at = datetime.now(timezone.utc)
         # Also takes the returned goods' share off the cashback and the

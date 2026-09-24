@@ -189,6 +189,21 @@ async def shipment_status_webhook(
 
     order = await OrderService.get_by_courier_shipment_id(db, shipment_id)
     if not order:
+        # A return leg's status push that carries only its own SXR waybill.
+        # SribeesExpress sent exactly that until the return leg learnt to name
+        # its parent, and every such `delivered` was dropped here as an
+        # unknown shipment -- the goods were back, the code was given, and
+        # the customer was never refunded.
+        returning = await OrderService.get_by_return_waybill(db, shipment_id)
+        if returning is not None:
+            return await _handle_return_event(
+                db,
+                {**payload, "return_id": shipment_id},
+                returning.courier_shipment_id,
+                shipment_id,
+            )
+
+    if not order:
         # Acknowledged, not rejected: a 4xx here would make SribeesExpress log
         # a delivery failure for an event that is genuinely not theirs to fix,
         # and the event is already stored for investigation.

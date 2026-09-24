@@ -356,6 +356,72 @@ async def apply_return_payload(db: AsyncSession, order: Order, payload: dict) ->
     return changed
 
 
+async def refresh_return_tracking(db: AsyncSession, order: Order) -> Optional[dict]:
+    """
+    Pull this order's return leg (contract section 9a.2) and apply it -- which
+    on `delivered` credits the refund and closes the order.
+
+    Returns the raw payload, or None if there is no leg or SribeesExpress could
+    not be reached.
+    """
+    if not order.return_waybill_number:
+        return None
+    try:
+        async with courier_credentials.for_branch(db, order.branch_id):
+            payload = await CourierService.get_return(order.return_waybill_number)
+    except (
+        CourierUnavailableError,
+        CourierError,
+        courier_credentials.CourierNotConfiguredError,
+        courier_credentials.DecryptionError,
+    ) as exc:
+        logger.warning(f"Could not refresh return for order {order.order_number}: {exc}")
+        return None
+
+    await apply_return_payload(db, order, payload)
+    return payload
+
+
+async def sweep_open_returns(db: AsyncSession, *, limit: int = 200) -> int:
+    """
+    Re-read every approved reverse pickup that is still waiting for its goods,
+    and settle the ones SribeesExpress says are back. Returns how many were
+    refunded.
+
+    The refund waits on one event: the return leg reaching `delivered` when
+    our counter gives the rider the handover code. That event arrives as a
+    webhook, SribeesExpress does not retry webhooks, and the forward sweep
+    above never looks at return legs -- so one lost push used to leave the
+    order in QC Pending and the customer unpaid, with nothing to notice.
+    """
+    from app.models.order import OrderStatus
+
+    rows = (
+        await db.execute(
+            select(Order)
+            .where(
+                Order.status == OrderStatus.RETURN_APPROVED.value,
+                Order.return_waybill_number.isnot(None),
+            )
+            .order_by(Order.return_approved_at)
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    refunded = 0
+    for order in rows:
+        try:
+            await refresh_return_tracking(db, order)
+        except Exception:
+            # One order's bad data must not strand every order behind it.
+            await db.rollback()
+            logger.exception(f"Return sweep could not settle {order.order_number}")
+            continue
+        if order.status == OrderStatus.REFUNDED.value:
+            refunded += 1
+    return refunded
+
+
 async def refresh_order_tracking(db: AsyncSession, order: Order) -> Optional[dict]:
     """
     Pull one shipment's current state (contract section 8, with ``history``)

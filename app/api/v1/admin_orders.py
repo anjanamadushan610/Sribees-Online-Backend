@@ -1105,6 +1105,10 @@ async def refresh_courier_tracking(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="SribeesExpress could not be reached. The status shown is the last one we had.",
         )
+    # An open reverse pickup: the goods may be back already, which is what
+    # releases the refund. Best-effort -- the forward refresh above worked.
+    if order.status == OrderStatusEnum.RETURN_APPROVED.value and order.return_waybill_number:
+        await courier_sync_service.refresh_return_tracking(db, order)
 
     branch_name = await _branch_name(db, order.branch_id)
     return {
