@@ -15,6 +15,20 @@
 -- -----------------------------------------------------------------------------
 -- 1. Categories
 -- -----------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- Demo seed: skipped on a database marked
+--     ALTER DATABASE <db> SET sribees.demo_seed = 'off';
+-- which production is. Deploys replay every migration, so without this the
+-- seed re-creates demo customers, orders, admins and catalog rows every time
+-- they are cleared. Unmarked databases (dev, QA, a fresh local one) still seed.
+-- ---------------------------------------------------------------------------
+SELECT coalesce(nullif(current_setting('sribees.demo_seed', true), ''), 'on') <> 'off' AS demo_seed \gset
+\if :demo_seed
+\else
+\echo 'Skipped: sribees.demo_seed is off for this database.'
+\quit
+\endif
+
 INSERT INTO categories (category_id, name, slug, description, is_active) VALUES
     ('c1000000-0000-4000-a000-000000000001', 'Fresh Produce', 'fresh-produce',
      'Fruits and vegetables sourced from local growers.', TRUE),

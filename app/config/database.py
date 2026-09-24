@@ -156,6 +156,17 @@ async def _seed_admin_accounts() -> None:
     from app.models.branch import Branch
 
     async with get_db_context() as db:
+        # Production is marked `ALTER DATABASE ... SET sribees.demo_seed =
+        # 'off'`, the same switch the seed migrations obey. Without this, every
+        # boot re-creates the demo admins, whose shared password is in this
+        # file, as soon as anyone deletes them.
+        demo_seed = (
+            await db.execute(text("SELECT current_setting('sribees.demo_seed', true)"))
+        ).scalar()
+        if demo_seed == "off":
+            logger.info("Demo admin/branch seed skipped (sribees.demo_seed = off)")
+            return
+
         # Resolve the system roles migration 037 seeds, so a new admin can be
         # given the role_id that migration eventually makes NOT NULL.
         #
