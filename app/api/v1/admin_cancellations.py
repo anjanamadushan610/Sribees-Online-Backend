@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import case, func, select
+from sqlalchemy import String, case, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -45,6 +45,22 @@ def _seconds_to_cancel(row) -> Optional[int]:
     if cancelled.tzinfo is None:
         cancelled = cancelled.replace(tzinfo=timezone.utc)
     return int((cancelled - placed).total_seconds())
+
+
+# One person, however many accounts. A customer who closes their account and
+# signs up again gets a new user_id but keeps their NIC (one LIVE account per
+# NIC, migration 068), so counting by user_id would greet them as a first-time
+# canceller. An account that has not given a NIC yet stands on its own id.
+_PERSON = func.coalesce(User.nic, cast(OrderCancellation.user_id, String))
+
+
+async def _accounts_of_the_same_person(db: AsyncSession, user_id: str):
+    """A predicate on OrderCancellation.user_id: this account, and every other
+    account (live or closed) that carries its NIC."""
+    nic = await db.scalar(select(User.nic).where(User.user_id == user_id))
+    if not nic:
+        return OrderCancellation.user_id == user_id
+    return OrderCancellation.user_id.in_(select(User.user_id).where(User.nic == nic))
 
 
 @router.get("/cancellations", response_model=dict)
@@ -76,6 +92,7 @@ async def list_cancellations(
             User.full_name,
             User.phone,
             User.nic,
+            User.deleted_at,
         )
         .join(Order, Order.order_id == OrderCancellation.order_id)
         .outerjoin(User, User.user_id == OrderCancellation.user_id)
@@ -90,12 +107,14 @@ async def list_cancellations(
     if flagged_only:
         q = q.where(OrderCancellation.flagged.is_(True))
     if user_id:
-        q = q.where(OrderCancellation.user_id == user_id)
+        # The person's history, not the account's: a closed account's
+        # cancellations follow them to the one they opened afterwards.
+        q = q.where(await _accounts_of_the_same_person(db, user_id))
 
     rows = (await db.execute(q.limit(limit).offset(offset))).all()
 
     items = []
-    for c, order_number, total, method, _branch, name, phone, nic in rows:
+    for c, order_number, total, method, _branch, name, phone, nic, deleted_at in rows:
         items.append(
             {
                 "cancellation_id": str(c.cancellation_id),
@@ -105,6 +124,7 @@ async def list_cancellations(
                 "customer_name": name,
                 "customer_phone": phone,
                 "customer_nic": nic,
+                "customer_deleted": deleted_at is not None,
                 "cancelled_by": c.cancelled_by,
                 "reason": c.reason,
                 "order_total": float(total or 0),
@@ -150,15 +170,17 @@ async def cancellation_leaderboard(
 
     ``min_count`` defaults to 2 because one cancellation is a customer
     changing their mind, and a list of those is noise that hides the pattern.
+
+    **Counted per person (NIC), not per account.** Closing an account and
+    signing up again with the same NIC must not start the count from zero.
+    Each row is shown as the person's live account where there is one.
     """
     since = datetime.now(timezone.utc) - timedelta(days=days)
 
     q = (
         select(
-            OrderCancellation.user_id,
-            User.full_name,
-            User.phone,
-            User.nic,
+            _PERSON.label("person"),
+            func.count(func.distinct(OrderCancellation.user_id)).label("accounts"),
             func.count().label("cancellations"),
             func.coalesce(func.sum(OrderCancellation.refund_amount), 0).label("refunded"),
             func.coalesce(func.sum(OrderCancellation.courier_fee), 0).label("courier_fees"),
@@ -182,7 +204,7 @@ async def cancellation_leaderboard(
             OrderCancellation.cancelled_by == "customer",
             OrderCancellation.user_id.isnot(None),
         )
-        .group_by(OrderCancellation.user_id, User.full_name, User.phone, User.nic)
+        .group_by(_PERSON)
         .having(func.count() >= min_count)
         .order_by(func.coalesce(func.sum(OrderCancellation.refund_amount), 0).desc())
         .limit(limit)
@@ -192,15 +214,44 @@ async def cancellation_leaderboard(
 
     rows = (await db.execute(q)).all()
 
-    return {
-        "success": True,
-        "data": {
-            "items": [
+    # Who each person is shown as: their live account if they have one, else
+    # the account they used last. `person` is a NIC, or a bare user_id for an
+    # account that has not given one yet.
+    keys = [r.person for r in rows]
+    candidates = (
+        (
+            await db.execute(
+                select(User).where(
+                    User.nic.in_(keys) | cast(User.user_id, String).in_(keys)
+                )
+            )
+        ).scalars().all()
+        if keys
+        else []
+    )
+    shown: dict = {}
+    for u in candidates:
+        key = u.nic or str(u.user_id)
+        best = shown.get(key)
+        rank = (u.deleted_at is None, u.created_at)
+        if best is None or rank > (best.deleted_at is None, best.created_at):
+            shown[key] = u
+
+    items = []
+    for r in rows:
+        u = shown.get(r.person)
+        if u is None:  # pragma: no cover - every key came from a users row
+            continue
+        items.append(
                 {
-                    "user_id": str(r.user_id),
-                    "customer_name": r.full_name,
-                    "customer_phone": r.phone,
-                    "customer_nic": r.nic,
+                    "user_id": str(u.user_id),
+                    "customer_name": u.full_name,
+                    "customer_phone": u.phone or u.deleted_phone,
+                    "customer_nic": u.nic,
+                    "customer_deleted": u.deleted_at is not None,
+                    # How many accounts these cancellations came from -- more
+                    # than one means they closed an account and came back.
+                    "accounts": r.accounts,
                     "cancellations": r.cancellations,
                     "refunded_total": float(r.refunded or 0),
                     "courier_fees_charged": float(r.courier_fees or 0),
@@ -211,11 +262,9 @@ async def cancellation_leaderboard(
                     "first_seen": r.first_seen.isoformat() if r.first_seen else None,
                     "last_seen": r.last_seen.isoformat() if r.last_seen else None,
                 }
-                for r in rows
-            ],
-            "days": days,
-        },
-    }
+        )
+
+    return {"success": True, "data": {"items": items, "days": days}}
 
 
 @router.get("/cancellations/customers/{user_id}/links", response_model=dict)
@@ -226,12 +275,14 @@ async def linked_accounts(
     """
     Other accounts that look like the same person.
 
-    The NIC cannot be the answer here, however natural it feels: it is UNIQUE
-    (``ix_users_nic_unique``), so two accounts can never share one. What a
-    person CAN do is open several accounts with different NICs and cancel from
-    each — and what gives that away is the things they did not think to vary.
+    **Same NIC** is not a guess: it IS the same person -- an account they
+    closed and the one they opened afterwards (one LIVE account per NIC,
+    migration 068).
 
-    Three signals, in descending order of how hard they are to fake:
+    What a person can also do is open several accounts with different NICs
+    and cancel from each -- and what gives that away is the things they did
+    not think to vary. Three signals, in descending order of how hard they
+    are to fake:
 
       * **device** — the same phone. Strongest of the three, and the only one
         that survives a new number and a new name.
@@ -243,6 +294,27 @@ async def linked_accounts(
     A match here means "worth a look", never "guilty". Anyone reading this
     screen should treat it as a question, not an answer.
     """
+    nic = await db.scalar(select(User.nic).where(User.user_id == user_id))
+    by_nic = []
+    if nic:
+        same = (
+            await db.execute(
+                select(User)
+                .where(User.nic == nic, User.user_id != user_id)
+                .order_by(User.created_at.desc())
+            )
+        ).scalars().all()
+        by_nic = [
+            {
+                "user_id": str(u.user_id),
+                "customer_name": u.full_name,
+                "customer_phone": u.phone or u.deleted_phone,
+                "customer_nic": u.nic,
+                "customer_deleted": u.deleted_at is not None,
+            }
+            for u in same
+        ]
+
     device_ids = (
         await db.execute(
             select(func.distinct(OrderCancellation.device_id)).where(
@@ -368,6 +440,7 @@ async def linked_accounts(
     return {
         "success": True,
         "data": {
+            "by_nic": by_nic,
             "by_device": by_device,
             "by_ip": by_ip,
             "by_address": by_address,
