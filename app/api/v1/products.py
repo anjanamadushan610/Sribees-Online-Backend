@@ -12,12 +12,20 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from loguru import logger
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config.database import get_db
+from app.config.database import async_session_maker, get_db
 from app.config.redis import get_redis
 from app.config.settings import settings
 from app.core.dependencies import get_current_admin, get_current_user_optional
@@ -28,7 +36,7 @@ from app.schemas.product import (
     ProductUpdate,
     ProductVariantCreate,
 )
-from app.services import branch_service
+from app.services import branch_service, search_insights_service
 from app.services.category_service import CategoryService
 from app.services.product_review_service import ProductReviewService
 from app.services.product_service import ProductService
@@ -434,7 +442,8 @@ async def get_home_feed(
 @router.get("/search", response_model=dict)
 async def search_products(
     request: Request,
-    q: str = Query(..., min_length=1),
+    background_tasks: BackgroundTasks,
+    q: str = Query(..., min_length=1, max_length=200),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -442,10 +451,13 @@ async def search_products(
     current_user=Depends(get_current_user_optional),
 ):
     """
-    Search products by name or description, filtered by branch visibility.
+    Search products in any script or spelling, filtered by branch visibility
+    and ranked by relevance (see catalog_search_service).
 
     Works for guests as well as authenticated users — guests are resolved
     via the ``X-Device-Id`` header (same convention as branch resolution).
+    A search that finds nothing is queued for the admin's missed-search
+    inbox after the response is sent (search_insights_service).
     """
     try:
         context = await _get_branch_context_for_request(redis, request, current_user)
@@ -460,6 +472,17 @@ async def search_products(
             offset=offset,
             search=q,
         )
+
+        if page == 1:
+            session_id = (
+                str(current_user.user_id)
+                if current_user is not None
+                else f"guest:{request.headers.get('X-Device-Id', '').strip()}"
+            )
+            background_tasks.add_task(
+                search_insights_service.note_search,
+                async_session_maker, redis, session_id, q, total, branch_id,
+            )
 
         return {
             "success": True,

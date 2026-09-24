@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.products import format_product
 from app.config.database import get_db
+from app.config.redis import get_redis_optional
 from app.config.settings import settings
 from app.core.dependencies import (
     BranchScope,
@@ -43,18 +44,24 @@ from app.core.dependencies import (
 from app.core.media import media_path, media_url
 from app.models.admin import Admin, AdminRole
 from app.models.product import BranchInventory
+from app.models.search_miss import SearchMissStatus
 from app.schemas.category import CategoryCreate, CategoryUpdate
 from app.schemas.product import (
     ProductCreate,
     ProductImageCreate,
     ProductUpdate,
+    SearchMissAttachRequest,
+    SearchMissStatusRequest,
     SuggestKeywordsRequest,
     SuggestSkuRequest,
 )
-from app.services import sales_velocity_service
+from app.services import sales_velocity_service, search_insights_service
 from app.services.category_service import CategoryService
 from app.services.embedding_service import GeminiAPIError
-from app.services.keyword_suggestion_service import suggest_search_keywords
+from app.services.keyword_suggestion_service import (
+    SuggestionBudgetExceeded,
+    suggest_within_budget,
+)
 from app.services.product_service import ProductService
 from app.services.storage import StorageError, get_storage
 
@@ -579,6 +586,25 @@ async def list_products(
     }
 
 
+@router.get("/products/search-misses", response_model=dict)
+async def list_search_misses(
+    status_filter: str = Query(SearchMissStatus.OPEN, alias="status"),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Customer searches that found nothing, busiest first: the inbox for
+    teaching search the words shoppers use (search_insights_service).
+
+    Registered before /products/{product_id} so "search-misses" is never
+    parsed as a product id.
+    """
+    if status_filter not in SearchMissStatus.ALL:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown status")
+    items = await search_insights_service.list_misses(db, status_filter, limit)
+    return {"success": True, "data": {"items": items}}
+
+
 @router.get("/products/{product_id}", response_model=dict)
 async def get_product(
     product_id: str,
@@ -613,36 +639,91 @@ async def get_product(
 
 @router.post("/products/suggest-keywords", response_model=dict,
              dependencies=[Depends(require_permission("products", "update"))])
-async def suggest_product_keywords(data: SuggestKeywordsRequest):
+async def suggest_product_keywords(
+    data: SuggestKeywordsRequest,
+    redis=Depends(get_redis_optional),
+):
     """
     AI-assisted search keyword suggestions (Sinhala/Tamil/Singlish/Tamilish).
 
     Gated on products:update, not the router's products:read: every call is
     billed, and only someone who can save the keywords has a reason to ask.
+    Capped per day by ``gemini_keyword_daily_limit``, with repeats served
+    from cache for free; see keyword_suggestion_service.suggest_within_budget.
 
     Takes draft form fields directly rather than a product id, so it works
     while creating a new product too, not just editing a saved one. One-off
-    admin action — never called from the customer search path (see
+    admin action, never called from the customer search path (see
     ``catalog_search_service``), so this never adds AI latency or
     cost to a live search request. The admin reviews/edits the suggestion
     before it's saved.
     """
     try:
-        suggestion = await suggest_search_keywords(
+        result = await suggest_within_budget(
+            redis,
             name=data.name,
             description=data.description or data.short_description,
             category=data.category,
         )
+    except SuggestionBudgetExceeded as exc:
+        detail = (
+            "AI keyword suggestions are turned off."
+            if exc.limit <= 0
+            else f"Today's {exc.limit} AI keyword suggestions are used up. "
+            "Type the keywords by hand, or try again tomorrow."
+        )
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=detail)
     except GeminiAPIError as exc:
         detail = (
-            "AI keyword suggestions aren't configured yet — add GEMINI_API_KEY "
+            "AI keyword suggestions aren't configured yet. Add GEMINI_API_KEY "
             "to the backend .env."
             if "GEMINI_API_KEY not configured" in str(exc)
             else "Could not get AI keyword suggestions right now. Please try again."
         )
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
-    return {"success": True, "data": {"suggested_keywords": suggestion}}
+    return {
+        "success": True,
+        "data": {
+            "suggested_keywords": result["keywords"],
+            "cached": result["cached"],
+            "remaining_today": result["remaining_today"],
+        },
+    }
+
+
+@router.post("/products/search-misses/attach", response_model=dict)
+async def attach_search_miss(
+    data: SearchMissAttachRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: Admin = Depends(require_permission("products", "update")),
+):
+    """Add a missed search to a product's keywords, as the shopper typed it."""
+    try:
+        miss = await search_insights_service.attach(
+            db, data.query_key, data.product_id, admin.admin_id
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc).capitalize())
+    logger.info(
+        f"Search miss {miss.query_key!r} attached to product {data.product_id} "
+        f"by admin {admin.admin_id}"
+    )
+    return {"success": True, "data": {"query_key": miss.query_key, "status": miss.status}}
+
+
+@router.post("/products/search-misses/status", response_model=dict,
+             dependencies=[Depends(require_permission("products", "update"))])
+async def set_search_miss_status(
+    data: SearchMissStatusRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Ignore a missed search (noise, or something we don't sell), or reopen it."""
+    try:
+        miss = await search_insights_service.set_status(db, data.query_key, data.status)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc).capitalize())
+    return {"success": True, "data": {"query_key": miss.query_key, "status": miss.status}}
 
 
 @router.post("/products/suggest-sku", response_model=dict)

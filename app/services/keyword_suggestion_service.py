@@ -20,11 +20,15 @@ an algorithm is not, is knowing that banana is also "kesel", "kehel" and
 "வாழைப்பழம்".
 """
 import asyncio
+import hashlib
 import json
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 from loguru import logger
+from redis.asyncio import Redis
 
 from app.config.settings import settings
 from app.services.embedding_service import GeminiAPIError
@@ -35,6 +39,16 @@ REQUEST_TIMEOUT = 30.0
 MAX_RETRIES = 2
 RETRY_DELAY = 1.5
 MAX_TERM_LENGTH = 60
+CACHE_TTL_SECONDS = 30 * 86400
+_COLOMBO = ZoneInfo("Asia/Colombo")
+
+
+class SuggestionBudgetExceeded(Exception):
+    """Today's ``gemini_keyword_daily_limit`` is used up."""
+
+    def __init__(self, limit: int):
+        super().__init__(f"daily limit of {limit} AI keyword suggestions reached")
+        self.limit = limit
 
 _PROMPT_TEMPLATE = """You help a Sri Lankan grocery app's shoppers find products no matter which language or script they search in.
 
@@ -167,3 +181,62 @@ async def suggest_search_keywords(
                 await asyncio.sleep(RETRY_DELAY)
 
     raise last_error or GeminiAPIError("Keyword suggestion failed after retries")
+
+
+async def suggest_within_budget(
+    redis: Optional[Redis],
+    name: str,
+    description: Optional[str] = None,
+    category: Optional[str] = None,
+) -> dict:
+    """
+    ``suggest_search_keywords`` behind a cache and a daily ceiling.
+
+    The same product asked about twice (a second click, a re-opened form) is
+    answered from Redis for free. Only calls that actually reach Gemini count
+    toward ``settings.gemini_keyword_daily_limit``, and a failed call gives its
+    slot back. There is deliberately no bulk path: one click, one product.
+
+    Returns ``{"keywords", "cached", "remaining_today"}``; raises
+    ``SuggestionBudgetExceeded`` once the day's allowance is spent.
+    """
+    limit = settings.gemini_keyword_daily_limit
+    fingerprint = json.dumps(
+        [name.strip().casefold(), (description or "").strip()[:1000],
+         (category or "").strip().casefold()],
+        ensure_ascii=False,
+    )
+    cache_key = "kw-suggest:v2:" + hashlib.sha256(fingerprint.encode()).hexdigest()
+    count_key = f"kw-suggest:count:{datetime.now(_COLOMBO).date().isoformat()}"
+
+    if redis is not None:
+        cached = await redis.get(cache_key)
+        if cached is not None:
+            used = int(await redis.get(count_key) or 0)
+            return {"keywords": cached, "cached": True,
+                    "remaining_today": max(0, limit - used)}
+
+    if limit <= 0:
+        raise SuggestionBudgetExceeded(limit)
+    used = 0
+    if redis is not None:
+        used = await redis.incr(count_key)
+        if used == 1:
+            await redis.expire(count_key, 2 * 86400)
+        if used > limit:
+            await redis.decr(count_key)
+            raise SuggestionBudgetExceeded(limit)
+    else:
+        logger.warning("Redis unavailable: AI keyword suggestion is not rate-limited")
+
+    try:
+        keywords = await suggest_search_keywords(name, description, category)
+    except Exception:
+        if redis is not None:
+            await redis.decr(count_key)
+        raise
+
+    if redis is not None and keywords:
+        await redis.set(cache_key, keywords, ex=CACHE_TTL_SECONDS)
+    return {"keywords": keywords, "cached": False,
+            "remaining_today": max(0, limit - used)}

@@ -428,6 +428,16 @@ class Settings(BaseSettings):
             "version, since pinned free-tier model names get retired."
         )
     )
+    gemini_keyword_daily_limit: int = Field(
+        default=100,
+        ge=0,
+        description=(
+            "Most AI keyword suggestions the admin panel may request per day "
+            "(Asia/Colombo), across all admins. Repeats of the same product "
+            "are served from a 30-day cache and do not count. 0 turns the "
+            "feature off. The hard ceiling on what this feature can cost."
+        ),
+    )
     gemini_embedding_dimension: int = Field(
         default=768,
         description="Embedding vector dimension"

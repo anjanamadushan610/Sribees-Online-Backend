@@ -3,7 +3,7 @@ Product Pydantic Schemas
 """
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, Field
@@ -180,6 +180,18 @@ class SuggestKeywordsRequest(BaseModel):
     description: Optional[str] = None
     short_description: Optional[str] = None
     category: Optional[str] = None
+
+
+class SearchMissAttachRequest(BaseModel):
+    """Attach a missed search to a product as a search keyword."""
+    query_key: str = Field(..., min_length=1, max_length=200)
+    product_id: UUID
+
+
+class SearchMissStatusRequest(BaseModel):
+    """Ignore a missed search, or put it back in the inbox."""
+    query_key: str = Field(..., min_length=1, max_length=200)
+    status: Literal["open", "ignored"]
 
 
 class SuggestSkuRequest(BaseModel):

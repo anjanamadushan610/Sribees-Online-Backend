@@ -101,6 +101,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
                 logger.info(f"Search index: tokenised {reindexed} products")
         except Exception as e:
             logger.warning(f"Search index refresh skipped: {e}")
+        try:
+            from app.services.search_insights_service import prune
+
+            pruned = await prune(async_session_maker)
+            if pruned:
+                logger.info(f"Search misses: pruned {pruned} stale one-off rows")
+        except Exception as e:
+            logger.warning(f"Search miss pruning skipped: {e}")
 
         logger.info("Application startup complete")
 
