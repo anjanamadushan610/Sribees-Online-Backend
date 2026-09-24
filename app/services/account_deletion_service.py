@@ -33,7 +33,7 @@ from typing import Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import delete, select, update
+from sqlalchemy import Select, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import PushToken
@@ -92,13 +92,14 @@ async def close_account(
     # A live token must not outlive the account. Best-effort by design -- the
     # sessions table is not worth failing a deletion over, and `is_active`
     # already refuses every authenticated request.
+    #
+    # Deleted, not flagged: sessions have no is_active column, so the update
+    # this used to be failed on every closure and revoked nothing.
     try:
         from app.models.user import Session as UserSession
 
         await db.execute(
-            update(UserSession)
-            .where(UserSession.user_id == user_id)
-            .values(is_active=False)
+            delete(UserSession).where(UserSession.user_id == user_id)
         )
     except Exception:
         logger.warning(
@@ -110,6 +111,41 @@ async def close_account(
     await db.refresh(user)
     logger.info(f"Account closed: {user_id}")
     return user
+
+
+def live_nic_holder(nic: str, *, other_than: Optional[UUID] = None) -> Select:
+    """
+    The live account holding this NIC, if any -- the NIC uniqueness check.
+
+    Closed accounts are left out on purpose. They keep their NIC so the
+    history stays attached to the person, and that must not stop the same
+    person registering again with it. Mirrors the `ix_users_nic_live` index,
+    so a check that passes here cannot then fail on the index.
+    """
+    q = select(User).where(User.nic == nic, User.deleted_at.is_(None))
+    if other_than is not None:
+        q = q.where(User.user_id != other_than)
+    return q
+
+
+async def accounts_sharing_nic(
+    db: AsyncSession, nic: Optional[str], *, other_than: UUID
+) -> list[User]:
+    """
+    Every other account, live or closed, that carries this NIC -- newest first.
+
+    What lets an admin get from a customer's new account to the one they
+    closed, and back. The customer never sees this: their new account is a
+    new user_id, so none of the old orders reach the app.
+    """
+    if not nic:
+        return []
+    result = await db.execute(
+        select(User)
+        .where(User.nic == nic, User.user_id != other_than)
+        .order_by(User.created_at.desc())
+    )
+    return list(result.scalars().all())
 
 
 async def find_prior_account_by_nic(db: AsyncSession, nic: str) -> Optional[User]:

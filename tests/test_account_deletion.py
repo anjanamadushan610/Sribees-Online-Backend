@@ -119,3 +119,61 @@ def test_a_reopened_account_is_a_different_row_but_the_same_person():
     assert new.user_id != old.user_id
     assert new.nic == old.nic
     assert old.deleted_at is not None and new.deleted_at is None
+
+
+# --- coming back with the same NIC ------------------------------------------
+#
+# These read the real model and the real query, not a fake: the closed row
+# keeping its NIC used to trip an all-rows unique index, so the person could
+# never register again.
+
+from pathlib import Path  # noqa: E402
+from uuid import uuid4  # noqa: E402
+
+from sqlalchemy.dialects import postgresql  # noqa: E402
+
+from app.models.user import User  # noqa: E402
+from app.services.account_deletion_service import live_nic_holder  # noqa: E402
+
+_MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
+
+
+def _nic_unique_indexes():
+    return [
+        ix
+        for ix in User.__table__.indexes
+        if ix.unique and [c.name for c in ix.columns] == ["nic"]
+    ]
+
+
+def test_only_live_accounts_count_towards_one_account_per_nic():
+    (index,) = _nic_unique_indexes()
+    where = str(index.dialect_options["postgresql"]["where"])
+    assert "deleted_at IS NULL" in where
+    assert not User.__table__.c.nic.unique
+
+
+def test_the_nic_check_ignores_closed_accounts():
+    sql = str(
+        live_nic_holder("199012345678", other_than=uuid4()).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+    assert "users.deleted_at IS NULL" in sql
+    assert "users.user_id !=" in sql
+
+
+def test_the_all_rows_nic_index_is_not_recreated_on_replay():
+    """Every deploy replays every migration. Once a closed and a new account
+    share a NIC, recreating the old index would fail the deploy."""
+    created = [
+        f.name
+        for f in _MIGRATIONS.glob("*.sql")
+        if "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_nic_unique"
+        in f.read_text(encoding="utf-8")
+    ]
+    assert created == []
+    live = (_MIGRATIONS / "068_nic_reusable_after_account_closure.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "WHERE nic IS NOT NULL AND deleted_at IS NULL" in live

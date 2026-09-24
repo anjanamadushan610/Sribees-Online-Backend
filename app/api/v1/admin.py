@@ -26,6 +26,11 @@ from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.product import Product
 from app.models.user import Address, Session, User
 from app.services import customer_insight_service
+from app.services.account_deletion_service import (
+    accounts_sharing_nic,
+    close_account,
+    live_nic_holder,
+)
 
 # Prefix "/admin" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Admin"])
@@ -288,6 +293,13 @@ async def get_customers(
     is_blocked: Optional[bool] = Query(
         None, description="Filter on account status (the directory's Active/Blocked tabs)"
     ),
+    deleted: bool = Query(
+        False,
+        description=(
+            "True lists only the accounts customers closed (the Deleted tab); "
+            "otherwise closed accounts are left out of the directory."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     _perm = Depends(require_permission("customers", "read")),
     scope: BranchScope = Depends(inject_branch_filter),
@@ -307,6 +319,13 @@ async def get_customers(
             )
             query = query.where(User.user_id.in_(branch_customer_ids))
 
+        # A closed account keeps its row, orders and NIC, but it is not a
+        # customer any more: it lives on its own tab, not among the live ones.
+        if deleted:
+            query = query.where(User.deleted_at.isnot(None))
+        else:
+            query = query.where(User.deleted_at.is_(None))
+
         if search:
             search_pattern = f"%{search.strip()}%"
             query = query.where(
@@ -317,7 +336,11 @@ async def get_customers(
                 # someone asks about their account, so it has to be
                 # searchable here or it is not usable as an identity.
                 User.nic.ilike(search_pattern) |
-                User.alternate_phone.ilike(search_pattern)
+                User.alternate_phone.ilike(search_pattern) |
+                # What a closed account held before its contacts were
+                # released, so "this number used to be mine" can be found.
+                User.deleted_phone.ilike(search_pattern) |
+                User.deleted_email.ilike(search_pattern)
             )
 
         if role:
@@ -367,6 +390,7 @@ async def get_customers(
                     "blocked_reason": u.blocked_reason,
                     "created_at": u.created_at.isoformat() if u.created_at else None,
                     "last_login": u.last_login.isoformat() if u.last_login else None,
+                    **_closure_fields(u),
                     **stats.as_dict(u.created_at),
                 }
             )
@@ -534,6 +558,17 @@ class UpdateCustomerPayload(BaseModel):
 
         return normalize_mobile(v)
 
+def _closure_fields(user: User) -> dict:
+    """Whether and when the customer closed the account, and what it held."""
+    return {
+        "is_deleted": user.deleted_at is not None,
+        "deleted_at": user.deleted_at.isoformat() if user.deleted_at else None,
+        "deletion_reason": user.deletion_reason,
+        "deleted_phone": user.deleted_phone,
+        "deleted_email": user.deleted_email,
+    }
+
+
 class BlockCustomerPayload(BaseModel):
     reason: str = Field(..., min_length=1)
 
@@ -603,6 +638,22 @@ async def get_customer_profile(
                 "is_verified": user.is_verified,
                 "created_at": user.created_at.isoformat() if user.created_at else None,
                 "last_login": user.last_login.isoformat() if user.last_login else None,
+                **_closure_fields(user),
+                # The same person's other accounts, found through the NIC: the
+                # one they closed, or the one they opened afterwards.
+                "linked_accounts": [
+                    {
+                        "user_id": str(other.user_id),
+                        "full_name": other.full_name,
+                        "created_at": (
+                            other.created_at.isoformat() if other.created_at else None
+                        ),
+                        **_closure_fields(other),
+                    }
+                    for other in await accounts_sharing_nic(
+                        db, user.nic, other_than=user.user_id
+                    )
+                ],
                 "addresses": [
                     {
                         "address_id": str(addr.address_id),
@@ -747,9 +798,7 @@ async def update_customer(
 
         if payload.nic and payload.nic != user.nic:
             nic_check = await db.execute(
-                select(User).where(
-                    User.nic == payload.nic, User.user_id != user_uuid
-                )
+                live_nic_holder(payload.nic, other_than=user_uuid)
             )
             if nic_check.scalar_one_or_none():
                 raise HTTPException(
@@ -937,30 +986,18 @@ async def delete_customer(
                 "message": "User account and associated data permanently deleted."
             }
         else:
-            # Anonymize (Soft delete)
-            user.full_name = "Deleted Account"
-            user.email = f"deleted_user_{user_id}@sribeesonline.lk"
-            user.phone = None
-            user.password_hash = None
-            user.profile_picture_url = None
-            user.is_active = False
-            user.is_blocked = True
-            user.blocked_reason = "Account Anonymized / Deleted"
-
-            # Delete addresses
+            # The same closure a customer gets from the app, so the account
+            # lands on the Deleted tab, its NIC is free for a new sign-up, and
+            # the name and history stay readable to admins. It used to rename
+            # the row "Deleted Account" without setting deleted_at, which left
+            # the NIC reserved and the person impossible to recognise.
             await db.execute(
                 delete(Address).where(Address.user_id == user_uuid)
             )
-
-            # Delete sessions
-            await db.execute(
-                delete(Session).where(Session.user_id == user_uuid)
-            )
-
-            await db.commit()
+            await close_account(db, user_uuid, reason="Deleted by an admin")
             return {
                 "success": True,
-                "message": "User account anonymized successfully. Order history preserved for accounting."
+                "message": "User account closed. Order history preserved for accounting."
             }
     except HTTPException:
         raise

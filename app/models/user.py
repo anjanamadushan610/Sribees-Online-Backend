@@ -12,6 +12,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -32,6 +33,17 @@ class User(Base):
     """
 
     __tablename__ = "users"
+    __table_args__ = (
+        # One LIVE account per NIC (migration 068). Closed accounts are left
+        # out so a customer who deleted their account can sign up again with
+        # the same NIC, while the closed row keeps that NIC and its history.
+        Index(
+            "ix_users_nic_live",
+            "nic",
+            unique=True,
+            postgresql_where=text("nic IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     # Primary key
     user_id: UUID = Column(
@@ -76,11 +88,13 @@ class User(Base):
     # sign-up creates the row at OTP time and the profile step fills it in
     # immediately afterwards, so there is a moment where the row legitimately
     # has no NIC. "Mandatory" is enforced at the profile gate, not the column.
+    #
+    # Unique among LIVE accounts only (see __table_args__). A closed account
+    # keeps its NIC so its history stays attached to the person, and the same
+    # person may register again with that NIC as a new account.
     nic: Optional[str] = Column(
         String(20),
-        unique=True,
         nullable=True,
-        index=True,
         comment="Sri Lankan NIC: 9 digits + V/X, or 12 digits. Write-once.",
     )
     # A second number the courier can try. Deliberately NOT unique: a

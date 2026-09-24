@@ -37,6 +37,7 @@ from app.schemas.auth import (
     TokensResponse,
     UserResponse,
 )
+from app.services.account_deletion_service import live_nic_holder
 from app.utils.logger import logger
 
 
@@ -938,10 +939,10 @@ class AuthService:
                     ),
                     errors={"nic": "NIC is already set"},
                 )
+            # Only a LIVE account blocks it: someone who closed their account
+            # may register again with the same NIC (the closed row keeps it).
             existing = await db.execute(
-                select(User).where(
-                    User.nic == data.nic, User.user_id != user.user_id
-                )
+                live_nic_holder(data.nic, other_than=user.user_id)
             )
             if existing.scalar_one_or_none() is not None:
                 raise DuplicateError(

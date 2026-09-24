@@ -23,11 +23,14 @@
 ALTER TABLE users ADD COLUMN IF NOT EXISTS nic             VARCHAR(20);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS alternate_phone VARCHAR(20);
 
--- One account per NIC. Partial, so the accounts still mid-sign-up (NIC NULL)
--- do not collide with each other.
-CREATE UNIQUE INDEX IF NOT EXISTS ix_users_nic_unique
-    ON users (nic)
-    WHERE nic IS NOT NULL;
+-- One account per NIC is enforced by `ix_users_nic_live` in migration 068,
+-- which counts LIVE accounts only so a customer who closed their account can
+-- register again with the same NIC.
+--
+-- The index that used to be created here (`ix_users_nic_unique`, every row
+-- with a NIC) must NOT come back: every deploy replays this file, and once a
+-- closed and a new account share a NIC, recreating it would fail the deploy
+-- on a duplicate key.
 
 -- REMOVED 2026-09-22: a synthetic-NIC backfill used to sit here.
 --
