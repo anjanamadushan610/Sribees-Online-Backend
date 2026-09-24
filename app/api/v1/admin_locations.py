@@ -57,6 +57,9 @@ async def list_locations(
     province: Optional[str] = Query(None, description="Filter by province"),
     district: Optional[str] = Query(None, description="Filter by district"),
     active_only: bool = Query(False, description="Only return active postal cities"),
+    launched_only: bool = Query(
+        False, description="Only postal areas switched on in Service Areas (the branch form's picker)"
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     entries = await branch_service.list_directory(
@@ -64,6 +67,7 @@ async def list_locations(
         province=province,
         district=district,
         active_only=active_only,
+        launched_only=launched_only,
     )
     return {
         "success": True,

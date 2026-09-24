@@ -6,10 +6,12 @@ with three switches (Settings > Service Areas in the admin dashboard):
 
     province unlocked  ->  district unlocked  ->  postal area active
 
-A postal area is *active* when a branch is mapped to it and that mapping is
-active (``PostalCityBranchMapping.is_active``). That is what routes an order to
-a branch, so it stays the unit of activation rather than growing a second flag
-that could disagree with it.
+A postal area is *active* when it is launched
+(``PostalCityDirectory.is_launched``, migration 067). Which branch serves it is
+decided somewhere else, on purpose: the branch form's coverage picker offers
+only active postal areas, and assigning one there writes the
+``PostalCityBranchMapping`` that routes its orders. An active postal area with
+no branch yet is not offered to customers: there would be nobody to deliver.
 
 **One rule, applied everywhere.** :func:`served_mapping_clause` is the only
 definition of "a customer may be served here". The address pickers use it, and
@@ -31,12 +33,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable, Optional
-from uuid import UUID
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.branch import Branch, PostalCityBranchMapping, PostalCityDirectory
+from app.models.branch import PostalCityBranchMapping, PostalCityDirectory
 from app.models.location import LocationDistrict, LocationProvince
 from app.models.user import Address
 
@@ -74,10 +75,20 @@ def unlocked_district_names():
     )
 
 
+def launched_postal_names():
+    """Lower-cased names of postal areas switched on in Service Areas."""
+    return select(func.lower(PostalCityDirectory.postal_city)).where(
+        PostalCityDirectory.is_launched.is_(True)
+    )
+
+
 def served_mapping_clause():
-    """The one definition of "a customer may be served in this postal area"."""
+    """The one definition of "a customer may be served in this postal area":
+    a branch serves it, the postal area is on, and its district and province
+    are unlocked."""
     return and_(
         PostalCityBranchMapping.is_active.is_(True),
+        func.lower(PostalCityBranchMapping.postal_city).in_(launched_postal_names()),
         func.lower(PostalCityBranchMapping.district).in_(unlocked_district_names()),
     )
 
@@ -213,9 +224,21 @@ async def admin_overview(db: AsyncSession) -> dict:
         .where(PostalCityDirectory.is_active.is_(True), PostalCityDirectory.courier_postal_city_id.isnot(None))
         .group_by(d_key),
     )
-    m_key = func.lower(PostalCityBranchMapping.district)
     active = await _grouped(
-        db, select(m_key, func.count()).where(PostalCityBranchMapping.is_active.is_(True)).group_by(m_key)
+        db,
+        select(d_key, func.count()).where(PostalCityDirectory.is_launched.is_(True)).group_by(d_key),
+    )
+    # Active AND a branch serves it: what a customer can actually pick once
+    # the district is unlocked.
+    m_key = func.lower(PostalCityBranchMapping.district)
+    serving = await _grouped(
+        db,
+        select(m_key, func.count())
+        .where(
+            PostalCityBranchMapping.is_active.is_(True),
+            func.lower(PostalCityBranchMapping.postal_city).in_(launched_postal_names()),
+        )
+        .group_by(m_key),
     )
     a_key = func.lower(Address.district)
     addresses = await _grouped(db, select(a_key, func.count()).group_by(a_key))
@@ -226,6 +249,7 @@ async def admin_overview(db: AsyncSession) -> dict:
         for d in (d for d in districts if d.province == p.name):
             k = d.name.lower()
             n_active = active.get(k, 0)
+            n_serving = serving.get(k, 0)
             rows.append({
                 "name": d.name,
                 "displayName": _names(d),
@@ -235,9 +259,11 @@ async def admin_overview(db: AsyncSession) -> dict:
                 "postal_total": total.get(k, 0),
                 "courier_linked": linked.get(k, 0),
                 "active": n_active,
+                # Active but no branch assigned yet: not offered to customers.
+                "needs_branch": max(n_active - n_serving, 0),
                 "saved_addresses": addresses.get(k, 0),
                 # What a customer actually gets: the switch alone is not enough.
-                "live": p.is_unlocked and d.is_unlocked and n_active > 0,
+                "live": p.is_unlocked and d.is_unlocked and n_serving > 0,
             })
         out.append({
             "name": p.name,
@@ -260,6 +286,7 @@ async def admin_overview(db: AsyncSession) -> dict:
             "districts_live": sum(1 for r in all_d if r["live"]),
             "postal_total": sum(total.values()),
             "postal_active": sum(active.values()),
+            "postal_serving": sum(serving.values()),
             "courier_linked": sum(linked.values()),
         },
     }
@@ -350,54 +377,35 @@ async def district_postal_areas(db: AsyncSession, district: str) -> dict:
         return "linked" if entry.courier_postal_city_id is not None else "not_linked"
 
     rows = []
-    seen = set()
     for entry in directory:
         m = by_name.get(entry.postal_city.lower())
-        seen.add(entry.postal_city.lower())
+        serving = m if (m is not None and m.is_active) else None
         rows.append({
             "postal_city": entry.postal_city,
             "courier": courier_state(entry),
-            "branch_id": str(m.branch_id) if m else None,
-            "branch_name": m.branch_name if m else None,
-            "is_active": bool(m and m.is_active),
+            # Read-only here: a branch is given its postal areas on the branch
+            # form, which offers only the active ones.
+            "branch_id": str(serving.branch_id) if serving else None,
+            "branch_name": serving.branch_name if serving else None,
+            "is_active": entry.is_launched,
             "saved_addresses": addresses.get(entry.postal_city.lower(), 0),
         })
-    # A mapping with no directory row (hand-made coverage from before the
-    # directory was national) still serves customers, so it must show here.
-    for m in mappings:
-        if m.postal_city.lower() not in seen:
-            rows.append({
-                "postal_city": m.postal_city,
-                "courier": "unknown",
-                "branch_id": str(m.branch_id),
-                "branch_name": m.branch_name,
-                "is_active": m.is_active,
-                "saved_addresses": addresses.get(m.postal_city.lower(), 0),
-            })
     rows.sort(key=lambda r: r["postal_city"].lower())
     return {"district": d.name, "province": d.province, "is_unlocked": d.is_unlocked, "postal_areas": rows}
 
 
 async def activate_postal_areas(
-    db: AsyncSession, district: str, postal_cities: Iterable[str], branch_id: UUID
+    db: AsyncSession, district: str, postal_cities: Iterable[str]
 ) -> ActivationResult:
-    """Map each postal area to ``branch_id`` and switch it on.
+    """Switch postal areas on, so the branch form offers them.
 
-    Refused wholesale when the district is locked or the branch is not live:
-    both would put customers into an order that cannot be fulfilled. Per-area
-    problems (not in this district, courier does not deliver there) skip that
-    area with a reason and let the rest through.
+    Refused wholesale when the district is locked. Per-area problems (not in
+    this district, SribeesExpress does not deliver there) skip that area with
+    a reason and let the rest through.
     """
     d = await _district(db, district)
     if not d.is_unlocked:
         raise RolloutError(f"Unlock {d.name} district before activating its postal areas.")
-    branch = await db.get(Branch, branch_id)
-    if branch is None:
-        raise RolloutError("That branch does not exist.")
-    if not branch.is_active:
-        raise RolloutError(
-            f"{branch.name} is not live yet. Its Branch Manager brings it live from My Branch."
-        )
 
     wanted = {pc.strip().lower(): pc.strip() for pc in postal_cities if pc and pc.strip()}
     directory = {
@@ -408,70 +416,43 @@ async def activate_postal_areas(
             )
         ).scalars().all()
     }
-    existing = {
-        m.postal_city.lower(): m
-        for m in (
-            await db.execute(
-                select(PostalCityBranchMapping).where(
-                    func.lower(PostalCityBranchMapping.postal_city).in_(list(wanted))
-                )
-            )
-        ).scalars().all()
-    }
 
     result = ActivationResult()
     for key, given in sorted(wanted.items()):
         entry = directory.get(key)
-        mapping = existing.get(key)
-        if entry is not None and entry.district.lower() != d.name.lower():
-            result.skipped.append({"postal_city": given, "reason": f"It is in {entry.district} district."})
-            continue
-        if entry is None and mapping is None:
+        if entry is None:
             result.skipped.append({"postal_city": given, "reason": "Not in the postal city directory."})
             continue
-        if entry is not None and not entry.is_active:
+        if entry.district.lower() != d.name.lower():
+            result.skipped.append({"postal_city": given, "reason": f"It is in {entry.district} district."})
+            continue
+        if not entry.is_active:
             result.skipped.append(
                 {"postal_city": given, "reason": "SribeesExpress does not deliver there yet."}
             )
             continue
-
-        name = entry.postal_city if entry else mapping.postal_city
-        if mapping is None:
-            db.add(PostalCityBranchMapping(
-                postal_city=name,
-                branch_id=branch.branch_id,
-                branch_name=branch.name,
-                district=d.name,
-                province=d.province,
-                is_active=True,
-            ))
-        else:
-            mapping.branch_id = branch.branch_id
-            mapping.branch_name = branch.name
-            mapping.district = d.name
-            mapping.province = d.province
-            mapping.is_active = True
-        result.activated.append(name)
+        entry.is_launched = True
+        result.activated.append(entry.postal_city)
 
     await db.commit()
     return result
 
 
 async def deactivate_postal_areas(db: AsyncSession, postal_cities: Iterable[str]) -> int:
-    """Switch postal areas off. The branch assignment is kept, so switching one
-    back on is one click and does not need the branch chosen again."""
+    """Switch postal areas off. A branch that covers one keeps it on its list,
+    so switching it back on restores service without editing the branch."""
     wanted = [pc.strip().lower() for pc in postal_cities if pc and pc.strip()]
     if not wanted:
         return 0
-    mappings = (
+    entries = (
         await db.execute(
-            select(PostalCityBranchMapping).where(
-                func.lower(PostalCityBranchMapping.postal_city).in_(wanted),
-                PostalCityBranchMapping.is_active.is_(True),
+            select(PostalCityDirectory).where(
+                func.lower(PostalCityDirectory.postal_city).in_(wanted),
+                PostalCityDirectory.is_launched.is_(True),
             )
         )
     ).scalars().all()
-    for m in mappings:
-        m.is_active = False
+    for e in entries:
+        e.is_launched = False
     await db.commit()
-    return len(mappings)
+    return len(entries)

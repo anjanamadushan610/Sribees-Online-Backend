@@ -267,6 +267,14 @@ class PostalCityDirectory(Base):
     # postal city, i.e. they cannot deliver there yet. Checkout must refuse it
     # rather than quote a parcel that will be rejected at booking.
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Switched on by the Super Admin in Service Areas (migration 067). Only a
+    # launched postal area is offered to the branch form's coverage picker,
+    # and a customer is served there once a branch is mapped to it too
+    # (location_rollout_service.served_mapping_clause). Separate from
+    # is_active, which is SribeesExpress's "we deliver there".
+    is_launched: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     # SribeesExpress's own id for this postal city, from the last sync
     # (migration 052). Quotes and bookings are keyed on it, not on the name.
     courier_postal_city_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -302,6 +310,7 @@ class PostalCityDirectory(Base):
             "district": self.district,
             "province": self.province,
             "is_active": self.is_active,
+            "is_launched": self.is_launched,
             "courier_postal_city_id": self.courier_postal_city_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

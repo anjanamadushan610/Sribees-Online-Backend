@@ -11,10 +11,12 @@ The three switches that decide where customers may be served
   POST  /admin/service-areas/districts/{name}/postal-areas/activate
   POST  /admin/service-areas/postal-areas/deactivate
 
+Which branch serves a postal area is set on the branch form, which offers only
+the postal areas switched on here.
+
 Prefix applied by app/api/v1/router.py.
 """
 from typing import List
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -45,7 +47,6 @@ class UnlockBody(BaseModel):
 class ActivateBody(BaseModel):
     model_config = {"extra": "forbid"}
     postal_cities: List[str] = Field(..., min_length=1, max_length=500)
-    branch_id: UUID
 
 
 class DeactivateBody(BaseModel):
@@ -95,13 +96,13 @@ async def postal_areas(name: str, db: AsyncSession = Depends(get_db), admin=Requ
 @router.post(
     "/districts/{name}/postal-areas/activate",
     response_model=dict,
-    summary="Map postal areas to a branch and switch them on",
+    summary="Switch postal areas on (the branch form then offers them)",
 )
 async def activate(
     name: str, body: ActivateBody, db: AsyncSession = Depends(get_db), admin=RequireSuperAdmin
 ):
     try:
-        result = await rollout.activate_postal_areas(db, name, body.postal_cities, body.branch_id)
+        result = await rollout.activate_postal_areas(db, name, body.postal_cities)
     except rollout.RolloutError as exc:
         raise _refused(exc)
     return {

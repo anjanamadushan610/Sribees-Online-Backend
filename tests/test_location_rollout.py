@@ -75,12 +75,32 @@ def test_the_national_directory_has_no_repeated_names():
     assert not any("Province'" in r for r in rows)
 
 
-def test_served_means_active_and_unlocked_all_the_way_up():
+def test_served_means_on_with_a_branch_and_unlocked_all_the_way_up():
     sql = str(
         served_mapping_clause().compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
     )
     assert "post_office_branch_mapping.is_active IS true" in sql
+    assert "post_office_directory.is_launched IS true" in sql
     assert "location_districts.is_unlocked IS true" in sql
     assert "location_provinces.is_unlocked IS true" in sql
+
+
+def test_the_launch_switch_lives_on_the_postal_area_not_the_mapping():
+    """Anchored in the wrong class, a scripted column edit once passed every
+    test and broke checkout. Read the mapping itself."""
+    from app.models.branch import PostalCityBranchMapping, PostalCityDirectory
+
+    assert "is_launched" in PostalCityDirectory.__table__.columns
+    assert "is_launched" not in PostalCityBranchMapping.__table__.columns
+    assert PostalCityDirectory(postal_city="X", district="Y", province="Z", is_launched=True).is_launched
+
+
+def test_the_backfill_runs_once_and_keeps_what_was_live():
+    sql = (MIGRATION.parent / "067_postal_area_launch.sql").read_text(encoding="utf-8")
+    # Guarded by "column does not exist yet", so a replay never switches back
+    # on a postal area an admin has since switched off.
+    assert "IF NOT EXISTS" in sql and "column_name = 'is_launched'" in sql
+    assert sql.index("ADD COLUMN is_launched") < sql.index("SET is_launched = TRUE") < sql.index("END IF")
+    assert "AND m.is_active" in sql

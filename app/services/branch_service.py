@@ -624,8 +624,13 @@ async def list_directory(
     province: Optional[str] = None,
     district: Optional[str] = None,
     active_only: bool = False,
+    launched_only: bool = False,
 ) -> list[PostalCityDirectory]:
-    """Return master postal city directory entries with optional filters."""
+    """Return master postal city directory entries with optional filters.
+
+    ``launched_only``: only postal areas switched on in Service Areas — what
+    the branch form's coverage picker offers.
+    """
     stmt = select(PostalCityDirectory).order_by(
         PostalCityDirectory.province,
         PostalCityDirectory.district,
@@ -637,6 +642,8 @@ async def list_directory(
         stmt = stmt.where(PostalCityDirectory.district == district.strip().title())
     if active_only:
         stmt = stmt.where(PostalCityDirectory.is_active.is_(True))
+    if launched_only:
+        stmt = stmt.where(PostalCityDirectory.is_launched.is_(True))
 
     result = await db.execute(stmt)
     return list(result.scalars().all())
