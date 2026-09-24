@@ -87,10 +87,6 @@ class Order(Base):
     # Amounts
     subtotal = Column(Numeric(10, 2), nullable=False)
     tax_amount = Column(Numeric(10, 2), default=0)
-    # Snapshot of Product.is_returnable when the order was placed, like
-    # unit_price: the customer bought under the terms shown then, and an
-    # admin changing the product afterwards must not change them.
-    is_returnable = Column(Boolean, nullable=False, default=True, server_default="true")
     shipping_amount = Column(Numeric(10, 2), default=0)
     discount_amount = Column(Numeric(10, 2), default=0)
     # Wallet balance applied to this order + cashback credited for it.
@@ -300,6 +296,12 @@ class OrderItem(Base):
     subtotal = Column(Numeric(10, 2), nullable=False)
     tax_amount = Column(Numeric(10, 2), default=0)
 
+    # Snapshot of Product.is_returnable at checkout, like unit_price: the
+    # terms a customer bought under never change after the fact. Migration
+    # 064 added the column; this mapping was missing, which meant every
+    # OrderItem(is_returnable=...) construction in order_service.py raised
+    # TypeError and broke order placement entirely.
+    is_returnable = Column(Boolean, nullable=False, default=True, server_default="true")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

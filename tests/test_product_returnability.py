@@ -100,3 +100,14 @@ async def test_explicit_null_does_not_clear_the_flag():
     await ProductService.update(_FakeSession(), product, ProductUpdate(is_returnable=None, name="Strawberries (200 g)"))
     assert product.is_returnable is False
     assert product.name == "Strawberries (200 g)"
+
+
+def test_the_flag_is_mapped_on_the_order_item_not_the_order():
+    # The fakes above can't catch a mis-mapped column. This did happen: the
+    # column landed on Order, OrderItem(is_returnable=...) raised TypeError,
+    # and checkout broke while every test here passed.
+    from app.models.order import Order, OrderItem
+
+    assert "is_returnable" in OrderItem.__table__.columns
+    assert "is_returnable" not in Order.__table__.columns
+    assert OrderItem(is_returnable=False).is_returnable is False
