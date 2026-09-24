@@ -2,6 +2,7 @@
 Order API Endpoints
 """
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -241,6 +242,7 @@ def format_order(
     include_items: bool = True,
     payment_redirect_url: Optional[str] = None,
     reviewed_product_ids: Optional[set] = None,
+    wallet_balance: Optional[Decimal] = None,
 ) -> dict:
     """Format order for API response.
 
@@ -300,7 +302,16 @@ def format_order(
         # The real figures, so the confirmation names them instead of saying
         # "your money".
         "cancel_refund_amount": float(OrderService.cancellation_refund_preview(order)),
-        "cancel_courier_fee": float(OrderService.cancellation_courier_fee(order)),
+        "cancel_courier_fee": float(
+            OrderService.cancellation_charge(order, wallet_balance or Decimal("0"))
+        ),
+        # The part of that charge that would come out of the customer's
+        # existing wallet balance rather than out of this order's payment --
+        # all of it on a COD order. Only known when the caller looked up the
+        # balance (the order detail screen, which is where Cancel lives).
+        "cancel_wallet_charge": float(
+            OrderService.cancellation_wallet_charge(order, wallet_balance or Decimal("0"))
+        ),
         "return_requested_at": order.return_requested_at.isoformat() if order.return_requested_at else None,
         "refund_amount": float(order.refund_amount) if order.refund_amount is not None else None,
         # When the 12-hour window closes, so the app can show a live countdown
@@ -689,9 +700,19 @@ async def get_order(
                 db, current_user.user_id, [item.product_id for item in order.items]
             )
 
+        # The Cancel confirmation names what would come out of the wallet (a
+        # COD order cancelled after booking), and that depends on the balance.
+        wallet_balance = None
+        if OrderService.customer_can_cancel(order):
+            wallet_balance = await WalletService.get_balance(db, current_user.user_id)
+
         return {
             "success": True,
-            "data": format_order(order, reviewed_product_ids=reviewed_product_ids)
+            "data": format_order(
+                order,
+                reviewed_product_ids=reviewed_product_ids,
+                wallet_balance=wallet_balance,
+            ),
         }
     except HTTPException:
         raise
@@ -761,7 +782,6 @@ async def get_order_tracking(
     }
 
 
-@router.post("/{order_id}/cancel", response_model=dict)
 def _client_ip(request: Request) -> Optional[str]:
     """
     The caller's address, as close to the truth as we can get.
@@ -784,6 +804,11 @@ def _client_ip(request: Request) -> Optional[str]:
     return request.client.host if request.client else None
 
 
+# The decorator sits directly on the handler. It was once separated from it by
+# _client_ip above, which silently made THAT the route: every cancel from the
+# app ran a function returning an IP address and failed, and cancel_order was
+# never registered at all. tests/test_order_cancellation.py pins it now.
+@router.post("/{order_id}/cancel", response_model=dict)
 async def cancel_order(
     order_id: str,
     request: Request,
@@ -794,8 +819,9 @@ async def cancel_order(
     """
     Cancel an order the customer still owns the decision on.
 
-    Allowed only while no courier has been booked -- see
-    ``OrderService.customer_can_cancel``. Anything paid comes back to the
+    Allowed until the parcel reaches the customer -- see
+    ``OrderService.customer_cancel_state``. After a courier booking the
+    delivery charge is kept (from the wallet on a COD order). Anything paid comes back to the
     Sribees Wallet in the same transaction, and every cancellation is recorded
     with where it came from (``order_cancellations``).
     """
@@ -809,15 +835,15 @@ async def cancel_order(
                 detail="Order not found"
             )
 
-        # The customer's own limit, which is tighter than the service's: past
-        # the courier booking this is a support conversation, and the app is
-        # told so rather than being allowed to try and fail.
+        # Blocked means it reached the customer or is already settled: past
+        # the doorstep it is a return, not a cancellation. A parcel a rider is
+        # still carrying CAN be cancelled (the rider is asked to bring it back).
         if not OrderService.customer_can_cancel(order):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "A rider is already carrying this parcel, so it can no longer "
-                    "be cancelled here. Please contact support."
+                    "This order can no longer be cancelled. If it has been "
+                    "delivered, you can request a return from the order screen."
                 ),
             )
 

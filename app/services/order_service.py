@@ -1674,6 +1674,39 @@ class OrderService:
         return fee if fee > 0 else Decimal("0")
 
     @staticmethod
+    def cancellation_charge(order: Order, wallet_balance: Decimal = Decimal("0")) -> Decimal:
+        """
+        The delivery charge a cancellation actually takes.
+
+        Taken from what this order paid first, then from the wallet balance
+        the customer already had -- and never more than that, so the wallet
+        is never pushed below zero by it. A COD order has paid nothing, so its
+        charge comes entirely from the wallet, and a COD customer with an empty
+        wallet pays nothing (the owner's rule: take what is there, no debt).
+
+        ``wallet_balance`` is the balance BEFORE the cancellation. The cashback
+        this order earned is about to be clawed back, so it cannot also pay
+        the fee. Pass zero (the default) to charge only against the order's
+        own payment, which is what an admin-initiated cancellation does.
+        """
+        fee = OrderService.cancellation_courier_fee(order)
+        if fee <= 0:
+            return Decimal("0")
+        paid = OrderService.gateway_paid_amount(order) + (order.wallet_deduction or Decimal("0"))
+        spare = (wallet_balance or Decimal("0")) - (
+            getattr(order, "cashback_earned", None) or Decimal("0")
+        )
+        return min(fee, paid + max(spare, Decimal("0")))
+
+    @staticmethod
+    def cancellation_wallet_charge(order: Order, wallet_balance: Decimal = Decimal("0")) -> Decimal:
+        """The part of :meth:`cancellation_charge` beyond what this order paid:
+        what comes out of the customer's existing wallet balance."""
+        charge = OrderService.cancellation_charge(order, wallet_balance)
+        paid = OrderService.gateway_paid_amount(order) + (order.wallet_deduction or Decimal("0"))
+        return max(charge - paid, Decimal("0"))
+
+    @staticmethod
     def cancellation_refund_preview(order: Order) -> Decimal:
         """
         What would actually land in the wallet, so the confirmation can name
@@ -1797,25 +1830,11 @@ class OrderService:
         context: Optional[dict] = None,
     ) -> Order:
         """Cancel an order, refund what was paid, and record who did it."""
-        # Check if order can be cancelled. Once a rider has collected the parcel
-        # (handed_to_courier onwards) a cancellation cannot recall it -- the
-        # courier refuses a cancel past pickup -- so it is a support
-        # conversation, not a button. Before this listed only shipped onwards,
-        # a customer could "cancel" a parcel already in a rider's bag.
-        non_cancellable = [
-            OrderStatus.HANDED_TO_COURIER.value,
-            OrderStatus.SHIPPED.value,
-            OrderStatus.OUT_FOR_DELIVERY.value,
-            OrderStatus.DELIVERED.value,
-            OrderStatus.DELIVERY_FAILED.value,
-            OrderStatus.RTO_INITIATED.value,
-            OrderStatus.RETURN_REQUESTED.value,
-            OrderStatus.RETURN_APPROVED.value,
-            OrderStatus.REFUNDED.value,
-            OrderStatus.CANCELLED.value,
-        ]
-
-        if order.status in non_cancellable:
+        # The same rule the customer's button is drawn from. A parcel a rider
+        # is carrying CAN be cancelled -- it becomes a request the rider acts on
+        # (see _cancel_courier_shipment) -- and this list used to say otherwise,
+        # so the app showed a Cancel button that always failed.
+        if OrderService.customer_cancel_state(order) == OrderService.CANCEL_BLOCKED:
             raise ValueError(f"Order cannot be cancelled in {order.status} status")
 
         order.status = OrderStatus.CANCELLED.value
@@ -1867,6 +1886,16 @@ class OrderService:
         Must be called exactly once per cancellation -- both callers guard the
         transition INTO the cancelled state.
         """
+        # Read before anything below moves it: the delivery charge may be taken
+        # from the balance the customer ALREADY had (see cancellation_charge).
+        # Only for the customer's own cancellation -- an admin cancelling a COD
+        # order (out of stock, say) must not bill the customer's wallet for it.
+        balance_before = (
+            await WalletService.get_balance(db, order.user_id)
+            if cancelled_by == "customer"
+            else Decimal("0")
+        )
+
         # Coupon slot, wallet refund, cashback clawback.
         await OrderService._reverse_order_financials(db, order)
 
@@ -1907,12 +1936,13 @@ class OrderService:
         # gateway refund to shrink, and shrinking only the gateway portion
         # would have let that customer cancel a booked parcel for free.
         #
-        # Capped at what was actually paid. A COD order has paid us nothing, so
-        # there is nothing to deduct from -- and taking the courier's fee out
-        # of a wallet balance the customer earned elsewhere would be charging
-        # them for money they never gave us.
+        # From what was paid first, then from the wallet balance the customer
+        # already had, and never below zero (cancellation_charge). A COD order
+        # paid nothing, so on the customer's own cancellation after booking the
+        # charge comes from their wallet -- the app says so, with the figure,
+        # before they confirm. An empty wallet means no charge, not a debt.
         paid_total = gateway_refund + (order.wallet_deduction or Decimal("0"))
-        fee = min(OrderService.cancellation_courier_fee(order), paid_total)
+        fee = OrderService.cancellation_charge(order, balance_before)
         if fee > 0:
             await WalletService.apply_transaction(
                 db,
@@ -1928,7 +1958,9 @@ class OrderService:
             db,
             order,
             reason=reason,
-            refund_amount=paid_total - fee,
+            # What came back from THIS order: the charge beyond it came out of
+            # the wallet, and must not turn the refund negative.
+            refund_amount=paid_total - min(fee, paid_total),
             courier_fee=fee,
             cancelled_by=cancelled_by,
             actor_admin_id=actor_admin_id,
