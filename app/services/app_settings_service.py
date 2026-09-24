@@ -151,7 +151,25 @@ class AppSettingsService:
                 "message": rows[MOBILE_MAINTENANCE_MESSAGE_KEY] or None,
             },
             "flags": flags,
+            "splash": await AppSettingsService._mobile_splash(db),
         }
+
+    @staticmethod
+    async def _mobile_splash(db: AsyncSession) -> Optional[dict]:
+        """
+        The remote splash animation, or None for the built-in one. A broken
+        row costs the custom splash, never the rest of the config: this runs
+        inside the payload that decides whether the app may start at all.
+        """
+        # Imported here: splash_animation builds on this service.
+        from app.services import splash_animation
+
+        try:
+            value, row = await splash_animation.get_splash_animation(db)
+            return splash_animation.public_splash(value, bool(row and row.is_active))
+        except Exception as exc:
+            logger.warning(f"splash_animation could not be read - using the built-in splash: {exc}")
+            return None
 
     # ------------------------------------------------------------------
     # Splash video helpers

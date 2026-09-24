@@ -5,7 +5,8 @@ Unauthenticated endpoints that the Flutter client calls on every app
 launch.  Responses are aggressively cached in Redis.
 
   GET /splash-config  — returns the current splash video URL + active flag
-  GET /app-config     — the remote controls for an already-shipped build
+  GET /app-config     — the remote controls for an already-shipped build,
+                        including the Lottie splash animation (if any)
 
 Mobile connectivity:
   The Flutter client should send ``X-Client-Platform: android-emulator``
@@ -159,11 +160,17 @@ async def get_support_info(db: AsyncSession = Depends(get_db)):
 async def get_app_config(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
+    x_client_platform: Optional[str] = Header(default=None),
 ):
     cached = await redis.get(APP_CONFIG_CACHE_KEY)
     if cached:
         try:
-            return {"success": True, "data": json.loads(cached), "cached": True}
+            data = json.loads(cached)
+            return {
+                "success": True,
+                "data": _for_client(data, x_client_platform),
+                "cached": True,
+            }
         except ValueError:
             # A corrupt cache entry is not a reason to fail the request that
             # tells the app whether it may run at all. Fall through and read
@@ -186,9 +193,28 @@ async def get_app_config(
                 "update_url": None,
                 "maintenance": {"active": False, "message": None},
                 "flags": {},
+                "splash": None,
             },
             "degraded": True,
         }
 
     await redis.setex(APP_CONFIG_CACHE_KEY, APP_CONFIG_CACHE_TTL, json.dumps(data))
-    return {"success": True, "data": data, "cached": False}
+    return {
+        "success": True,
+        "data": _for_client(data, x_client_platform),
+        "cached": False,
+    }
+
+
+def _for_client(data: dict, client_platform: Optional[str]) -> dict:
+    """
+    Turn the cached splash ``path`` into a URL for THIS client. The cache keeps
+    the relative path so an emulator's rewritten URL is never served to a phone
+    (same reasoning as /splash-config above).
+    """
+    splash = data.get("splash")
+    if not isinstance(splash, dict) or not splash.get("path"):
+        return {**data, "splash": None}
+    public = {k: v for k, v in splash.items() if k != "path"}
+    public["animation_url"] = media_url_for_client(splash["path"], client_platform)
+    return {**data, "splash": public}
