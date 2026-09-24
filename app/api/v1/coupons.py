@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from redis.asyncio import Redis
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -16,6 +16,7 @@ from app.config.redis import get_redis_client, get_redis_optional
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.models.coupon import Coupon
 from app.services.coupon_service import CouponService
+from app.services.loyalty_service import LoyaltyService
 
 router = APIRouter(tags=["Coupons"])
 
@@ -127,7 +128,21 @@ def _serialize_coupon(
         "collected": collected,
         "usable": usable,
         "state": state,
+        # Members-only coupons name their level so the app can badge them.
+        "min_tier": (
+            {"name": coupon.min_tier.name, "color": coupon.min_tier.color}
+            if getattr(coupon, "min_tier", None) is not None
+            else None
+        ),
     }
+
+
+def _level_allows(coupon: Coupon, points: Optional[int]) -> bool:
+    """A members-only coupon is shown only to members; guests never see one."""
+    if coupon.min_tier_id is None:
+        return True
+    tier = coupon.min_tier
+    return tier is not None and points is not None and points >= tier.min_points
 
 
 async def _get_collected_codes(user_id: Optional[str]) -> set:
@@ -177,9 +192,16 @@ async def get_available_coupons(
         )
         result = await db.execute(stmt)
         coupons = result.scalars().all()
+        points = (
+            await LoyaltyService.get_points(db, current_user.user_id)
+            if current_user
+            else None
+        )
 
         valid_coupons = []
         for c in coupons:
+            if not _level_allows(c, points):
+                continue
             vu = _as_utc(c.valid_until)
             vf = _as_utc(c.valid_from)
             if (vu is None or now <= vu) and (vf is None or now >= vf):
@@ -230,22 +252,29 @@ async def get_collected_coupons(
         user_id = str(current_user.user_id)
         collected_codes = await _get_collected_codes(user_id)
 
-        if not collected_codes:
-            return {"success": True, "data": {"coupons": []}}
-
         # A code collected before the shopper switched delivery area is dropped
         # here rather than shown as unusable — the wallet only ever lists codes
         # that would survive checkout right now.
+        #
+        # Coupons issued to this customer (a level reward, an Assign Promo) are
+        # theirs whether or not the Redis "collected" set heard about it: the
+        # set is best-effort, and a reward lost to a cache blip is a promise
+        # quietly broken.
         stmt = select(Coupon).where(
             Coupon.is_active.is_(True),
             await _redeemable_here(redis, current_user),
+            or_(
+                func.upper(Coupon.code).in_(sorted(collected_codes) or [""]),
+                Coupon.target_user_id == current_user.user_id,
+            ),
         )
         result = await db.execute(stmt)
         coupons = result.scalars().all()
+        points = await LoyaltyService.get_points(db, current_user.user_id)
 
         user_coupons = []
         for c in coupons:
-            if c.code.upper() in collected_codes:
+            if _level_allows(c, points):
                 user_redemptions = await CouponService.redemptions_by_user(
                     db, c.code, current_user.user_id
                 )

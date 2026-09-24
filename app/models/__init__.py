@@ -22,6 +22,13 @@ from app.models.escalation import (
     OrderEscalation,
 )
 from app.models.location import LocationDistrict, LocationProvince
+from app.models.loyalty import (
+    LoyaltyAccount,
+    LoyaltyTier,
+    LoyaltyTierReward,
+    OrderReward,
+    OrderRewardStatus,
+)
 from app.models.notification import Notification, NotificationType, PushToken
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
@@ -66,6 +73,12 @@ __all__ = [
     # Referrals
     "Partner",
     "ReferralCommission",
+    # Loyalty
+    "LoyaltyAccount",
+    "LoyaltyTier",
+    "LoyaltyTierReward",
+    "OrderReward",
+    "OrderRewardStatus",
     "SearchMiss",
     "SearchMissStatus",
     "ReferralCommissionStatus",

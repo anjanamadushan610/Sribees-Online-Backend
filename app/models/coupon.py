@@ -128,6 +128,14 @@ class Coupon(Base):
         index=True,
     )
 
+    # Members-only: redeemable from this loyalty level up. RESTRICT so deleting
+    # a level can never quietly open its coupons to everyone (migration 066).
+    min_tier_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("loyalty_tiers.tier_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+
     is_active = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -137,6 +145,9 @@ class Coupon(Base):
     # what makes this additive: every coupon that predates the feature keeps
     # applying to everything with no backfill.
     branch = relationship("Branch", lazy="selectin")
+    # Loaded with the coupon so the synchronous validator can read the level's
+    # threshold without a query.
+    min_tier = relationship("LoyaltyTier", lazy="selectin")
     eligible_categories = relationship(
         "CouponCategory", cascade="all, delete-orphan", lazy="selectin"
     )

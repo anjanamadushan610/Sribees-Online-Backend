@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.core.dependencies import BranchScope, inject_branch_filter, require_roles
 from app.models.coupon import Coupon, CouponCategory, CouponProduct
+from app.models.loyalty import LoyaltyTier
 from app.models.order import Order, OrderStatus
 from app.schemas.coupon import CouponCreate, CouponUpdate
 
@@ -98,6 +99,7 @@ def _format_coupon(c: Coupon, performance: dict | None = None) -> dict:
         "first_order_only": c.first_order_only,
         "per_user_limit": c.per_user_limit,
         "is_public": c.is_public,
+        "min_tier_id": str(c.min_tier_id) if getattr(c, "min_tier_id", None) else None,
         "target_user_id": str(c.target_user_id) if c.target_user_id else None,
         "category_ids": [str(x.category_id) for x in (c.eligible_categories or [])],
         "product_ids": [str(x.product_id) for x in (c.eligible_products or [])],
@@ -226,6 +228,15 @@ async def _get_or_404(
     return coupon
 
 
+async def _require_tier(db: AsyncSession, tier_id: Optional[UUID]) -> None:
+    """A members-only coupon must name a level that exists."""
+    if tier_id is not None and await db.get(LoyaltyTier, tier_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That loyalty level does not exist",
+        )
+
+
 async def _code_taken(db: AsyncSession, code: str, exclude_id: Optional[UUID] = None) -> bool:
     stmt = select(Coupon.coupon_id).where(func.lower(Coupon.code) == code.lower())
     if exclude_id is not None:
@@ -329,6 +340,7 @@ async def create_coupon(
         )
 
     branch_id = data.branch_id if scope.is_unscoped else scope.branch_id
+    await _require_tier(db, data.min_tier_id)
 
     coupon = Coupon(
         code=data.code,
@@ -339,6 +351,7 @@ async def create_coupon(
         first_order_only=data.first_order_only,
         per_user_limit=data.per_user_limit,
         is_public=data.is_public,
+        min_tier_id=data.min_tier_id,
         description=data.description,
         discount_type=data.discount_type.value,
         discount_value=data.discount_value,
@@ -422,6 +435,8 @@ async def update_coupon(
     # relationship and silently detach the existing rows.
     category_ids = fields.pop("category_ids", None)
     product_ids = fields.pop("product_ids", None)
+    if fields.get("min_tier_id") is not None:
+        await _require_tier(db, fields["min_tier_id"])
 
     for key, value in fields.items():
         if key == "discount_type" and value is not None:

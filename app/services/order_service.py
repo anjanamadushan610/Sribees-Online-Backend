@@ -52,8 +52,10 @@ from app.services.courier_service import (
     CourierUnavailableError,
 )
 from app.services.delivery_verification_service import DeliveryVerificationService
+from app.services.loyalty_service import LoyaltyService
 from app.services.marx_ipg_service import MarxIPGError, MarxIPGService
 from app.services.notification_service import NotificationService
+from app.services.order_reward_service import OrderRewardService
 from app.services.pricing_service import (
     DELIVERY_MESSAGES,
     PricingService,
@@ -339,6 +341,7 @@ class OrderService:
                 user_id=user_id,
                 user_redemptions=user_redemptions,
                 user_has_completed_order=had_completed,
+                user_points=await LoyaltyService.get_points(db, user_id),
             )
             coupon_for_pricing = {
                 "code": coupon_row.code,
@@ -615,22 +618,13 @@ class OrderService:
                 order_id=order.order_id,
                 order_number=order_number,
             )
-        # Cashback is credited to the wallet immediately for COD/WALLET (paid
-        # synchronously or collected on delivery), but DEFERRED for gateway
-        # methods until Marx actually confirms the payment succeeded --
-        # crediting it here for a card payment that later fails or is
-        # abandoned would be wrong. See OrderService._on_payment_confirmed.
-        if cashback_earned > 0 and not is_gateway:
-            await WalletService.apply_transaction(
-                db,
-                user_id=user_id,
-                tx_type=WalletTransactionType.EARNED,
-                amount=cashback_earned,
-                title="Order cashback",
-                order_id=order.order_id,
-                order_number=order_number,
-            )
-            order.cashback_credited_at = datetime.utcnow()
+        # The cashback and points this order earns are held, not credited: they
+        # reach the wallet when the return window closes after delivery (see
+        # OrderRewardService). A card order is recorded only once Marx confirms
+        # the payment -- an unpaid card order is not a purchase. See
+        # OrderService._on_payment_confirmed.
+        if not is_gateway:
+            await OrderRewardService.accrue_for_order(db, order)
 
         # Record what this order owes the buyer's referrer, if they have one.
         # Staged in this transaction as `pending`; it only becomes claimable
@@ -740,24 +734,12 @@ class OrderService:
         calling this twice for the same order (e.g. a confirm racing the
         reconciliation sweep) is safe.
         """
-        # 1. Deferred cashback credit (gateway methods only -- COD/WALLET are
-        #    already credited inline at creation, guarded there the same way).
-        if (
-            order.payment_method in GATEWAY_PAYMENT_METHODS
-            and order.cashback_earned
-            and order.cashback_earned > 0
-            and order.cashback_credited_at is None
-        ):
-            await WalletService.apply_transaction(
-                db,
-                user_id=order.user_id,
-                tx_type=WalletTransactionType.EARNED,
-                amount=order.cashback_earned,
-                title="Order cashback",
-                order_id=order.order_id,
-                order_number=order.order_number,
-            )
-            order.cashback_credited_at = datetime.utcnow()
+        # 1. Record the reward a paid card order earns (COD/WALLET orders are
+        #    recorded at creation). Held until the return window closes;
+        #    idempotent on the order, so a confirm racing the reconciliation
+        #    sweep records it once.
+        if order.payment_method in GATEWAY_PAYMENT_METHODS:
+            await OrderRewardService.accrue_for_order(db, order)
 
         # 2. Delivery handover verification code (non-COD only; idempotent).
         await DeliveryVerificationService.generate_for_order(db, order)
@@ -1310,8 +1292,8 @@ class OrderService:
           1. Release the coupon redemption slot.
           2. Refund the wallet balance the customer spent (``wallet_deduction``)
              via a REFUND credit.
-          3. Claw back the cashback credited for this order (``cashback_earned``)
-             via a SPENT debit.
+          3. Void the order's held reward; claw back cashback only if it had
+             already been credited (``cashback_credited_at``) via a SPENT debit.
 
         All movements are staged in the CALLER'S transaction (``apply_transaction``
         flushes but never commits), so they commit atomically with the coupon
@@ -1346,24 +1328,13 @@ class OrderService:
                 f"{order.order_number} (user {order.user_id})"
             )
 
-        # 3. Claw back the cashback earned on this now-cancelled order. May go
-        #    negative if already spent (records the debt).
-        cashback_earned = order.cashback_earned or Decimal("0")
-        if cashback_earned > 0:
-            await WalletService.apply_transaction(
-                db,
-                user_id=order.user_id,
-                tx_type=WalletTransactionType.SPENT,
-                amount=cashback_earned,
-                title="Order cancellation cashback reversal",
-                order_id=order.order_id,
-                order_number=order.order_number,
-                notes="Cashback clawed back on order cancellation (balance may go negative)",
-            )
-            logger.info(
-                f"Cashback clawback {cashback_earned} for cancelled order "
-                f"{order.order_number} (user {order.user_id})"
-            )
+        # 3. Void the cashback and points this order would have earned. Held
+        #    cashback was never paid, so nothing moves; only cashback already
+        #    in the wallet (credited at checkout before rewards were held) is
+        #    clawed back, and that may go negative (records the debt).
+        await OrderRewardService.reverse_for_order(
+            db, order, reason=f"Order {order.order_number} cancelled"
+        )
 
         # 4. Void the referrer's commission on this order. If it was already
         #    paid out, it comes back out of their wallet — otherwise ordering,
@@ -1451,6 +1422,11 @@ class OrderService:
                 # from a timestamp that has nothing to do with the goods.
                 await ReferralService.mark_claimable_for_order(
                     db, order.order_id, delivered_at=order.delivered_at or now
+                )
+                # The customer's own cashback and points wait for the same
+                # window, from the same instant.
+                await OrderRewardService.schedule_for_order(
+                    db, order.order_id, order.delivered_at or now
                 )
         elif status == OrderStatusEnum.CANCELLED:
             order.cancelled_at = now
@@ -1689,18 +1665,22 @@ class OrderService:
         charge comes entirely from the wallet, and a COD customer with an empty
         wallet pays nothing (the owner's rule: take what is there, no debt).
 
-        ``wallet_balance`` is the balance BEFORE the cancellation. The cashback
-        this order earned is about to be clawed back, so it cannot also pay
-        the fee. Pass zero (the default) to charge only against the order's
-        own payment, which is what an admin-initiated cancellation does.
+        ``wallet_balance`` is the balance BEFORE the cancellation. Cashback
+        this order already put in the wallet is about to be clawed back, so it
+        cannot also pay the fee; held cashback was never in the balance and is
+        not deducted. Pass zero (the default) to charge only against the
+        order's own payment, which is what an admin-initiated cancellation does.
         """
         fee = OrderService.cancellation_courier_fee(order)
         if fee <= 0:
             return Decimal("0")
         paid = OrderService.gateway_paid_amount(order) + (order.wallet_deduction or Decimal("0"))
-        spare = (wallet_balance or Decimal("0")) - (
+        credited_cashback = (
             getattr(order, "cashback_earned", None) or Decimal("0")
+            if getattr(order, "cashback_credited_at", None) is not None
+            else Decimal("0")
         )
+        spare = (wallet_balance or Decimal("0")) - credited_cashback
         return min(fee, paid + max(spare, Decimal("0")))
 
     @staticmethod
@@ -2212,6 +2192,22 @@ class OrderService:
                 notes="Wallet credited for approved return",
             )
 
+        # What the returned goods earned comes off the order's cashback, and
+        # off the referrer's commission -- only those goods: the rest was
+        # delivered and kept. Here rather than in complete_return so a
+        # returnless refund does it too (it used to leave both untouched), and
+        # behind the refunded_at guard above so a replayed webhook cannot do
+        # it twice. Staged in this transaction with the refund itself.
+        await OrderRewardService.reduce_for_return(db, order)
+
+        from app.services.referral_service import ReferralService
+
+        returned_value = OrderService._compute_return_refund(order)
+        if returned_value > 0:
+            await ReferralService.reduce_for_returned_value(
+                db, order.order_id, returned_value
+            )
+
         order.refunded_at = datetime.now(timezone.utc)
         order.status = OrderStatus.REFUNDED.value
 
@@ -2344,23 +2340,9 @@ class OrderService:
             return order
 
         order.return_received_at = datetime.now(timezone.utc)
+        # Also takes the returned goods' share off the cashback and the
+        # referrer's commission, in the same transaction.
         await OrderService._credit_return_refund(db, order)
-
-        # The referrer's share of goods that came back. Only that share: the
-        # rest of the order was delivered and kept, and the referrer did the
-        # same work for it. Voiding the whole commission over one returned
-        # kettle is easy to write and impossible to defend to the person it
-        # happens to.
-        #
-        # Staged in this transaction so the customer's refund and the
-        # referrer's adjustment land together or not at all.
-        from app.services.referral_service import ReferralService
-
-        returned_value = OrderService._compute_return_refund(order)
-        if returned_value > 0:
-            await ReferralService.reduce_for_returned_value(
-                db, order.order_id, returned_value
-            )
 
         await db.commit()
         await db.refresh(order)

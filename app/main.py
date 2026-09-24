@@ -121,16 +121,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from contextlib import suppress
 
     from app.services.assistant_reminder_worker import run_reminder_worker
+    from app.services.order_reward_worker import run_order_reward_worker
     from app.services.referral_vesting_worker import run_referral_vesting_worker
 
-    # Two loops, not one. They fail for unrelated reasons -- one needs the
-    # reminder tables, the other the commission tables -- and sharing a task
-    # would mean an exception in either stopping both. A referral sweep that
+    # Separate loops, not one. They fail for unrelated reasons -- reminders,
+    # commissions and order rewards each need their own tables -- and sharing
+    # a task would mean an exception in any stopping all. A money sweep that
     # silently stopped looks exactly like "the money never vested", which is
     # the one failure nobody reports as a bug.
     background = [
         asyncio.create_task(run_reminder_worker()),
         asyncio.create_task(run_referral_vesting_worker()),
+        asyncio.create_task(run_order_reward_worker()),
     ]
     try:
         yield

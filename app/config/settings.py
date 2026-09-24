@@ -48,6 +48,14 @@ class Settings(BaseSettings):
         ),
     )
     wallet_currency: str = Field(default="LKR", description="Wallet currency code")
+    loyalty_spend_per_point: float = Field(
+        default=1000.0,
+        gt=0,
+        description=(
+            "Rupees of order value (excluding delivery) per loyalty point. "
+            "Fallback only: the Super Admin's platform setting overrides it."
+        ),
+    )
 
     # =========================================================================
     # Referrals

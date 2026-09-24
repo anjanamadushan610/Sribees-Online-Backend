@@ -55,6 +55,8 @@ class CouponCreate(BaseModel):
     first_order_only: bool = False
     per_user_limit: Optional[int] = Field(default=None, ge=1)
     is_public: bool = True
+    # Members-only: redeemable from this loyalty level up. NULL = everyone.
+    min_tier_id: Optional[UUID] = None
     # Empty/omitted = the entire catalog. Naming either narrows the coupon to
     # the union of the two.
     category_ids: Optional[list[UUID]] = None
@@ -106,6 +108,8 @@ class CouponUpdate(BaseModel):
     first_order_only: Optional[bool] = None
     per_user_limit: Optional[int] = Field(default=None, ge=1)
     is_public: Optional[bool] = None
+    # An explicit null opens a members-only coupon to everyone again.
+    min_tier_id: Optional[UUID] = None
     # Sending either replaces that eligibility set entirely; omitting it leaves
     # the set alone. An explicit empty list widens the coupon back to the whole
     # catalog, which is the only way to undo a restriction.

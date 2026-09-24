@@ -31,6 +31,7 @@ from app.services import delivery_quote_service
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.coupon_service import CouponService, CouponValidationError
+from app.services.loyalty_service import LoyaltyService
 from app.services.pricing_service import PricingService
 
 # Prefix "/cart" is applied by app/api/v1/router.py — do not repeat it here.
@@ -117,6 +118,7 @@ async def _validate_and_cleanup_coupon(
             user_id=current_user.user_id,
             user_redemptions=user_redemptions,
             user_has_completed_order=had_completed,
+            user_points=await LoyaltyService.get_points(db, current_user.user_id),
         )
 
         if coupon and cart.get("coupon"):
@@ -504,6 +506,7 @@ async def apply_coupon(
             user_id=current_user.user_id,
             user_redemptions=user_redemptions,
             user_has_completed_order=had_completed,
+            user_points=await LoyaltyService.get_points(db, current_user.user_id),
         )
 
         # Apply using the DATABASE discount values (client input ignored).

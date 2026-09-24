@@ -79,7 +79,8 @@ async def get_platform_settings(
     response_model=PlatformSettingsResponse,
     summary="Update platform settings",
     description=(
-        "Update any of: order tax rate (%), splash video URL. The delivery charge is "
+        "Update any of: order tax rate (%), splash video URL, rupees per loyalty "
+        "point. The delivery charge is "
         "not a setting — SribeesExpress quotes it per parcel."
     ),
 )
@@ -93,6 +94,7 @@ async def update_platform_settings(
         db,
         order_tax_rate_percent=data.order_tax_rate_percent,
         splash_video_url=data.splash_video_url,
+        loyalty_spend_per_point=data.loyalty_spend_per_point,
     )
 
     # If the splash URL changed, drop the cached public splash config so the

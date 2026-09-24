@@ -44,6 +44,8 @@ from app.services import (
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.invoice_service import InvoiceService
+from app.services.loyalty_service import LoyaltyService
+from app.services.order_reward_service import OrderRewardService
 from app.services.order_service import OrderService
 from app.services.pricing_service import PricingService
 from app.services.product_review_service import ProductReviewService
@@ -261,6 +263,10 @@ def format_order(
         "discount_amount": float(order.discount_amount),
         "wallet_deduction": float(order.wallet_deduction or 0),
         "cashback_earned": float(order.cashback_earned or 0),
+        # Where that cashback is: "pending" until the return window closes
+        # after delivery, then "credited"; "reversed" if cancelled. Decided
+        # here so the app shows a state, not a rule it would have to copy.
+        **OrderRewardService.order_cashback_state(order),
         "total_amount": float(order.total_amount),
         "status": order.status,
         "payment_status": order.payment_status,
@@ -600,6 +606,7 @@ async def quote_order(
                     user_id=current_user.user_id,
                     user_redemptions=user_redemptions,
                     user_has_completed_order=had_completed,
+                    user_points=await LoyaltyService.get_points(db, current_user.user_id),
                 )
             except Exception:
                 quote_coupon = None

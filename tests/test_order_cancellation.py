@@ -11,6 +11,7 @@ wrong in a direction nobody notices until a customer complains:
 
 DB-free, in the style of the neighbouring order tests.
 """
+from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -170,10 +171,22 @@ def test_a_short_wallet_pays_only_what_it_has():
 
 
 def test_this_orders_cashback_cannot_pay_its_own_fee():
-    """The cashback is clawed back in the same cancellation; counting it as
-    spare balance would take it twice and leave the wallet negative."""
-    order = _booked_cod(cashback_earned=Decimal("100"))
+    """Cashback already in the wallet is clawed back in the same cancellation;
+    counting it as spare balance would take it twice and leave the wallet
+    negative."""
+    order = _booked_cod(
+        cashback_earned=Decimal("100"),
+        cashback_credited_at=datetime(2026, 9, 20, tzinfo=timezone.utc),
+    )
     assert OrderService.cancellation_charge(order, Decimal("150")) == Decimal("50")
+
+
+def test_held_cashback_is_not_in_the_balance_to_deduct():
+    """Cashback now waits for the return window, so an undelivered order's
+    cashback was never in the wallet. Deducting it anyway would let a customer
+    with Rs 150 in their wallet off Rs 100 of a charge they can pay."""
+    order = _booked_cod(cashback_earned=Decimal("100"), cashback_credited_at=None)
+    assert OrderService.cancellation_charge(order, Decimal("150")) == Decimal("150")
 
 
 def test_a_cod_order_cancelled_before_booking_costs_nothing():

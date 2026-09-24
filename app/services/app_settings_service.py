@@ -19,6 +19,8 @@ SPLASH_VIDEO_KEY = "splash_video_url"
 # Stored as a human-friendly percentage (e.g. "15" = 15%). Converted to a
 # fraction for PricingService in get_pricing_config().
 ORDER_TAX_RATE_PERCENT_KEY = "order_tax_rate_percent"
+# Rupees of order value (excluding delivery) per loyalty point.
+LOYALTY_SPEND_PER_POINT_KEY = "loyalty_spend_per_point"
 # --- Mobile remote config ---------------------------------------------------
 # The Play Store freezes the app: once a build is submitted, changing anything
 # in it means another review, which is days. These keys are how the running
@@ -216,7 +218,19 @@ class AppSettingsService:
                 tax_row.value if tax_row else None, float(settings.order_tax_rate) * 100
             ),
             "splash_video_url": splash_row.value if splash_row else None,
+            "loyalty_spend_per_point": await AppSettingsService.get_loyalty_spend_per_point(db),
         }
+
+    @staticmethod
+    async def get_loyalty_spend_per_point(db: AsyncSession) -> float:
+        """
+        Rupees per loyalty point. A stored value that is not a positive number
+        falls back to the config default: dividing by zero or a negative here
+        would hand out unlimited points or none, silently.
+        """
+        row = await AppSettingsService.get_by_key(db, LOYALTY_SPEND_PER_POINT_KEY)
+        value = _to_float(row.value if row else None, settings.loyalty_spend_per_point)
+        return value if value > 0 else settings.loyalty_spend_per_point
 
     @staticmethod
     async def get_pricing_config(db: AsyncSession) -> dict:
@@ -239,6 +253,7 @@ class AppSettingsService:
         *,
         order_tax_rate_percent: Optional[float] = None,
         splash_video_url: Optional[str] = None,
+        loyalty_spend_per_point: Optional[float] = None,
     ) -> dict:
         """Upsert any provided platform settings; returns the fresh values."""
         if order_tax_rate_percent is not None:
@@ -247,6 +262,13 @@ class AppSettingsService:
                 key=ORDER_TAX_RATE_PERCENT_KEY,
                 value=str(order_tax_rate_percent),
                 description="Tax rate applied to the discounted subtotal, as a percentage",
+            )
+        if loyalty_spend_per_point is not None:
+            await AppSettingsService.upsert(
+                db,
+                key=LOYALTY_SPEND_PER_POINT_KEY,
+                value=str(loyalty_spend_per_point),
+                description="Rupees of order value (excluding delivery) per loyalty point",
             )
         if splash_video_url is not None:
             await AppSettingsService.set_splash_video_url(db, splash_video_url)

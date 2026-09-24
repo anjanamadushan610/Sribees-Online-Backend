@@ -216,6 +216,7 @@ class CouponService:
         user_id: Optional[UUID] = None,
         user_redemptions: Optional[int] = None,
         user_has_completed_order: Optional[bool] = None,
+        user_points: Optional[int] = None,
     ) -> None:
         """
         Enforce all coupon rules. Raises :class:`CouponValidationError` with a
@@ -242,6 +243,10 @@ class CouponService:
         - ``user_redemptions`` — this customer's prior redemptions, for
           ``per_user_limit``.
         - ``user_has_completed_order`` — for ``first_order_only``.
+        - ``user_points`` — the customer's loyalty points, for a members-only
+          coupon (``min_tier_id``). Unlike the others this one fails CLOSED:
+          a members-only coupon is refused when the caller did not say who is
+          asking, because "we didn't check" must never mean "anyone may".
         """
         now = now or datetime.now(timezone.utc)
         now = _as_aware_utc(now)
@@ -300,6 +305,14 @@ class CouponService:
             raise CouponValidationError(
                 "This coupon is only valid on a customer's first order."
             )
+
+        if getattr(coupon, "min_tier_id", None) is not None:
+            tier = getattr(coupon, "min_tier", None)
+            if tier is None or user_points is None or user_points < tier.min_points:
+                level = tier.name if tier is not None else "a higher level"
+                raise CouponValidationError(
+                    f"This coupon is for {level} members and above."
+                )
 
 
         # Measured against the ELIGIBLE subtotal (see the docstring): otherwise

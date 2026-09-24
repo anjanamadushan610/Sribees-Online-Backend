@@ -21,6 +21,7 @@ from app.api.v1 import (
     admin_inventory,
     admin_location_rollout,
     admin_locations,
+    admin_loyalty,
     admin_orders,
     admin_partners,
     admin_roles,
@@ -354,6 +355,14 @@ router.include_router(
     admin_settings.router,
     prefix="/admin/settings",
     tags=["Admin Settings"],
+)
+
+# Admin Loyalty (/admin/loyalty) — levels and a customer's points. Levels are
+# read by marketing (members-only coupons), changed only by a Super Admin.
+router.include_router(
+    admin_loyalty.router,
+    prefix="/admin/loyalty",
+    tags=["Admin Loyalty"],
 )
 
 router.include_router(

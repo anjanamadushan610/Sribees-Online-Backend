@@ -45,6 +45,9 @@ class PlatformSettings(BaseModel):
         ..., ge=0, le=100, description="Order tax rate as a percentage (15 = 15%)"
     )
     splash_video_url: Optional[str] = Field(None, description="Splash-screen video URL")
+    loyalty_spend_per_point: float = Field(
+        ..., gt=0, description="Rupees of order value (excluding delivery) per loyalty point"
+    )
 
 
 class PlatformSettingsResponse(BaseModel):
@@ -65,6 +68,9 @@ class PlatformSettingsUpdate(BaseModel):
 
     order_tax_rate_percent: Optional[float] = Field(None, ge=0, le=100)
     splash_video_url: Optional[str] = Field(None, max_length=500)
+    # Applies to orders that settle after the change; points already earned
+    # stay as they are.
+    loyalty_spend_per_point: Optional[float] = Field(None, gt=0, le=1_000_000)
 
 
 # ============================================================================
