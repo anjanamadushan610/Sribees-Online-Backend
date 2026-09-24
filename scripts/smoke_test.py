@@ -122,9 +122,19 @@ def main() -> int:
 
     # An empty database answers every request above with a cheerful 200 and a
     # screen full of zeros. This is the check that tells the two apart.
-    check("revenue is non-zero", revenue > 0, revenue)
-    check("orders is non-zero", orders > 0, orders)
-    check("customers is non-zero", int(current.get("customers") or 0) > 0)
+    #
+    # A store that has just launched has no orders yet either, and that is not
+    # a fault. Then the catalog carries the "right database?" question: a
+    # wrong or wiped database has no products, a freshly launched store does.
+    has_sales = orders > 0
+    if has_sales:
+        check("revenue is non-zero", revenue > 0, revenue)
+        check("customers is non-zero", int(current.get("customers") or 0) > 0)
+    else:
+        print("  [SKIP] no orders in the last 30 days: sales checks skipped, catalog checked instead")
+        status, body = request(f"{api}/admin/products?limit=1", token=token)
+        total = int(((body.get("data") or {}).get("pagination") or {}).get("total") or 0)
+        check("the catalog has products", status == 200 and total > 0, total)
 
     branches = results["branches"].get("branches") or []
     check("branches are configured", len(branches) > 0, len(branches))
@@ -162,13 +172,13 @@ def main() -> int:
     )
 
     categories = results["categories"].get("categories") or []
-    check("the category mix has rows", len(categories) > 0, len(categories))
+    if has_sales:
+        check("the category mix has rows", len(categories) > 0, len(categories))
+        check("top products returned rows", len(results["top-products"].get("products") or []) > 0)
+        check("top customers returned rows", len(results["top-customers"].get("customers") or []) > 0)
     if categories:
         share = sum(float(c.get("share") or 0) for c in categories)
         check("category shares total ~100%", 98.0 <= share <= 102.0, share)
-
-    check("top products returned rows", len(results["top-products"].get("products") or []) > 0)
-    check("top customers returned rows", len(results["top-customers"].get("customers") or []) > 0)
 
     print()
     print("=" * 66)
