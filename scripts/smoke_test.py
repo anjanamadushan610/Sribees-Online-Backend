@@ -37,6 +37,14 @@ def check(label: str, ok: bool, detail: object = "") -> bool:
     return ok
 
 
+def expect(label: str, ok: bool, detail: object = "") -> bool:
+    """Like check(), but a miss is reported, not failed: for figures that
+    depend on trade (revenue, best sellers), not on the service working."""
+    suffix = f" — {detail}" if detail != "" else ""
+    print(f"  [{'PASS' if ok else 'WARN'}] {label}{suffix}")
+    return ok
+
+
 def request(url: str, *, token: str | None = None, payload: dict | None = None) -> tuple[int, dict]:
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
@@ -121,20 +129,17 @@ def main() -> int:
     orders = int(current.get("orders") or 0)
 
     # An empty database answers every request above with a cheerful 200 and a
-    # screen full of zeros. This is the check that tells the two apart.
-    #
-    # A store that has just launched has no orders yet either, and that is not
-    # a fault. Then the catalog carries the "right database?" question: a
-    # wrong or wiped database has no products, a freshly launched store does.
-    has_sales = orders > 0
-    if has_sales:
-        check("revenue is non-zero", revenue > 0, revenue)
-        check("customers is non-zero", int(current.get("customers") or 0) > 0)
-    else:
-        print("  [SKIP] no orders in the last 30 days: sales checks skipped, catalog checked instead")
-        status, body = request(f"{api}/admin/products?limit=1", token=token)
-        total = int(((body.get("data") or {}).get("pagination") or {}).get("total") or 0)
-        check("the catalog has products", status == 200 and total > 0, total)
+    # screen full of zeros. The catalog is what tells a wrong or wiped database
+    # from a working one: a live store always has products, while revenue can
+    # honestly be zero (just launched, or every order still unpaid).
+    status, body = request(f"{api}/admin/products?limit=1", token=token)
+    total = int(((body.get("data") or {}).get("pagination") or {}).get("total") or 0)
+    check("the catalog has products", status == 200 and total > 0, total)
+
+    # Trade figures: reported, never failed on.
+    expect("revenue is non-zero", revenue > 0, revenue)
+    expect("orders is non-zero", orders > 0, orders)
+    expect("customers is non-zero", int(current.get("customers") or 0) > 0)
 
     branches = results["branches"].get("branches") or []
     check("branches are configured", len(branches) > 0, len(branches))
@@ -172,13 +177,12 @@ def main() -> int:
     )
 
     categories = results["categories"].get("categories") or []
-    if has_sales:
-        check("the category mix has rows", len(categories) > 0, len(categories))
-        check("top products returned rows", len(results["top-products"].get("products") or []) > 0)
-        check("top customers returned rows", len(results["top-customers"].get("customers") or []) > 0)
+    expect("the category mix has rows", len(categories) > 0, len(categories))
     if categories:
         share = sum(float(c.get("share") or 0) for c in categories)
         check("category shares total ~100%", 98.0 <= share <= 102.0, share)
+    expect("top products returned rows", len(results["top-products"].get("products") or []) > 0)
+    expect("top customers returned rows", len(results["top-customers"].get("customers") or []) > 0)
 
     print()
     print("=" * 66)
