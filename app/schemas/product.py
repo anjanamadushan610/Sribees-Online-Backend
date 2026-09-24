@@ -3,10 +3,17 @@ Product Pydantic Schemas
 """
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Annotated, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+from app.services.search_text import normalize_keywords
+
+# Stored canonical: one ", "-separated list, de-duplicated, NFC. Admins paste
+# from anywhere and the AI suggestion is appended to what is already there,
+# so without this the same term piles up.
+SearchKeywords = Annotated[Optional[str], AfterValidator(normalize_keywords)]
 
 # ============================================================================
 # Nested Schemas
@@ -88,7 +95,7 @@ class ProductCreate(BaseModel):
     short_description: Optional[str] = Field(None, max_length=500)
     short_description_si: Optional[str] = Field(None, max_length=500)
     short_description_ta: Optional[str] = Field(None, max_length=500)
-    search_keywords: Optional[str] = Field(
+    search_keywords: SearchKeywords = Field(
         None,
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
     )
@@ -137,7 +144,7 @@ class ProductUpdate(BaseModel):
     short_description: Optional[str] = Field(None, max_length=500)
     short_description_si: Optional[str] = Field(None, max_length=500)
     short_description_ta: Optional[str] = Field(None, max_length=500)
-    search_keywords: Optional[str] = Field(
+    search_keywords: SearchKeywords = Field(
         None,
         description="Alternate names for search: Sinhala/Tamil/Singlish, common misspellings.",
     )

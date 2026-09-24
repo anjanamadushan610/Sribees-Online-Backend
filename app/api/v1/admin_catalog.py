@@ -611,15 +611,19 @@ async def get_product(
     }
 
 
-@router.post("/products/suggest-keywords", response_model=dict)
+@router.post("/products/suggest-keywords", response_model=dict,
+             dependencies=[Depends(require_permission("products", "update"))])
 async def suggest_product_keywords(data: SuggestKeywordsRequest):
     """
     AI-assisted search keyword suggestions (Sinhala/Tamil/Singlish/Tamilish).
 
+    Gated on products:update, not the router's products:read: every call is
+    billed, and only someone who can save the keywords has a reason to ask.
+
     Takes draft form fields directly rather than a product id, so it works
     while creating a new product too, not just editing a saved one. One-off
     admin action — never called from the customer search path (see
-    ``ProductService.get_all_for_branch``), so this never adds AI latency or
+    ``catalog_search_service``), so this never adds AI latency or
     cost to a live search request. The admin reviews/edits the suggestion
     before it's saved.
     """

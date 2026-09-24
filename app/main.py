@@ -89,6 +89,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         # Initialize Redis connection
         await init_redis()
 
+        # Tokenise any product the search index hasn't seen (new rows written
+        # by raw SQL, or all of them after search_text.INDEX_VERSION changes).
+        # Never fatal: a failure leaves search on the old tokens, not down.
+        try:
+            from app.config.database import async_session_maker
+            from app.services.catalog_search_service import reindex_stale
+
+            reindexed = await reindex_stale(async_session_maker)
+            if reindexed:
+                logger.info(f"Search index: tokenised {reindexed} products")
+        except Exception as e:
+            logger.warning(f"Search index refresh skipped: {e}")
+
         logger.info("Application startup complete")
 
     except Exception as e:

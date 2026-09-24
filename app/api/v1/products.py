@@ -80,7 +80,6 @@ def format_product(
         "slug": product.slug,
         "description": localized(product, "description", lang),
         "short_description": localized(product, "short_description", lang),
-        "search_keywords": product.search_keywords,
         "sku": product.sku,
         "price": eff.get("effective_price", float(product.price) if product.price else 0),
         "global_price": float(product.price) if product.price else 0,
@@ -119,6 +118,9 @@ def format_product(
             for code in ("si", "ta"):
                 key = f"{field}_{code}"
                 data[key] = getattr(product, key, None)
+        # Search-only alternate names: the admin form edits them, shoppers
+        # never see them.
+        data["search_keywords"] = product.search_keywords
 
     # Category. The flat ids sit alongside the nested objects so clients can
     # filter/group without having to reach into the nested shape.

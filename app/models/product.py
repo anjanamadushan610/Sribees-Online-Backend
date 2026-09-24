@@ -12,12 +12,13 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import relationship
 
 from app.config.database import Base
@@ -55,6 +56,14 @@ class Product(Base):
             "misspellings). Never shown to customers as product content."
         ),
     )
+    # The customer search index, derived from name/name_si/name_ta/
+    # search_keywords by app.services.search_text and kept current by the
+    # mapper events in app.services.catalog_search_service. Never set by hand.
+    search_tokens = Column(ARRAY(Text), nullable=True)
+    search_name_tokens = Column(ARRAY(Text), nullable=True)
+    search_phrases = Column(ARRAY(Text), nullable=True)
+    search_index_version = Column(SmallInteger, nullable=True)
+    search_indexed_at = Column(DateTime(timezone=True), nullable=True)
     sku = Column(String(100), unique=True, nullable=True)
     price = Column(Numeric(10, 2), nullable=False, comment="Global base price")
     compare_at_price = Column(Numeric(10, 2), nullable=True)

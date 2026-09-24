@@ -11,13 +11,12 @@ Implements the **Global Catalog + Branch Overrides** pattern:
                                              ?? platform cashback rate
   - A ``BranchInventory.is_active = False`` row hides the product for that branch.
 """
-import unicodedata
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import and_, case, func, literal, or_, select
+from sqlalchemy import and_, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -36,6 +35,7 @@ from app.schemas.product import (
     ProductUpdate,
     ProductVariantCreate,
 )
+from app.services import catalog_search_service as catalog_search
 from app.services.category_service import CategoryService
 from app.services.storage import get_storage
 
@@ -632,8 +632,22 @@ class ProductService:
         """
         Get products visible in *branch_id* with effective pricing.
 
-        Enforces strict branch visibility (JOIN + active + in-stock).
+        Enforces strict branch visibility (JOIN + active + in-stock). With
+        *search*, results come back in relevance order and sort_by/sort_order
+        are ignored — see catalog_search_service.
         """
+        filters = {
+            "category_id": category_id,
+            "subcategory_id": subcategory_id,
+            "is_featured": is_featured,
+            "min_price": min_price,
+            "max_price": max_price,
+        }
+        if search and search.strip():
+            return await ProductService._search_for_branch(
+                db, branch_id, search, limit, offset, **filters
+            )
+
         base = (
             select(Product, BranchInventory)
             .options(
@@ -643,72 +657,14 @@ class ProductService:
             )
             .where(Product.is_active.is_(True))
         )
+        base, eff_price, _ = ProductService._branch_visibility_join(base, branch_id)
+        base = await ProductService._apply_listing_filters(db, base, eff_price, **filters)
 
-        base, eff_price, eff_discount = ProductService._branch_visibility_join(base, branch_id)
-
-        if category_id:
-            base = base.where(await ProductService._category_filter(db, category_id))
-        if subcategory_id:
-            base = base.where(Product.subcategory_id == subcategory_id)
-        if is_featured is not None:
-            base = base.where(Product.is_featured == is_featured)
-
-        search_term: Optional[str] = None
-        if search:
-            # NFC-normalize: Sinhala/Tamil input can arrive as different
-            # Unicode byte sequences for the same visible word depending on
-            # keyboard/IME, which would otherwise silently fail to match.
-            search_term = unicodedata.normalize("NFC", search).strip()
-
-        if search_term:
-            pattern = f"%{search_term}%"
-            name_similarity = func.similarity(func.lower(Product.name), search_term.lower())
-            keyword_similarity = func.similarity(
-                func.lower(func.coalesce(Product.search_keywords, "")), search_term.lower()
-            )
-            base = base.where(or_(
-                Product.name.ilike(pattern),
-                Product.description.ilike(pattern),
-                Product.search_keywords.ilike(pattern),
-                # Trigram similarity — catches typos and near-misses that no
-                # substring match ever would (e.g. "bananna", "thakali").
-                name_similarity > 0.25,
-                keyword_similarity > 0.25,
-            ))
-        if min_price is not None:
-            base = base.where(eff_price >= min_price)
-        if max_price is not None:
-            base = base.where(eff_price <= max_price)
-
-        # Count
         count_q = select(func.count()).select_from(base.subquery())
         total = (await db.execute(count_q)).scalar() or 0
 
-        if search_term:
-            # Relevance ranking: exact name match first, then prefix, then
-            # best fuzzy/keyword match, newest as the final tiebreaker.
-            # sort_by/sort_order are ignored here — a search result ordered
-            # by "newest" instead of "best match" defeats the point of a
-            # search bar, and /products/search never sends an override.
-            lower_name = func.lower(Product.name)
-            lower_term = search_term.lower()
-            best_similarity = func.greatest(
-                func.similarity(func.lower(Product.name), lower_term),
-                func.similarity(func.lower(func.coalesce(Product.search_keywords, "")), lower_term),
-            )
-            base = base.order_by(
-                case(
-                    (lower_name == lower_term, 0),
-                    (lower_name.startswith(lower_term), 1),
-                    else_=2,
-                ),
-                best_similarity.desc(),
-                Product.created_at.desc(),
-            )
-        else:
-            sort_col = getattr(Product, sort_by, Product.created_at)
-            base = base.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
-
+        sort_col = getattr(Product, sort_by, Product.created_at)
+        base = base.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
         base = base.limit(limit).offset(offset)
 
         rows = (await db.execute(base)).unique().all()
@@ -719,6 +675,70 @@ class ProductService:
                 "effective": ProductService.compute_effective_data(product, inv),
             })
         return items, total
+
+    @staticmethod
+    async def _apply_listing_filters(
+        db: AsyncSession,
+        query,
+        eff_price,
+        category_id: Optional[UUID] = None,
+        subcategory_id: Optional[UUID] = None,
+        is_featured: Optional[bool] = None,
+        min_price: Optional[Decimal] = None,
+        max_price: Optional[Decimal] = None,
+    ):
+        if category_id:
+            query = query.where(await ProductService._category_filter(db, category_id))
+        if subcategory_id:
+            query = query.where(Product.subcategory_id == subcategory_id)
+        if is_featured is not None:
+            query = query.where(Product.is_featured == is_featured)
+        if min_price is not None:
+            query = query.where(eff_price >= min_price)
+        if max_price is not None:
+            query = query.where(eff_price <= max_price)
+        return query
+
+    @staticmethod
+    async def _search_for_branch(
+        db: AsyncSession,
+        branch_id: UUID,
+        search: str,
+        limit: int,
+        offset: int,
+        **filters,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Relevance-ranked search within a branch.
+
+        Two queries: the candidates (ids and their token arrays only, via the
+        GIN index), then the one page of full products. Matching and ranking
+        happen in between, in memory — see catalog_search_service.
+        """
+        plan = await catalog_search.plan_search(db, search)
+        if plan is None:
+            return [], 0
+
+        candidates = (
+            select(*catalog_search.CANDIDATE_COLUMNS)
+            .where(
+                Product.is_active.is_(True),
+                Product.search_tokens.overlap(plan.terms),
+            )
+        )
+        candidates, eff_price, _ = ProductService._branch_visibility_join(candidates, branch_id)
+        candidates = await ProductService._apply_listing_filters(
+            db, candidates, eff_price, **filters
+        )
+        rows = (await db.execute(candidates.limit(catalog_search.MAX_CANDIDATES))).all()
+
+        ranked = catalog_search.rank(rows, plan)
+        page = ranked[offset:offset + limit]
+        by_id = {
+            item["product"].product_id: item
+            for item in await ProductService.get_by_ids_for_branch(db, page, branch_id)
+        }
+        return [by_id[pid] for pid in page if pid in by_id], len(ranked)
 
     @staticmethod
     async def get_by_id_for_branch(
