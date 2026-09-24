@@ -65,6 +65,7 @@ W_SOFT = 0.05                               # "5kg" nudges the 5 kg pack up
 W_NAME_PHRASE = 0.6                         # query is the product's name
 W_KEYWORD_PHRASE = 0.5                      # query is one of its keywords
 W_STEM_FACTOR = 0.95                        # "හාල" read as "හාල්"
+MIN_ANCHOR_LENGTH = 3                       # see rank(): short words can't match alone
 
 # Arbitrary, fixed: the advisory-lock id that keeps concurrent workers from
 # reindexing the same rows at the same start-up.
@@ -208,12 +209,16 @@ def rank(rows: Sequence[Sequence], plan: SearchPlan) -> list[UUID]:
     required = plan.query.required
     soft = plan.query.soft
     name_phrase = NAME_PHRASE_MARK + plan.query.phrase
+    # A two-letter word ("mi" for honey, or "mi" from "මි.ලි." on a label) is
+    # too common to be the only reason a product shows up: when the query has
+    # a real word, a product has to match one.
+    needs_real_word = any(len(tok) >= MIN_ANCHOR_LENGTH for tok in required)
     scored: list[tuple[int, float, bool, int, int, UUID]] = []
 
     for product_id, tokens, name_tokens, phrases, is_featured, view_count, name in rows:
         tokens = set(tokens or ())
         name_tokens = set(name_tokens or ())
-        coverage, score = 0, 0.0
+        coverage, score, anchored = 0, 0.0, not needs_real_word
         for tok in required:
             best = 0.0
             for term, weight in plan.expansions[tok].items():
@@ -224,7 +229,8 @@ def rank(rows: Sequence[Sequence], plan: SearchPlan) -> list[UUID]:
             if best:
                 coverage += 1
                 score += best
-        if not coverage:
+                anchored = anchored or len(tok) >= MIN_ANCHOR_LENGTH
+        if not coverage or not anchored:
             continue
         score += W_SOFT * sum(1 for tok in soft if tok in tokens)
         phrases = phrases or ()

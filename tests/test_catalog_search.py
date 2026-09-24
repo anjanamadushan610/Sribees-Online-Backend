@@ -183,6 +183,14 @@ def test_whole_phrase_beats_contained_word():
     assert results.index("Fresh Milk (1 L)") < results.index("Buffalo Curd (400 g)")
 
 
+def test_two_letter_word_cannot_match_alone():
+    # "mee" folds to "mi", which is also on Buffalo Curd ("mee kiri"). A
+    # shopper after "kottu mee" must see nothing rather than curd.
+    assert search("kottu mee") == []
+    # ...while a real word still carries it.
+    assert search("mee kiri")[0] == "Buffalo Curd (400 g)"
+
+
 def test_nonsense_finds_nothing():
     assert search("xyzzyq") == []
 
