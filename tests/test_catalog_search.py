@@ -129,6 +129,13 @@ def test_transposition_counts_as_one_edit():
     assert cs.osa_distance("mlik", "milk", 1) == 1
 
 
+def test_four_letter_word_is_not_typo_matched():
+    # "kiri" (milk) must not reach "kirim" (the Tamil for cream).
+    vocab = cs.Vocabulary(["kirim", "kari"])
+    assert set(vocab.expand("kiri")) == {"kiri", "kirim"}  # prefix only
+    assert vocab.expand("kiri")["kirim"] >= cs.W_PREFIX_BASE
+
+
 def test_known_word_is_not_fuzzed():
     assert all(w == 1.0 or w >= cs.W_PREFIX_BASE for w in VOCAB.expand("kiri").values())
 

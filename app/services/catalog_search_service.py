@@ -73,8 +73,15 @@ _REINDEX_LOCK_KEY = 7_406_311_562
 
 
 def max_edits(length: int) -> int:
-    """Typos tolerated for a word of this length (Elasticsearch's AUTO)."""
-    if length < 4:
+    """
+    Typos tolerated for a word of this length.
+
+    Stricter than Elasticsearch's AUTO at four letters: short Singlish words
+    one letter apart are usually different words (kiri, kari, keri), and
+    "kiri" typo-matching the Tamil "கிரீம்" (kirim) put a hair cream at the
+    top of a search for milk.
+    """
+    if length < 5:
         return 0
     return 1 if length < 8 else 2
 
