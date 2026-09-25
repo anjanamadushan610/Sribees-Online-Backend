@@ -347,3 +347,78 @@ async def test_cancellation_history(api, world, make_customer, make_product, pla
                  f"/api/v1/admin/cancellations/customers/{customer.user_id}/links"]:
         r = await api.get(path, headers=boss.headers)
         assert r.status_code == 200, (path, r.text)
+
+
+# ---------------------------------------------------------------------------
+# Managing one customer
+# ---------------------------------------------------------------------------
+
+
+async def test_blocking_a_customer_and_unblocking_them(api, world, make_customer, make_admin):
+    customer = await make_customer()
+    support = await make_admin("customer_support", branch_id=None, api=api)
+    r = await api.post(f"/api/v1/admin/customers/{customer.user_id}/block", json={"reason": "Chargeback abuse"},
+                       headers=support.headers)
+    assert r.status_code == 200, r.text
+    r = await api.get("/api/v1/auth/me", headers=customer.headers)
+    assert r.status_code == 403 and "ACCOUNT_BLOCKED" in r.text
+    r = await api.post(f"/api/v1/admin/customers/{customer.user_id}/unblock", headers=support.headers)
+    assert r.status_code == 200, r.text
+    # Blocking ended the sessions it found; unblocking lets them sign in again
+    # but does not revive a token from before the block.
+    assert (await api.get("/api/v1/auth/me", headers=customer.headers)).status_code == 401
+
+    r = await api.post(f"/api/v1/admin/customers/{customer.user_id}/block", json={"reason": ""},
+                       headers=support.headers)
+    assert r.status_code == 422, "a block needs a reason"
+
+
+async def test_editing_a_customer_keeps_contact_details_unique(api, world, make_customer, make_admin):
+    a, b = await make_customer(), await make_customer()
+    boss = await make_admin("super_admin", api=api)
+    email = f"zz.cust.{uuid.uuid4().hex[:8]}@sribees-ci.lk"
+    r = await api.put(f"/api/v1/admin/customers/{a.user_id}", json={"email": email, "full_name": "ZZ Edited"},
+                      headers=boss.headers)
+    assert r.status_code == 200, r.text
+    r = await api.put(f"/api/v1/admin/customers/{b.user_id}", json={"full_name": "ZZ B", "email": email},
+                      headers=boss.headers)
+    assert r.status_code == 400, "an email already on another account is refused"
+    r = await api.put(f"/api/v1/admin/customers/{b.user_id}", json={"full_name": "ZZ B", "phone": a.phone},
+                      headers=boss.headers)
+    assert r.status_code == 400, "a phone already on another account is refused"
+
+
+async def test_deleting_customers(api, db, world, make_customer, make_product, place_order, make_admin):
+    from sqlalchemy import select
+
+    from app.models.user import User
+
+    boss = await make_admin("super_admin", api=api)
+    no_orders = await make_customer()
+    r = await api.delete(f"/api/v1/admin/customers/{no_orders.user_id}", headers=boss.headers)
+    assert r.status_code == 200, r.text
+    assert (await db.execute(select(User).where(User.user_id == no_orders.user_id))).scalar_one_or_none() is None
+
+    with_orders = await make_customer()
+    await place_order(with_orders, await make_product(), 1)
+    r = await api.delete(f"/api/v1/admin/customers/{with_orders.user_id}", headers=boss.headers)
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    kept = (await db.execute(select(User).where(User.user_id == with_orders.user_id))).scalar_one()
+    assert kept.deleted_at is not None, "a customer with orders is closed, not erased: the orders are records"
+    assert (await api.get("/api/v1/auth/me", headers=with_orders.headers)).status_code in (401, 403)
+
+    support = await make_admin("customer_support", branch_id=None, api=api)
+    victim = await make_customer()
+    r = await api.delete(f"/api/v1/admin/customers/{victim.user_id}", headers=support.headers)
+    assert r.status_code == 403, "only the Super Admin deletes customers"
+
+
+async def test_super_admin_operational_lists(api, world, make_admin, make_product, make_customer, place_order):
+    await make_product(stock=2)
+    await place_order(await make_customer(), await make_product(), 1)
+    boss = await make_admin("super_admin", api=api)
+    for path, params in [("/api/v1/admin/inventory/low-stock", {"limit": 10}),
+                         ("/api/v1/admin/recent-orders", {"limit": 5}), ("/api/v1/admin/customers", {})]:
+        r = await api.get(path, params=params, headers=boss.headers)
+        assert r.status_code == 200, (path, r.text)

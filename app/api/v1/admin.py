@@ -991,8 +991,17 @@ async def delete_customer(
             # the name and history stay readable to admins. It used to rename
             # the row "Deleted Account" without setting deleted_at, which left
             # the NIC reserved and the person impossible to recognise.
+            # Only the addresses no order points at. An order's delivery
+            # address is part of its record (where the goods went), and the
+            # foreign key refused deleting it -- so this path failed with a
+            # 500 for every customer who had ever ordered.
             await db.execute(
-                delete(Address).where(Address.user_id == user_uuid)
+                delete(Address).where(
+                    Address.user_id == user_uuid,
+                    ~select(Order.order_id)
+                    .where(Order.delivery_address_id == Address.address_id)
+                    .exists(),
+                )
             )
             await close_account(db, user_uuid, reason="Deleted by an admin")
             return {
