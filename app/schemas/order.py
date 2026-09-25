@@ -224,7 +224,7 @@ class ReturnItemSchema(BaseModel):
 class ReturnRequest(BaseModel):
     """Customer request to return a delivered order (Module 5.5)."""
     reason: str = Field(..., min_length=1, max_length=255)
-    comments: Optional[str] = None
+    comments: Optional[str] = Field(None, max_length=500)
     # Optional item-level selection; empty means a full-order return.
     items: List[ReturnItemSchema] = Field(default_factory=list)
     # Paths returned by POST /orders/{id}/return/images, in the order the
