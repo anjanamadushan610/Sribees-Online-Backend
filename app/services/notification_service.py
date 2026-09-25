@@ -401,7 +401,8 @@ class NotificationService:
         db: AsyncSession,
         user_id: UUID,
         order_number: str,
-        status: str
+        status: str,
+        order_id: Optional[UUID] = None,
     ) -> Notification:
         """Send order status notification."""
         status_messages = {
@@ -427,7 +428,8 @@ class NotificationService:
             title=f"Order #{order_number}",
             message=message,
             reference_type="order",
-            data={"order_number": order_number, "status": status}
+            reference_id=order_id,
+            data={"order_number": order_number, "status": status, "order_id": str(order_id) if order_id else None}
         )
 
     @staticmethod
@@ -435,7 +437,8 @@ class NotificationService:
         db: AsyncSession,
         user_id: UUID,
         order_number: str,
-        amount: float
+        amount: float,
+        order_id: Optional[UUID] = None,
     ) -> Notification:
         """Send payment success notification."""
         return await NotificationService.create(
@@ -443,9 +446,10 @@ class NotificationService:
             user_id=user_id,
             type=NotificationTypeEnum.PAYMENT,
             title="Payment Successful",
-            message=f"Payment of ₹{amount:.2f} received for order #{order_number}",
+            message=f"Payment of Rs. {amount:,.2f} received for order #{order_number}",
             reference_type="order",
-            data={"order_number": order_number, "amount": amount}
+            reference_id=order_id,
+            data={"order_number": order_number, "amount": amount, "order_id": str(order_id) if order_id else None}
         )
 
     @staticmethod
