@@ -123,12 +123,17 @@ jobs:
           # Comma-separated phone numbers (testers, store-review demo accounts)
           # that may sign in with the test OTP. Unset = nobody can (SEC-001).
           OTP_TEST_PHONES: ${{ secrets.OTP_TEST_PHONES }}
+          # The Super Admin the post-deploy smoke test (step 7c) signs in as.
+          # Kept as their own secrets so the production admin password can be
+          # changed without rebuilding ENV_CONTENT. Never echoed.
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON,OTP_TEST_PHONES
+          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON,OTP_TEST_PHONES,SMOKE_ADMIN_EMAIL,SMOKE_ADMIN_PASSWORD
           # MUST stay false. script_stop makes the action test every command's
           # exit status itself and return on the first non-zero one. That check
           # sits outside bash, so it ignores `set +e` AND the rule that a
@@ -228,6 +233,16 @@ jobs:
               grep -v '^OTP_TEST_PHONES=' .env > .env.tmp || true
               mv .env.tmp .env
               echo "OTP_TEST_PHONES=${OTP_TEST_PHONES}" >> .env
+            fi
+            if [ -n "${SMOKE_ADMIN_EMAIL:-}" ]; then
+              grep -v '^SMOKE_ADMIN_EMAIL=' .env > .env.tmp || true
+              mv .env.tmp .env
+              echo "SMOKE_ADMIN_EMAIL=${SMOKE_ADMIN_EMAIL}" >> .env
+            fi
+            if [ -n "${SMOKE_ADMIN_PASSWORD:-}" ]; then
+              grep -v '^SMOKE_ADMIN_PASSWORD=' .env > .env.tmp || true
+              mv .env.tmp .env
+              echo "SMOKE_ADMIN_PASSWORD=${SMOKE_ADMIN_PASSWORD}" >> .env
             fi
             # Push notifications. The pasted JSON spans many lines; compose's
             # env_file wants one, so it is compacted (and validated) first.
@@ -413,9 +428,21 @@ jobs:
             #
             # Runs inside the app container, against localhost, using only the
             # standard library, so it needs nothing installed on the host.
-            SMOKE_EMAIL=$(grep -m1 '^SMOKE_ADMIN_EMAIL=' .env 2>/dev/null | cut -d '=' -f2- | cut -d '#' -f1 | tr -d '[:space:]' || true)
+            #
+            # Credentials: the SMOKE_ADMIN_EMAIL / SMOKE_ADMIN_PASSWORD secrets
+            # (layered onto .env in step 4b) are used verbatim -- a password may
+            # contain '#' or spaces, so it is never cut or trimmed. Without the
+            # secrets it falls back to .env, then to the seeded defaults, which
+            # fail loudly once the production password has been changed.
+            SMOKE_EMAIL="${SMOKE_ADMIN_EMAIL:-}"
+            if [ -z "$SMOKE_EMAIL" ]; then
+              SMOKE_EMAIL=$(grep -m1 '^SMOKE_ADMIN_EMAIL=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '[:space:]' || true)
+            fi
             SMOKE_EMAIL="${SMOKE_EMAIL:-superadmin@sribeesonline.lk}"
-            SMOKE_PASSWORD=$(grep -m1 '^SMOKE_ADMIN_PASSWORD=' .env 2>/dev/null | cut -d '=' -f2- | cut -d '#' -f1 | tr -d '[:space:]' || true)
+            SMOKE_PASSWORD="${SMOKE_ADMIN_PASSWORD:-}"
+            if [ -z "$SMOKE_PASSWORD" ]; then
+              SMOKE_PASSWORD=$(grep -m1 '^SMOKE_ADMIN_PASSWORD=' .env 2>/dev/null | cut -d '=' -f2- || true)
+            fi
             SMOKE_PASSWORD="${SMOKE_PASSWORD:-Admin@123}"
 
             if sudo docker compose exec -T fastapi_backend \

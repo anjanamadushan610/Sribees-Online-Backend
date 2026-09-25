@@ -40,6 +40,10 @@ side, and `main` shipped for days with CI red.)
   reset the count, and the test code (`123456`) verifies only for numbers in
   `OTP_TEST_PHONES` (SEC-001). In production that list comes from the
   `OTP_TEST_PHONES` Actions secret; left unset, no number can use it.
+- **Smoke credentials**: the post-deploy smoke test signs in as the Super Admin
+  in the `SMOKE_ADMIN_EMAIL` / `SMOKE_ADMIN_PASSWORD` Actions secrets, layered
+  onto the server's `.env` in deploy step 4b like `OTP_TEST_PHONES`. Change the
+  production admin password and these secrets together, or the deploy fails at 7c.
 - **Uploads**: nothing is stored under an executable or document extension,
   and nothing escapes the media root.
 
