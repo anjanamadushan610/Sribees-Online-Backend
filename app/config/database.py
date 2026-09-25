@@ -97,6 +97,20 @@ async def init_db() -> None:
             from sqlalchemy import text
             await conn.execute(text("SELECT 1"))
 
+            # Ensure admin_role_enum type exists safely (idempotent across multi-worker boot)
+            await conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'admin_role_enum') THEN
+                        CREATE TYPE admin_role_enum AS ENUM (
+                            'SUPER_ADMIN', 'BRANCH_MANAGER', 'MARKETING_MANAGER',
+                            'INVENTORY_MANAGER', 'CUSTOMER_SUPPORT', 'STAFF'
+                        );
+                    END IF;
+                END
+                $$;
+            """))
+
             # Create all tables if they do not exist
             await conn.run_sync(Base.metadata.create_all)
 
@@ -238,11 +252,15 @@ async def _seed_admin_accounts() -> None:
             created_admins.append(email)
 
         if created_branches or created_admins:
-            await db.commit()
-            logger.info(
-                "✅ Seeded %d branch(es) and %d admin account(s): %s",
-                created_branches, len(created_admins), ", ".join(created_admins) or "none",
-            )
+            try:
+                await db.commit()
+                logger.info(
+                    "✅ Seeded %d branch(es) and %d admin account(s): %s",
+                    created_branches, len(created_admins), ", ".join(created_admins) or "none",
+                )
+            except Exception as e:
+                await db.rollback()
+                logger.warning(f"⚠️ Demo seed completed by another worker or already present: {e}")
         else:
             logger.info("Admin accounts already present — nothing to seed.")
 

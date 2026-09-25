@@ -44,7 +44,7 @@ class Admin(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(100), nullable=False)
     role: Mapped[AdminRole] = mapped_column(
-        SQLEnum(AdminRole, name="admin_role_enum"),
+        SQLEnum(AdminRole, name="admin_role_enum", create_type=False),
         nullable=False,
         default=AdminRole.CUSTOMER_SUPPORT,
     )
