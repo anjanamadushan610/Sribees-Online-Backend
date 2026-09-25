@@ -74,6 +74,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/api/v1/banners"),
     ("POST", "/api/v1/banners/events"),
     ("POST", "/api/v1/branch/resolve-by-location"),
+    # A live branch's name and district, for "Shared from the Kandy branch" on
+    # a product link a guest may open. Nothing the storefront doesn't show.
+    ("GET", "/api/v1/branch/public/{branch_id}"),
     ("GET", "/api/v1/delivery/slots"),
     ("GET", "/api/v1/locations/provinces"),
     ("GET", "/api/v1/locations/districts"),
