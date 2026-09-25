@@ -32,6 +32,7 @@ class CourierState:
     # GET /postal-cities: [{"id", "name", "district", "province"}]
     postal_cities: list = field(default_factory=list)
     outlets: list = field(default_factory=list)
+    returns: dict = field(default_factory=dict)
 
     def paths(self) -> list[str]:
         return [f"{m} {p}" for m, p, _ in self.calls]
@@ -119,6 +120,24 @@ def build_app(state: CourierState) -> FastAPI:
         if sid in state.shipments:
             state.shipments[sid]["status"] = "cancelled"
         return {"shipment_id": sid, "status": "cancelled"}
+
+    @app.post(f"{prefix}/returns")
+    async def book_return(payload: dict, x_api_key: str | None = Header(None)):
+        _auth(x_api_key)
+        # Idempotent on merchant_order_ref, as the contract promises: a retry
+        # gets the existing leg back, not a second rider.
+        for rid, leg in state.returns.items():
+            if leg.get("merchant_order_ref") == payload.get("merchant_order_ref"):
+                return {"return_id": rid, "status": leg["status"], "handover_code": leg["handover_code"]}
+        rid = f"RET{uuid.uuid4().hex[:10].upper()}"
+        state.returns[rid] = {**payload, "status": "booked", "handover_code": "4321"}
+        return {"return_id": rid, "status": "booked", "handover_code": "4321", "return_fee_lkr": "250.00"}
+
+    @app.post(prefix + "/returns/{rid}/regenerate-code")
+    async def regenerate(rid: str, x_api_key: str | None = Header(None)):
+        _auth(x_api_key)
+        state.returns.setdefault(rid, {})["handover_code"] = "8765"
+        return {"return_id": rid, "handover_code": "8765"}
 
     @app.get(f"{prefix}/postal-cities")
     async def postal_cities(x_api_key: str | None = Header(None), district: str | None = None):

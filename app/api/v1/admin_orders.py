@@ -1245,10 +1245,17 @@ async def regenerate_return_handover_code(
             status_code=400, detail="This order has no reverse pickup booked."
         )
 
+    from app.services import courier_credentials
     from app.services.courier_service import CourierError, CourierService
 
+    # Inside the branch's credential scope, as every other courier call is:
+    # without it the client refuses before sending anything, and this button
+    # answered every press with a 500.
     try:
-        result = await CourierService.regenerate_return_code(order.return_waybill_number)
+        async with courier_credentials.for_branch(db, order.branch_id):
+            result = await CourierService.regenerate_return_code(order.return_waybill_number)
+    except (courier_credentials.CourierNotConfiguredError, courier_credentials.DecryptionError) as exc:
+        raise HTTPException(status_code=503, detail=f"SribeesExpress is not configured for this branch: {exc}") from exc
     except CourierError as exc:
         raise HTTPException(status_code=502, detail=f"SribeesExpress: {exc.message}") from exc
 
