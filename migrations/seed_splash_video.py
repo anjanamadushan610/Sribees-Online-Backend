@@ -13,6 +13,7 @@ Requirements:
 This script is idempotent: if a splash_video_url setting already exists
 with a non-null value, it will skip the upload.
 """
+# ruff: noqa: I001
 import asyncio
 import os
 import sys
@@ -30,10 +31,9 @@ LOCAL_VIDEO_PATH = os.path.join(
 
 
 async def seed():
-    from app.services.storage_service import StorageService
-
     from app.config.database import async_session_factory, engine
     from app.services.app_settings_service import AppSettingsService
+    from app.services.storage_service import StorageService
 
     print("=" * 60)
     print("Splash Video Seed Script")

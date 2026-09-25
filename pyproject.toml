@@ -104,6 +104,7 @@ exclude = [
     "node_modules",
     "venv",
     "alembic",
+    "migrations",
 ]
 
 [tool.ruff.lint]
