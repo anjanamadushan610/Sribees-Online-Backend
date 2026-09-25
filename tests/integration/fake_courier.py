@@ -29,6 +29,9 @@ class CourierState:
     calls: list = field(default_factory=list)
     quotes: dict = field(default_factory=dict)
     shipments: dict = field(default_factory=dict)
+    # GET /postal-cities: [{"id", "name", "district", "province"}]
+    postal_cities: list = field(default_factory=list)
+    outlets: list = field(default_factory=list)
 
     def paths(self) -> list[str]:
         return [f"{m} {p}" for m, p, _ in self.calls]
@@ -116,6 +119,23 @@ def build_app(state: CourierState) -> FastAPI:
         if sid in state.shipments:
             state.shipments[sid]["status"] = "cancelled"
         return {"shipment_id": sid, "status": "cancelled"}
+
+    @app.get(f"{prefix}/postal-cities")
+    async def postal_cities(x_api_key: str | None = Header(None), district: str | None = None):
+        _auth(x_api_key)
+        return [c for c in state.postal_cities if not district or c["district"] == district]
+
+    @app.get(f"{prefix}/outlets")
+    async def outlets(x_api_key: str | None = Header(None)):
+        _auth(x_api_key)
+        return state.outlets
+
+    @app.post(f"{prefix}/outlets")
+    async def create_outlet(payload: dict, x_api_key: str | None = Header(None)):
+        _auth(x_api_key)
+        outlet = {"id": 5000 + len(state.outlets), **payload}
+        state.outlets.append(outlet)
+        return outlet
 
     @app.api_route(prefix + "/{rest:path}", methods=["GET", "POST", "PATCH", "DELETE"])
     async def anything_else(rest: str, x_api_key: str | None = Header(None)):
