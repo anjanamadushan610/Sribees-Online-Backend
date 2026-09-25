@@ -25,7 +25,6 @@ from app.models.order import (
 from app.models.product import BranchInventory, Product
 from app.models.user import Address, User
 from app.models.wallet import WalletTransactionType
-from app.schemas.notification import NotificationTypeEnum
 from app.schemas.order import (
     GATEWAY_PAYMENT_METHODS,
     MARX_PAYMENT_METHOD_MAP,
@@ -726,22 +725,12 @@ class OrderService:
         # Notify the user their order was placed. Best-effort: a notification
         # failure must never roll back a successfully committed order.
         try:
-            await NotificationService.create(
+            await NotificationService.notify_order_placed(
                 db,
                 user_id=user_id,
-                type=NotificationTypeEnum.ORDER_STATUS,
-                title="Order Confirmed",
-                message=(
-                    f"Your order #{order.order_number} has been placed "
-                    f"successfully."
-                ),
-                reference_type="order",
-                reference_id=order.order_id,
-                data={
-                    "order_number": order.order_number,
-                    "status": order.status,
-                },
-                send_push=True,
+                order_number=order.order_number,
+                order_id=order.order_id,
+                status=order.status,
             )
         except Exception as e:
             logger.warning(
@@ -2338,7 +2327,7 @@ class OrderService:
         """Best-effort customer notification — never blocks a refund."""
         try:
             await NotificationService.notify_order_status(
-                db, order.user_id, order.order_number, status_value
+                db, order.user_id, order.order_number, status_value, order_id=order.order_id
             )
         except Exception as exc:  # pragma: no cover - notification is best-effort
             logger.warning(f"Return notification failed for {order.order_number}: {exc}")

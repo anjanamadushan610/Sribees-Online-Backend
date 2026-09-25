@@ -1,10 +1,24 @@
 """
 Notification Service
 
-Push notifications using Firebase Cloud Messaging (FCM).
+Every customer notification is written here: an in-app row in the customer's
+language, and a push (Firebase Cloud Messaging) to each of their devices in
+that device's language, titled with the app's name.
+
+Two rules decide whether anything is sent at all:
+
+* **Category.** ``transactional`` (orders, payments, refunds, wallet) always
+  goes. ``offers`` / ``promotions`` / ``general`` are marketing, and a
+  customer who switched one off in the app gets neither the row nor the push.
+* **Push is off the request.** The row is committed where it is created; the
+  push -- token lookup, the order-photo collage, the FCM call -- runs as a
+  background task on its own session, so a checkout never waits on Firebase.
 """
+import asyncio
+import weakref
+from collections import defaultdict
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
@@ -13,7 +27,57 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import Notification, PushToken
 from app.schemas.notification import NotificationTypeEnum
+from app.services import notification_i18n as i18n
 from app.services.fcm_service import FCMService
+
+# Marketing categories a customer can switch off (users.notify_<category>).
+CATEGORY_TRANSACTIONAL = "transactional"
+MARKETING_CATEGORIES = ("offers", "promotions", "general")
+
+# At most this many pushes are being prepared at once. A sweep that settles
+# cashback for a thousand customers must not open a thousand DB sessions.
+# One semaphore per event loop: a semaphore is bound to the loop it first
+# waits on, and tests run each case in a fresh loop.
+_PUSH_CONCURRENCY = 8
+_push_slots: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_background: set = set()
+
+
+def _slots() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slots = _push_slots.get(loop)
+    if slots is None:
+        slots = _push_slots[loop] = asyncio.Semaphore(_PUSH_CONCURRENCY)
+    return slots
+
+
+def wants(user, category: str) -> bool:
+    """Whether ``user`` has this category switched on (transactional always is)."""
+    if category not in MARKETING_CATEGORIES:
+        return True
+    return getattr(user, f"notify_{category}", True) is not False
+
+
+def _spawn(coro) -> None:
+    """Run ``coro`` in the background, keeping a reference so it is not collected."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        coro.close()
+        return
+    task = loop.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+def _string_data(data: Optional[dict]) -> Dict[str, str]:
+    """FCM data values must be strings; drop the Nones and the bulky lists."""
+    out: Dict[str, str] = {}
+    for key, value in (data or {}).items():
+        if value is None or key == "images":
+            continue
+        out[key] = str(value)
+    return out
 
 
 class NotificationService:
@@ -33,31 +97,119 @@ class NotificationService:
         reference_type: Optional[str] = None,
         reference_id: Optional[UUID] = None,
         data: Optional[dict] = None,
-        send_push: bool = True
-    ) -> Notification:
-        """Create a notification."""
+        send_push: bool = True,
+        category: str = CATEGORY_TRANSACTIONAL,
+    ) -> Optional[Notification]:
+        """
+        Write a notification whose copy is already written (one language).
+
+        Prefer :meth:`notify` with a template, which speaks the customer's
+        language. Returns None when the customer has ``category`` switched off.
+        """
+        return await NotificationService._write(
+            db,
+            user_id=user_id,
+            type=type,
+            texts=i18n.literal_all(title, message),
+            standalone=False,
+            category=category,
+            reference_type=reference_type,
+            reference_id=reference_id,
+            data=data,
+            send_push=send_push,
+        )
+
+    @staticmethod
+    async def notify(
+        db: AsyncSession,
+        user_id: UUID,
+        *,
+        template: str,
+        type: NotificationTypeEnum,
+        params: Optional[dict] = None,
+        per_lang_params=None,
+        category: str = CATEGORY_TRANSACTIONAL,
+        reference_type: Optional[str] = None,
+        reference_id: Optional[UUID] = None,
+        data: Optional[dict] = None,
+        images: Optional[List[str]] = None,
+        send_push: bool = True,
+    ) -> Optional[Notification]:
+        """
+        Write a templated notification (see ``notification_i18n.TEMPLATES``).
+
+        ``images`` are absolute product-photo URLs: the app's feed shows them
+        as thumbnails and the push carries them as one picture.
+        """
+        return await NotificationService._write(
+            db,
+            user_id=user_id,
+            type=type,
+            texts=i18n.render_all(template, params, per_lang_params),
+            standalone=i18n.is_standalone(template),
+            category=category,
+            reference_type=reference_type,
+            reference_id=reference_id,
+            data=data,
+            images=images,
+            send_push=send_push,
+        )
+
+    @staticmethod
+    async def _write(
+        db: AsyncSession,
+        *,
+        user_id: UUID,
+        type,
+        texts: Dict[str, Tuple[str, str]],
+        standalone: bool,
+        category: str,
+        reference_type: Optional[str] = None,
+        reference_id: Optional[UUID] = None,
+        data: Optional[dict] = None,
+        images: Optional[List[str]] = None,
+        send_push: bool = True,
+    ) -> Optional[Notification]:
+        from app.models.user import User
+
+        user = await db.get(User, user_id)
+        if user is not None and not wants(user, category):
+            logger.debug(f"{user_id} has {category} notifications off; nothing sent")
+            return None
+
+        lang = i18n.normalize_lang(getattr(user, "preferred_language", None))
+        title, message = texts[lang]
+        payload = dict(data or {})
+        if images:
+            payload["images"] = list(images)[:4]
+
         notification = Notification(
             user_id=user_id,
-            type=type.value,
+            type=getattr(type, "value", type),
             title=title,
             message=message,
             reference_type=reference_type,
             reference_id=reference_id,
-            data=data
+            data=payload or None,
         )
-
         db.add(notification)
         await db.commit()
         await db.refresh(notification)
-
-        # Send push notification
-        if send_push:
-            await NotificationService.send_push_notification(
-                db, user_id, title, message, data
-            )
-
         logger.info(f"Notification created: {notification.notification_id} for user {user_id}")
 
+        if send_push:
+            push_data = {
+                **payload,
+                "type": payload.get("type") or getattr(type, "value", type),
+                "notification_id": str(notification.notification_id),
+            }
+            if reference_type and reference_id and f"{reference_type}_id" not in push_data:
+                push_data[f"{reference_type}_id"] = str(reference_id)
+            _spawn(
+                NotificationService._push_in_background(
+                    user_id, texts, standalone, push_data, images or [], lang
+                )
+            )
         return notification
 
     @staticmethod
@@ -116,6 +268,11 @@ class NotificationService:
         if notification and not notification.is_read:
             notification.is_read = True
             notification.read_at = datetime.utcnow()
+            campaign_id = (notification.data or {}).get("campaign_id")
+            if campaign_id:
+                from app.services.campaign_service import count_open
+
+                await count_open(db, campaign_id)
             await db.commit()
             await db.refresh(notification)
 
@@ -222,9 +379,14 @@ class NotificationService:
         token: str,
         platform: Optional[str] = None,
         device_id: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> PushToken:
         """
         Register or refresh an FCM device token, keyed by (user_id, device_id).
+
+        ``language`` is the app's current language on that device. It is kept
+        on the token (pushes are rendered per device) and becomes the user's
+        ``preferred_language`` (in-app rows are written in it).
 
         Handles FCM token rotation cleanly:
           - If the device already has a row, its token is updated in place.
@@ -280,6 +442,15 @@ class NotificationService:
             )
             db.add(row)
 
+        if language:
+            lang = i18n.normalize_lang(language)
+            row.language = lang
+            from app.models.user import User
+
+            await db.execute(
+                update(User).where(User.user_id == user_id).values(preferred_language=lang)
+            )
+
         await db.commit()
         await db.refresh(row)
         logger.info(f"Push token upserted for user {user_id} (device {device_id})")
@@ -328,55 +499,104 @@ class NotificationService:
         user_id: UUID,
         title: str,
         body: str,
-        data: Optional[dict] = None
+        data: Optional[dict] = None,
+        category: str = CATEGORY_TRANSACTIONAL,
     ) -> bool:
-        """Send push notification via Firebase Cloud Messaging."""
-        tokens = await NotificationService.get_user_tokens(db, user_id)
+        """
+        Push already-written copy to every device of one user, now.
 
+        Titled with the app's name; ``title`` becomes the body's first line.
+        For callers that keep their own in-app row (or none).
+        """
+        if category != CATEGORY_TRANSACTIONAL:
+            from app.models.user import User
+
+            user = await db.get(User, user_id)
+            if user is not None and not wants(user, category):
+                return False
+        return await NotificationService.push_localized(
+            db, user_id, i18n.literal_all(title, body), standalone=False, data=data
+        )
+
+    @staticmethod
+    async def push_localized(
+        db: AsyncSession,
+        user_id: UUID,
+        texts: Dict[str, Tuple[str, str]],
+        *,
+        standalone: bool,
+        data: Optional[dict] = None,
+        image_url: Optional[str] = None,
+        fallback_lang: Optional[str] = None,
+    ) -> bool:
+        """
+        One push per language among this user's devices, each in its own words.
+
+        A token with no recorded language (registered before the app sent
+        one) reads the user's preferred language, then English.
+        """
+        tokens = await NotificationService.get_user_tokens(db, user_id)
         if not tokens:
             logger.debug(f"No push tokens for user {user_id}")
             return False
 
-        # Convert data to string values (FCM requirement)
-        str_data = None
-        if data:
-            str_data = {k: str(v) for k, v in data.items()}
+        if fallback_lang is None:
+            from app.models.user import User
 
-        # Get token strings
-        token_strings = [t.token for t in tokens]
+            user = await db.get(User, user_id)
+            fallback_lang = getattr(user, "preferred_language", None)
 
-        # Send via FCM
-        if len(token_strings) == 1:
-            # Single token
-            success = await FCMService.send_to_token(
-                token=token_strings[0],
-                title=title,
-                body=body,
-                data=str_data
-            )
-            if success:
-                logger.info(f"Push notification sent to user {user_id}")
-            return success
-        else:
-            # Multiple tokens
+        groups: Dict[str, List[str]] = defaultdict(list)
+        for t in tokens:
+            groups[i18n.normalize_lang(t.language or fallback_lang)].append(t.token)
+
+        str_data = _string_data(data)
+        delivered = 0
+        for lang, token_strings in groups.items():
+            title, message = texts.get(lang) or texts[i18n.DEFAULT_LANGUAGE]
             result = await FCMService.send_to_tokens(
                 tokens=token_strings,
-                title=title,
-                body=body,
-                data=str_data
+                title=i18n.BRAND_TITLE,
+                body=i18n.push_body(title, message, standalone),
+                data=str_data,
+                image_url=image_url,
             )
+            delivered += result.get("success_count", 0)
+            for dead in result.get("invalid_tokens", []):
+                await NotificationService._deactivate_token(db, dead)
 
-            # Deactivate failed tokens (unregistered devices)
-            for failed_token in result.get("failed_tokens", []):
-                await NotificationService._deactivate_token(db, failed_token)
+        if delivered:
+            logger.info(f"Push sent to user {user_id}: {delivered}/{len(tokens)} devices")
+        return delivered > 0
 
-            success = result.get("success_count", 0) > 0
-            if success:
-                logger.info(
-                    f"Push notification sent to user {user_id}: "
-                    f"{result['success_count']}/{len(token_strings)} devices"
-                )
-            return success
+    @staticmethod
+    async def _push_in_background(
+        user_id: UUID,
+        texts: Dict[str, Tuple[str, str]],
+        standalone: bool,
+        data: dict,
+        images: List[str],
+        fallback_lang: str,
+    ) -> None:
+        """The push half of :meth:`_write`, on its own session. Never raises."""
+        from app.config.database import async_session_maker
+        from app.services.notification_media import push_image
+
+        async with _slots():
+            try:
+                image_url = await push_image(images) if images else None
+                async with async_session_maker() as session:
+                    await NotificationService.push_localized(
+                        session,
+                        user_id,
+                        texts,
+                        standalone=standalone,
+                        data=data,
+                        image_url=image_url,
+                        fallback_lang=fallback_lang,
+                    )
+            except Exception:
+                logger.exception(f"Push to {user_id} failed; the in-app notification is saved")
 
     @staticmethod
     async def _deactivate_token(db: AsyncSession, token: str) -> None:
@@ -397,39 +617,74 @@ class NotificationService:
     # ========================================================================
 
     @staticmethod
+    async def _order_context(
+        db: AsyncSession, order_number: str, order_id: Optional[UUID]
+    ) -> Tuple[Optional[UUID], List[str]]:
+        """The order's id (looked up by number when not given) and its product photos."""
+        from app.models.order import Order
+        from app.services.notification_media import order_images
+
+        if order_id is None and order_number:
+            order_id = await db.scalar(
+                select(Order.order_id).where(Order.order_number == order_number)
+            )
+        try:
+            images = await order_images(db, order_id)
+        except Exception as exc:
+            logger.warning(f"No photos for order {order_number}: {exc}")
+            images = []
+        return order_id, images
+
+    @staticmethod
+    async def notify_order_placed(
+        db: AsyncSession,
+        user_id: UUID,
+        order_number: str,
+        order_id: Optional[UUID] = None,
+        status: Optional[str] = None,
+    ) -> Optional[Notification]:
+        """Your order has been placed, with the order's photos."""
+        order_id, images = await NotificationService._order_context(db, order_number, order_id)
+        return await NotificationService.notify(
+            db,
+            user_id,
+            template="order.placed",
+            type=NotificationTypeEnum.ORDER_STATUS,
+            params={"order_number": order_number},
+            reference_type="order",
+            reference_id=order_id,
+            data={
+                "order_number": order_number,
+                "status": status,
+                "order_id": str(order_id) if order_id else None,
+            },
+            images=images,
+        )
+
+    @staticmethod
     async def notify_order_status(
         db: AsyncSession,
         user_id: UUID,
         order_number: str,
         status: str,
         order_id: Optional[UUID] = None,
-    ) -> Notification:
-        """Send order status notification."""
-        status_messages = {
-            "confirmed": "Your order has been confirmed",
-            "processing": "Your order is being prepared",
-            "packing": "Your order is being prepared",
-            "packed": "Your order is packed and ready to ship",
-            "ready_for_pickup": "Your order is packed and the courier is on the way to collect it",
-            "handed_to_courier": "Your order has been handed to the courier",
-            "shipped": "Your order has been shipped",
-            "out_for_delivery": "Your order is out for delivery",
-            "delivered": "Your order has been delivered",
-            "delivery_failed": "We couldn't deliver your order — our team will be in touch",
-            "cancelled": "Your order has been cancelled",
-        }
-
-        message = status_messages.get(status, f"Order status updated to {status}")
-
-        return await NotificationService.create(
+    ) -> Optional[Notification]:
+        """Send an order status notification, with the order's photos."""
+        order_id, images = await NotificationService._order_context(db, order_number, order_id)
+        return await NotificationService.notify(
             db,
-            user_id=user_id,
+            user_id,
+            template=f"order.status.{status}",
             type=NotificationTypeEnum.ORDER_STATUS,
-            title=f"Order #{order_number}",
-            message=message,
+            params={"order_number": order_number},
             reference_type="order",
             reference_id=order_id,
-            data={"order_number": order_number, "status": status, "order_id": str(order_id) if order_id else None}
+            data={
+                "order_number": order_number,
+                "status": status,
+                "order_id": str(order_id) if order_id else None,
+            },
+            images=images,
         )
 
     @staticmethod
@@ -439,17 +694,21 @@ class NotificationService:
         order_number: str,
         amount: float,
         order_id: Optional[UUID] = None,
-    ) -> Notification:
+    ) -> Optional[Notification]:
         """Send payment success notification."""
-        return await NotificationService.create(
+        return await NotificationService.notify(
             db,
-            user_id=user_id,
+            user_id,
+            template="payment.success",
             type=NotificationTypeEnum.PAYMENT,
-            title="Payment Successful",
-            message=f"Payment of Rs. {amount:,.2f} received for order #{order_number}",
+            params={"order_number": order_number, "amount": i18n.money(amount)},
             reference_type="order",
             reference_id=order_id,
-            data={"order_number": order_number, "amount": amount, "order_id": str(order_id) if order_id else None}
+            data={
+                "order_number": order_number,
+                "amount": amount,
+                "order_id": str(order_id) if order_id else None,
+            },
         )
 
     @staticmethod
@@ -459,23 +718,30 @@ class NotificationService:
         product_name: str,
         old_price: float,
         new_price: float,
-        product_id: str
-    ) -> Notification:
-        """Send price drop notification."""
+        product_id: str,
+        image_url: Optional[str] = None,
+    ) -> Optional[Notification]:
+        """Tell a customer a product they saved got cheaper. An offer: they can switch it off."""
         drop_percent = ((old_price - new_price) / old_price) * 100
 
-        return await NotificationService.create(
+        return await NotificationService.notify(
             db,
-            user_id=user_id,
+            user_id,
+            template="price.drop",
             type=NotificationTypeEnum.PRICE_DROP,
-            title="Price Drop Alert! 🎉",
-            message=f"{product_name} is now ₹{new_price:.2f} ({drop_percent:.0f}% off)",
+            category="offers",
+            params={
+                "product": product_name,
+                "price": i18n.money(new_price),
+                "percent": f"{drop_percent:.0f}",
+            },
             reference_type="product",
             reference_id=UUID(product_id) if product_id else None,
             data={
                 "product_id": product_id,
                 "old_price": old_price,
                 "new_price": new_price,
-                "drop_percent": drop_percent
-            }
+                "drop_percent": drop_percent,
+            },
+            images=[image_url] if image_url else None,
         )

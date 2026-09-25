@@ -12,6 +12,7 @@ from app.api.v1 import (
     admin_banners,
     admin_branch_categories,
     admin_branches,
+    admin_campaigns,
     admin_cancellations,
     admin_catalog,
     admin_coupons,
@@ -369,6 +370,15 @@ router.include_router(
     marketing.router,
     prefix="/admin/marketing",
     tags=["Marketing Management"],
+)
+
+# Admin Push Campaigns (/admin/notification-campaigns) — marketing pushes to
+# customers in their language. marketing:read to view, marketing:create to
+# send; a branch's campaign reaches only the customers that branch served.
+router.include_router(
+    admin_campaigns.router,
+    prefix="/admin/notification-campaigns",
+    tags=["Admin Push Campaigns"],
 )
 
 # Admin Banner management (/admin/banners). Branch-scoped via inject_branch_filter;

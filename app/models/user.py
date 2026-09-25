@@ -251,6 +251,24 @@ class User(Base):
         nullable=True,
     )
 
+    # --- Notifications (migration 071) ---------------------------------------
+    #
+    # The language the app was last used in ('en' | 'si' | 'ta'). In-app
+    # notification rows are written in it; pushes use each device's own
+    # language (push_tokens.language) and fall back to this.
+    preferred_language: Optional[str] = Column(String(5), nullable=True)
+    # The three marketing switches in the app. Transactional messages (order,
+    # payment, refund, wallet) are not marketing and ignore them.
+    notify_offers: bool = Column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
+    notify_promotions: bool = Column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
+    notify_general: bool = Column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
+
     # Relationships
     addresses = relationship("Address", back_populates="user", cascade="all, delete-orphan")
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")

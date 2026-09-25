@@ -830,6 +830,7 @@ async def _notify_customer(order: Order, new_status: OrderStatusEnum, db: AsyncS
             user_id=order.user_id,
             order_number=order.order_number,
             status=new_status.value,
+            order_id=order.order_id,
         )
     except Exception as exc:  # pragma: no cover - notification is best-effort
         logger.warning(f"Order status notification failed for {order.order_number}: {exc}")

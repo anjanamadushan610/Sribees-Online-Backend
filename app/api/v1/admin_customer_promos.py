@@ -35,6 +35,8 @@ from app.models.admin import Admin
 from app.models.coupon import Coupon
 from app.models.order import Order
 from app.models.user import User
+from app.schemas.notification import NotificationTypeEnum
+from app.services import notification_i18n as i18n
 from app.services.notification_service import NotificationService
 
 router = APIRouter(tags=["Admin Customer Promos"])
@@ -230,22 +232,26 @@ async def assign_promo(
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Could not auto-collect promo {code} into wallet: {exc}")
 
+    # An offer: a customer who switched offers off still gets the coupon in
+    # their wallet, just no notification about it. `push_sent` says which.
     notified = False
     try:
-        value_text = (
-            f"{discount_value:g}% off"
-            if discount_type == "percentage"
-            else f"Rs {discount_value:g} off"
-        )
-        notified = await NotificationService.send_push_notification(
+        notification = await NotificationService.notify(
             db,
             user_id,
-            title="A gift from your branch 🎁",
-            body=f"{value_text} with code {code}. Valid for {valid_days} days.",
-            data={"type": "coupon", "code": code},
+            template="promo.gift",
+            type=NotificationTypeEnum.PROMOTION,
+            category="offers",
+            params={"code": code, "days": valid_days},
+            per_lang_params=lambda lang: {
+                "off": i18n.coupon_value(discount_type, discount_value, lang)
+            },
+            reference_type="coupon",
+            data={"type": "coupon", "code": code, "screen": "offers"},
         )
+        notified = notification is not None
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning(f"Could not push promo {code} to customer {user_id}: {exc}")
+        logger.warning(f"Could not notify customer {user_id} of promo {code}: {exc}")
 
     return {
         "success": True,
