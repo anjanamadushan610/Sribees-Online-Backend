@@ -1,0 +1,14 @@
+# Secret scanning (CI: .github/workflows/deploy.yml, job "secrets").
+# Gitleaks' default rules, plus the reviewed false positives below. Adding a
+# path here needs the same care as adding a real key: say why it is not one.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed 2026-09-25"
+paths = [
+  # OpenAPI examples on the auth schemas: truncated sample JWTs, not tokens.
+  '''app/schemas/auth\.py''',
+  # A curl example with a placeholder bearer token.
+  '''^README\.md$''',
+]

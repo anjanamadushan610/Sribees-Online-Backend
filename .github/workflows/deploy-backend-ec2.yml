@@ -28,9 +28,20 @@ env:
   DOCKER_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  # The whole CI gate (deploy.yml), as a prerequisite. Nothing is built, pushed
+  # or deployed unless lint, the security scans, every test suite and the
+  # deploy rehearsal pass. Until 2026-09-25 this workflow and CI ran side by
+  # side, so a red CI never stopped a production deploy.
+  ci:
+    name: CI gate
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+
   build-and-push:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
+    needs: ci
 
     permissions:
       contents: read
@@ -109,12 +120,15 @@ jobs:
           # notification ever leaves the server -- which is what production
           # did until this was added.
           FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
+          # Comma-separated phone numbers (testers, store-review demo accounts)
+          # that may sign in with the test OTP. Unset = nobody can (SEC-001).
+          OTP_TEST_PHONES: ${{ secrets.OTP_TEST_PHONES }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON
+          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON,OTP_TEST_PHONES
           # MUST stay false. script_stop makes the action test every command's
           # exit status itself and return on the first non-zero one. That check
           # sits outside bash, so it ignores `set +e` AND the rule that a
@@ -209,6 +223,11 @@ jobs:
               grep -v '^MARX_GATEWAY_METHODS_ENABLED=' .env > .env.tmp || true
               mv .env.tmp .env
               echo "MARX_GATEWAY_METHODS_ENABLED=${MARX_GATEWAY_METHODS_ENABLED}" >> .env
+            fi
+            if [ -n "${OTP_TEST_PHONES:-}" ]; then
+              grep -v '^OTP_TEST_PHONES=' .env > .env.tmp || true
+              mv .env.tmp .env
+              echo "OTP_TEST_PHONES=${OTP_TEST_PHONES}" >> .env
             fi
             # Push notifications. The pasted JSON spans many lines; compose's
             # env_file wants one, so it is compacted (and validated) first.
@@ -441,3 +460,33 @@ jobs:
             echo ""
             echo "API: https://${DOMAIN}/health"
             echo "Docs: https://${DOMAIN}/docs"
+
+  # From outside, the way a customer's phone reaches it: DNS, TLS, nginx and the
+  # app together. The in-container smoke test above cannot see any of the first
+  # three. Read-only: nothing here writes.
+  verify-public:
+    name: Verify through the public edge
+    runs-on: ubuntu-latest
+    needs: deploy
+    timeout-minutes: 5
+    env:
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL || 'https://api.sribees.com' }}
+    steps:
+      - name: Health, TLS and security headers
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 10); do
+            if curl -fsS -o /dev/null "$PUBLIC_API_URL/health"; then break; fi
+            [ "$i" = 10 ] && { echo "::error::$PUBLIC_API_URL/health is not answering"; exit 1; }
+            sleep 6
+          done
+          headers=$(curl -fsS -D - -o /dev/null "$PUBLIC_API_URL/health")
+          echo "$headers" | grep -qi '^strict-transport-security:' || { echo "::error::HSTS missing on the public edge"; exit 1; }
+          echo "$headers" | grep -qi '^x-content-type-options: nosniff' || { echo "::error::nosniff missing"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_API_URL/docs")
+          [ "$code" = "404" ] || { echo "::error::API docs are public ($code)"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_API_URL/api/v1/admin/dashboard/stats")
+          [ "$code" = "401" ] || { echo "::error::an admin route answered $code without a token"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_API_URL/api/v1/app/app-config")
+          [ "$code" = "200" ] || { echo "::error::the app bootstrap config answered $code"; exit 1; }
+          echo "public edge OK"

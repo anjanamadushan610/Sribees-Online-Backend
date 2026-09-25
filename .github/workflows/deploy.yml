@@ -1,40 +1,130 @@
 # =============================================================================
-# SRIBEESonline — CI Pipeline (Lint & Test)
+# SRIBEESonline — CI: the quality and security gate
 #
-# Triggers on push to main/staging and on pull requests.
-# Actual deployment is handled by deploy-backend-ec2.yml (ghcr.io + EC2)
+# Every change passes through here before it can reach a server:
 #
-# Jobs:
-#   1. test — lint & run backend tests
+#   * Pull requests into main / development run it directly.
+#   * deploy-backend-ec2.yml (production) and deploy-dev.yml (development)
+#     CALL it as their first job (workflow_call) and build nothing until it is
+#     green. Before 2026-09-25 production deployed independently of CI, and
+#     main shipped for days with CI red.
+#
+# Jobs (all must pass):
+#   lint         ruff over the whole repository, mypy advisory
+#   sast         bandit -- static security analysis of app/
+#   deps         pip-audit -- known CVEs in what ships (triaged baseline)
+#   secrets      gitleaks over the full git history
+#   test         unit + security + integration suites against real Postgres
+#                and Redis, with a coverage floor
+#   rehearsal    the production deploy, rehearsed: build the production image,
+#                boot it on an empty database, apply every migration TWICE (the
+#                deploy replays them each release), restart, run the smoke test
+#                inside the container, then scan the image
+#
+# How to run the same checks locally: docs/TESTING.md.
 # =============================================================================
 
-name: CI — Lint & Test
+name: CI
 
 on:
-  push:
-    branches: [main, staging]
   pull_request:
-    branches: [main]
+    branches: [main, development]
+  push:
+    branches: [staging]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   PYTHON_VERSION: "3.11"
-  DOCKER_BUILDKIT: 1
+  # Ratchet: raise it when coverage rises, never lower it to get a build out.
+  COVERAGE_FLOOR: "50"
 
-# Cancel in-progress runs for the same branch
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Only superseded PR runs are cancelled. A run feeding a deploy is left to
+  # finish: cancelling it would just fail that deploy.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ===========================================================================
-  # Job 1: Lint & Test
-  # ===========================================================================
-  test:
-    name: Lint & Test
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: .
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      # The whole repository, not app/: tests, scripts and migrations ship too,
+      # and a broken test file is a test that silently stopped running.
+      - name: ruff
+        run: ruff check . --output-format github
+      # Advisory: a large pre-existing backlog. Tracked, not gating.
+      - name: mypy (advisory)
+        run: mypy app/ --ignore-missing-imports || true
+
+  # ---------------------------------------------------------------------------
+  sast:
+    name: Security — static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install "bandit==1.9.4"
+      # Medium severity AND medium confidence and up. Each finding below that
+      # bar was reviewed on 2026-09-25 (docs/TESTING.md); a real one gets fixed,
+      # a false positive gets a `# nosec <id>` with the reason beside it.
+      - name: bandit
+        run: bandit -r app -ll -ii
+
+  # ---------------------------------------------------------------------------
+  deps:
+    name: Security — dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install "pip-audit==2.10.1"
+      - name: pip-audit (runtime dependencies)
+        run: |
+          ignores=$(sed -e 's/#.*//' .github/pip-audit-baseline.txt | tr -s '[:space:]' '\n' | grep -v '^$' | sed 's/^/--ignore-vuln /' | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          pip-audit -r requirements.txt --progress-spinner off $ignores
+
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Security — secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (full history)
+        env:
+          GITLEAKS_VERSION: "8.28.0"
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+          ./gitleaks git --redact --config .gitleaks.toml --verbose .
+
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests (unit, security, integration)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     services:
       postgres:
@@ -43,56 +133,192 @@ jobs:
           POSTGRES_USER: test_user
           POSTGRES_PASSWORD: test_password
           POSTGRES_DB: test_db
-        ports:
-          - 5432:5432
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U test_user -d test_db"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
+          --health-interval 10s --health-timeout 5s --health-retries 5
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-interval 10s --health-timeout 5s --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/test_db
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET_KEY: ci-only-not-a-real-secret
+      APP_ENV: testing
+      MEDIA_ROOT: ${{ github.workspace }}/.media
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
 
-      - name: Install dependencies
+      # One run, three suites. A skipped integration test in CI would be a test
+      # that runs nowhere, so skips are listed (-rs) and the integration suite
+      # is required to have actually run below.
+      - name: pytest
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pytest tests/ -o addopts="" -q -rs \
+            --junitxml=reports/junit.xml \
+            --cov=app --cov-report=xml:reports/coverage.xml --cov-report=term \
+            --cov-fail-under="$COVERAGE_FLOOR"
 
-      - name: Lint with ruff
-        run: ruff check app/ --output-format github
+      - name: The integration and security suites really ran
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("reports/junit.xml").getroot()
+          ran = {"integration": 0, "security": 0}
+          skipped = {"integration": 0, "security": 0}
+          for case in root.iter("testcase"):
+              for suite in ran:
+                  if f"tests.{suite}." in case.get("classname", ""):
+                      if case.find("skipped") is not None:
+                          skipped[suite] += 1
+                      else:
+                          ran[suite] += 1
+          print("ran", ran, "skipped", skipped)
+          assert ran["security"] > 500, ran
+          assert ran["integration"] > 0 and skipped["integration"] == 0, (ran, skipped)
+          PY
 
-      # Advisory only. The codebase carries ~829 pre-existing mypy errors, so a
-      # hard gate here would block every commit rather than the bad ones. Drop
-      # the `|| true` once that backlog is cleared.
-      - name: Type check with mypy
-        run: mypy app/ --ignore-missing-imports || true
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: test-reports
+          path: reports/
+          retention-days: 14
 
-      # A real gate: a failing test fails the build. It used to end in
-      # `|| true`, which meant the entire suite could be red and CI would still
-      # report success -- lint was the only thing actually being checked.
-      - name: Run tests
+  # ---------------------------------------------------------------------------
+  rehearsal:
+    name: Deploy rehearsal (image, migrations x2, smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint]
+
+    services:
+      postgres:
+        # The same image production runs (docker/ec2-docker-compose.yml).
+        image: ankane/pgvector:v0.5.1
         env:
-          DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/test_db
-          REDIS_URL: redis://localhost:6379/0
-          JWT_SECRET_KEY: test-secret-key
-          APP_ENV: testing
-        run: pytest tests/ -v --tb=short --cov=app --cov-report=xml
+          POSTGRES_USER: sribees_user
+          POSTGRES_PASSWORD: rehearsal
+          POSTGRES_DB: sribeesonline
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sribees_user -d sribeesonline"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+
+    env:
+      PGHOST: localhost
+      PGUSER: sribees_user
+      PGPASSWORD: rehearsal
+      PGDATABASE: sribeesonline
+      IMAGE: sribees-backend:rehearsal
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the production image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          load: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: The image carries no secrets or repository metadata
+        run: |
+          leaked=$(docker run --rm --entrypoint sh "$IMAGE" -c \
+            'ls -a /app | grep -E "^(\.git|\.env|\.env\..*|secrets\.out|\.venv|venv|tests)$" || true')
+          if [ -n "$leaked" ]; then
+            echo "::error::the production image contains: $leaked"
+            exit 1
+          fi
+          docker run --rm --entrypoint sh "$IMAGE" -c 'test -d /app/migrations && test -f /app/scripts/smoke_test.py'
+
+      - name: Boot it on an empty database (first boot creates the tables)
+        run: |
+          docker run -d --name app --network host \
+            -e APP_ENV=production -e DEBUG=false \
+            -e DATABASE_URL="postgresql+asyncpg://sribees_user:rehearsal@localhost:5432/sribeesonline" \
+            -e REDIS_URL=redis://localhost:6379/0 \
+            -e JWT_SECRET_KEY="$(openssl rand -hex 32)" \
+            "$IMAGE"
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/health >/dev/null && { echo "healthy after ${i}s"; exit 0; }
+            sleep 1
+          done
+          docker logs --tail 100 app
+          exit 1
+
+      - name: Apply every migration, from the image, in order — twice
+        run: |
+          set -euo pipefail
+          cid=$(docker create "$IMAGE")
+          docker cp "$cid:/app/migrations" ./image-migrations
+          docker rm -f "$cid" >/dev/null
+          psql -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
+          for pass in 1 2; do
+            echo "=== pass $pass"
+            for f in $(ls -1 ./image-migrations/*.sql | sort); do
+              echo "--- $(basename "$f")"
+              psql -q -v ON_ERROR_STOP=1 -f "$f" > /dev/null
+            done
+          done
+
+      - name: Restart onto the migrated schema
+        run: |
+          docker restart app
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/health >/dev/null && { echo "healthy after ${i}s"; exit 0; }
+            sleep 1
+          done
+          docker logs --tail 100 app
+          exit 1
+
+      - name: Smoke test (the same script the production deploy runs)
+        run: |
+          docker exec app python scripts/smoke_test.py \
+            --base-url http://127.0.0.1:8000 \
+            --email superadmin@sribeesonline.lk --password 'Admin@123'
+
+      - name: Production hardening is live in the image
+        run: |
+          set -euo pipefail
+          h=$(curl -sS -D - -o /dev/null http://127.0.0.1:8000/health)
+          echo "$h" | grep -qi '^strict-transport-security:' || { echo "::error::no HSTS in production mode"; exit 1; }
+          echo "$h" | grep -qi '^x-content-type-options: nosniff' || { echo "::error::no nosniff"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/docs)
+          [ "$code" = "404" ] || { echo "::error::/docs is exposed in production mode ($code)"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' http://127.0.0.1:8000/health)
+          [ "$code" = "400" ] || { echo "::error::a forged Host header was accepted ($code)"; exit 1; }
+
+      - name: App log
+        if: failure()
+        run: docker logs --tail 200 app || true
+
+      # Report-only until the base-image backlog is triaged; the summary shows
+      # on the run page. Make it gating (exit-code: 1) once it is clean.
+      - name: Image vulnerability scan (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table
