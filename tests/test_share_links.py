@@ -98,3 +98,47 @@ async def test_assetlinks_empty_when_unconfigured(client, monkeypatch):
         r = await c.get("/.well-known/assetlinks.json")
 
     assert r.json() == []
+
+
+def _stub_branch(monkeypatch, branch):
+    seen = []
+
+    async def lookup(db, branch_id):
+        seen.append(branch_id)
+        return branch
+
+    monkeypatch.setattr(share_links.branch_service, "get_public_branch", lookup)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_share_page_names_the_sharers_branch_and_carries_it_on(client, monkeypatch):
+    from uuid import UUID
+
+    bid = "5b0c1a52-7f3e-4b8e-9a0e-2d1f3c4b5a69"
+    _stub_product(monkeypatch, SimpleNamespace(name="Red Rice", price=Decimal("100"), images=[]))
+    _stub_branch(monkeypatch, SimpleNamespace(branch_id=UUID(bid), name="Kandy <City>"))
+
+    async with client as c:
+        r = await c.get(f"/p/abc-123?b={bid}")
+
+    body = r.text
+    assert "Shared from the Kandy &lt;City&gt; branch" in body
+    assert f"intent://product/abc-123?b={bid}#Intent" in body
+    assert f"branch_id={bid}" in unquote(unquote(body))
+
+
+@pytest.mark.asyncio
+async def test_share_page_ignores_a_branch_it_cannot_vouch_for(client, monkeypatch):
+    _stub_product(monkeypatch, SimpleNamespace(name="Red Rice", price=Decimal("100"), images=[]))
+    seen = _stub_branch(monkeypatch, None)
+
+    async with client as c:
+        bogus = await c.get("/p/abc-123?b=%3Cscript%3E")
+        unknown = await c.get("/p/abc-123?b=5b0c1a52-7f3e-4b8e-9a0e-2d1f3c4b5a69")
+
+    for r in (bogus, unknown):
+        assert r.status_code == 200
+        assert "Shared from" not in r.text
+        assert "branch_id" not in unquote(unquote(r.text))
+    assert len(seen) == 1  # the non-UUID never reached the database

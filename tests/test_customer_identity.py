@@ -42,24 +42,56 @@ def _account(**kwargs) -> User:
 @pytest.mark.parametrize(
     "typed,stored",
     [
-        ("123456789v", "123456789V"),
-        ("123456789X", "123456789X"),
+        ("952345678v", "952345678V"),
+        ("952345678X", "952345678X"),
         ("19 9512 345678", "199512345678"),
-        ("95-1234-5678-90", "951234567890"),
+        ("1995-2345-6789", "199523456789"),
     ],
 )
 def test_nic_is_stored_in_one_canonical_shape(typed, stored):
-    # A UNIQUE column is only unique if "123456789v" and "123456789V" are the
+    # A UNIQUE column is only unique if "952345678v" and "952345678V" are the
     # same string by the time they reach it.
     assert normalize_nic(typed) == stored
 
 
 @pytest.mark.parametrize(
-    "bad", ["12345678V", "1234567890", "123456789Y", "abcdefghi", "", "1234567890123"]
+    "bad", ["12345678V", "9523456780", "952345678Y", "abcdefghi", "", "9523456780123"]
 )
 def test_nic_rejects_anything_that_is_not_a_nic(bad):
     with pytest.raises(ValueError):
         normalize_nic(bad)
+
+
+@pytest.mark.parametrize(
+    "fake",
+    [
+        "123456789V",    # born 1912 - older than anyone who could hold one
+        "999999999V",    # day 999
+        "990009999V",    # day 000
+        "199537012345",  # day 370
+        "199586712345",  # day 867 (a woman's 367)
+        "203012345678",  # born in the future
+        "201512345678",  # born 2015 - too young for a NIC
+        "199506012345",  # 29 February 1995, which never happened
+        "199000001234",  # the synthetic backfill pattern (day 000)
+    ],
+)
+def test_nic_with_an_impossible_birth_date_is_refused(fake):
+    with pytest.raises(ValueError):
+        normalize_nic(fake)
+
+
+@pytest.mark.parametrize(
+    "real",
+    [
+        "199606012345",  # 29 February 1996, a leap year
+        "200036612345",  # 31 December 2000 (day 366 in a leap year)
+        "857501234V",    # a woman born 1985, day 250
+        "200586612345",  # a woman, day 366
+    ],
+)
+def test_nic_with_a_possible_birth_date_is_accepted(real):
+    assert normalize_nic(real) == real
 
 
 @pytest.mark.parametrize(
@@ -69,7 +101,7 @@ def test_every_way_of_typing_a_mobile_lands_on_the_same_number(typed):
     assert normalize_mobile(typed) == "+94771234567"
 
 
-@pytest.mark.parametrize("bad", ["0112345678", "07712345", "0771234567890", ""])
+@pytest.mark.parametrize("bad", ["0112345678", "07712345", "0779523456780", ""])
 def test_mobile_rejects_landlines_and_wrong_lengths(bad):
     with pytest.raises(ValueError):
         normalize_mobile(bad)
@@ -82,11 +114,11 @@ async def test_a_new_account_can_set_its_nic_once():
     db.execute.side_effect = [_result(user), _result(None)]
     response = await AuthService.update_profile(
         SimpleNamespace(user_id=user.user_id),
-        UpdateProfileRequest(nic="123456789v"),
+        UpdateProfileRequest(nic="952345678v"),
         db,
     )
-    assert user.nic == "123456789V"
-    assert response.user.nic == "123456789V"
+    assert user.nic == "952345678V"
+    assert response.user.nic == "952345678V"
 
 
 @pytest.mark.asyncio
@@ -98,7 +130,7 @@ async def test_an_account_cannot_rewrite_its_own_nic():
     with pytest.raises(ValidationError):
         await AuthService.update_profile(
             SimpleNamespace(user_id=user.user_id),
-            UpdateProfileRequest(nic="123456789V"),
+            UpdateProfileRequest(nic="952345678V"),
             db,
         )
     assert user.nic == "199512345678"
@@ -107,13 +139,13 @@ async def test_an_account_cannot_rewrite_its_own_nic():
 @pytest.mark.asyncio
 async def test_two_accounts_cannot_claim_the_same_nic():
     user = _account(nic=None)
-    other = _account(nic="123456789V")
+    other = _account(nic="952345678V")
     db = AsyncMock()
     db.execute.side_effect = [_result(user), _result(other)]
     with pytest.raises(DuplicateError):
         await AuthService.update_profile(
             SimpleNamespace(user_id=user.user_id),
-            UpdateProfileRequest(nic="123456789V"),
+            UpdateProfileRequest(nic="952345678V"),
             db,
         )
 

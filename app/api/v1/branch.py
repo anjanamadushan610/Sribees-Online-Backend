@@ -7,11 +7,13 @@ Routes for address-to-branch routing:
   GET  /context                 — retrieve the current branch context from Redis
   POST /clear                   — clear the branch context (force re-selection)
   GET  /served-postal-cities    — list all postal cities served by any branch
+  GET  /public/{branch_id}      — a live branch's public name (share links)
 
 Payloads carry ``postalCity`` and, for installed app builds, the ``postOffice``
 key they read before the rename (see app/services/branch_service.py).
 """
 from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -238,5 +240,36 @@ async def list_served_postal_cities(
             "postalCities": postal_cities,
             "postOffices": postal_cities,  # legacy key
             "total": len(postal_cities),
+        },
+    }
+
+
+# ============================================================================
+# GET /public/{branch_id} — the public name of a live branch
+# ============================================================================
+
+@router.get(
+    "/public/{branch_id}",
+    response_model=dict,
+    summary="Public name of a branch",
+    description=(
+        "Name and district of an active branch, for anyone - a shared product "
+        "link carries the sharer's branch id and the app shows where it came "
+        "from. Nothing beyond what the storefront already shows."
+    ),
+)
+async def get_public_branch(
+    branch_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    branch = await branch_service.get_public_branch(db, branch_id)
+    if branch is None:
+        raise NotFoundError(resource="Branch", message="Branch not found")
+    return {
+        "success": True,
+        "data": {
+            "branchId": str(branch.branch_id),
+            "branchName": branch.name,
+            "district": branch.district,
         },
     }

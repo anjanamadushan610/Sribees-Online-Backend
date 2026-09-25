@@ -6,7 +6,9 @@ exact, stable URLs:
 
   GET /.well-known/assetlinks.json  — Digital Asset Links proof that the app
                                       owns this host (enables autoVerify).
-  GET /p/{product_id}               — The link shoppers share on WhatsApp etc.
+  GET /p/{product_id}?b={branch_id} — The link shoppers share on WhatsApp etc.
+                                      ``b`` is the sharer's branch, shown as
+                                      "from the Kandy branch" here and in the app.
 
 How a tap on ``https://<host>/p/<id>`` resolves:
 
@@ -24,9 +26,10 @@ The HTML also carries Open Graph tags so WhatsApp renders a product preview.
 from decimal import Decimal
 from html import escape
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.config.settings import settings
 from app.core.media import media_url
+from app.services import branch_service
 from app.services.product_service import ProductService
 
 router = APIRouter(include_in_schema=False)
@@ -49,18 +53,22 @@ def _fingerprints() -> list[str]:
     ]
 
 
-def play_store_url(product_id: Optional[str] = None) -> str:
+def play_store_url(product_id: Optional[str] = None, branch_id: Optional[str] = None) -> str:
     url = f"https://play.google.com/store/apps/details?id={settings.android_package_name}"
     if product_id:
         # Play passes `referrer` verbatim to the Install Referrer API.
-        url += "&referrer=" + quote(f"utm_source=share&product_id={product_id}", safe="")
+        referrer = {"utm_source": "share", "product_id": product_id}
+        if branch_id:
+            referrer["branch_id"] = branch_id
+        url += "&referrer=" + quote(urlencode(referrer), safe="")
     return url
 
 
-def intent_url(product_id: str, fallback: str) -> str:
+def intent_url(product_id: str, fallback: str, branch_id: Optional[str] = None) -> str:
     """Chrome intent URL: open the app on the custom scheme, else `fallback`."""
+    query = f"?b={branch_id}" if branch_id else ""
     return (
-        f"intent://product/{quote(product_id, safe='')}"
+        f"intent://product/{quote(product_id, safe='')}{query}"
         f"#Intent;scheme=sribees;package={settings.android_package_name};"
         f"S.browser_fallback_url={quote(fallback, safe='')};end"
     )
@@ -100,6 +108,7 @@ async def asset_links():
 async def product_share_page(
     product_id: str,
     request: Request,
+    b: Optional[str] = Query(None, max_length=64),
     db: AsyncSession = Depends(get_db),
 ):
     product = None
@@ -108,6 +117,15 @@ async def product_share_page(
     except Exception as exc:  # A broken lookup must not break the redirect.
         logger.warning(f"Share page lookup failed for {product_id!r}: {exc}")
 
+    # Only a live branch's own id is carried on - never the raw query string.
+    branch = None
+    try:
+        if b:
+            branch = await branch_service.get_public_branch(db, UUID(b))
+    except Exception as exc:
+        logger.warning(f"Share page branch lookup failed for {b!r}: {exc}")
+    branch_id = str(branch.branch_id) if branch else None
+
     title = product.name if product else "SRIBEESonline"
     if product and product.price is not None:
         description = f"Rs. {Decimal(product.price):,.2f} — Shop now on SRIBEESonline"
@@ -115,13 +133,16 @@ async def product_share_page(
         description = "Fresh groceries delivered to your door — SRIBEESonline"
     image = _primary_image(product) if product else None
 
-    store = play_store_url(product_id)
-    open_app = intent_url(product_id, store)
-    canonical = str(request.url.replace(query=""))
+    store = play_store_url(product_id, branch_id)
+    open_app = intent_url(product_id, store, branch_id)
+    canonical = str(request.url.replace(query=f"b={branch_id}" if branch_id else ""))
 
     e = lambda s: escape(s, quote=True)  # noqa: E731
     og_image = f'<meta property="og:image" content="{e(image)}">' if image else ""
     img_tag = f'<img src="{e(image)}" alt="">' if image else ""
+    branch_tag = (
+        f'<p class="branch">Shared from the {e(branch.name)} branch</p>' if branch else ""
+    )
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -147,6 +168,7 @@ async def product_share_page(
   a.btn {{ display:block; padding:14px; border-radius:12px; text-decoration:none; font-weight:600; margin-top:10px; }}
   .primary {{ background:#2e7d32; color:#fff; }}
   .secondary {{ background:#e8f2e6; color:#2e7d32; }}
+  .branch {{ font-size:.85rem; color:#6b7b6b; margin:-12px 0 20px; }}
 </style>
 </head>
 <body>
@@ -154,6 +176,7 @@ async def product_share_page(
   {img_tag}
   <h1>{e(title)}</h1>
   <p>{e(description)}</p>
+  {branch_tag}
   <a class="btn primary" id="open" href="{e(open_app)}">Open in SRIBEESonline app</a>
   <a class="btn secondary" href="{e(store)}">Get it on Google Play</a>
 </div>

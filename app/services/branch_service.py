@@ -201,6 +201,17 @@ async def resolve_branch_by_location_triplet(
     return await resolve_branch_by_postal_city(db, postal_city)
 
 
+async def get_public_branch(db: AsyncSession, branch_id: UUID) -> Optional[Branch]:
+    """
+    A live branch by id, for labels anyone may see - "shared from the Kandy
+    branch" on a product link. Inactive branches are not announced.
+    """
+    result = await db.execute(
+        select(Branch).where(Branch.branch_id == branch_id, Branch.is_active.is_(True))
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_served_postal_cities(db: AsyncSession) -> list[str]:
     """Return a sorted list of all actively-served postal city names."""
     result = await db.execute(
