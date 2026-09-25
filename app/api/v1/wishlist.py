@@ -80,6 +80,10 @@ def format_wishlist_item(
                 if item.product.cashback_percentage is not None
                 else None
             ),
+            "category_name": item.product.category.name if getattr(item.product, "category", None) else None,
+            "brand": getattr(item.product, "brand", None),
+            "average_rating": float(item.product.average_rating) if getattr(item.product, "average_rating", None) else 0,
+            "review_count": int(item.product.review_count) if getattr(item.product, "review_count", None) else 0,
             "images": [
                 {"image_url": media_url(img.image_url), "is_primary": img.is_primary}
                 for img in (item.product.images or [])[:1]  # Just primary image

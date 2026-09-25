@@ -31,6 +31,7 @@ class WishlistService:
                 # and 500s (SQLAlchemy's "greenlet_spawn has not been
                 # called").
                 selectinload(WishlistItem.product).selectinload(Product.images),
+                selectinload(WishlistItem.product).selectinload(Product.category),
                 selectinload(WishlistItem.variant)
             )
             .where(WishlistItem.user_id == user_id)
