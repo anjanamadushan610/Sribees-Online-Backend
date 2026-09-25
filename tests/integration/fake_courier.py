@@ -84,7 +84,7 @@ def build_app(state: CourierState) -> FastAPI:
         for sid, s in state.shipments.items():
             if s["merchant_order_ref"] == ref:
                 return {"shipment_id": sid, **s}
-        sid = f"SBX{len(state.shipments) + 100000}"
+        sid = f"SBX{uuid.uuid4().hex[:10].upper()}"
         state.shipments[sid] = {
             "merchant_order_ref": ref,
             "status": "booked",

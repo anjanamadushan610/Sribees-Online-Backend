@@ -17,6 +17,7 @@ database with fixtures.
 """
 from __future__ import annotations
 
+import pathlib
 import secrets
 import uuid
 from dataclasses import dataclass, field
@@ -128,7 +129,7 @@ def _phone() -> str:
 
 
 @pytest.fixture
-async def world(db):
+async def world(db, migrated):
     from app.models.branch import Branch, PostalCityBranchMapping, PostalCityDirectory
     from app.models.location import LocationDistrict, LocationProvince
 
@@ -371,40 +372,61 @@ def place_order(api, app_redis, world, fake_courier):
     return _place
 
 
-_RBAC_SEEDED = False
+_MIGRATED = False
+
+
+def _psql() -> str:
+    import shutil
+
+    found = shutil.which("psql")
+    if found:
+        return found
+    for candidate in ("C:/Program Files/PostgreSQL/18/bin/psql.exe", "C:/Program Files/PostgreSQL/16/bin/psql.exe"):
+        if pathlib.Path(candidate).exists():
+            return candidate
+    pytest.fail("psql is needed to apply migrations/*.sql (they use psql meta-commands)")
 
 
 @pytest.fixture
-async def rbac(db_schema):
+async def migrated(db_schema):
     """
-    The production permission catalogue: system roles, permissions and their
-    grants, from the migrations themselves -- every one that seeds
-    permissions, in filename order, as the deploy applies them (all are
-    idempotent). Applied once per run.
-
-    Not just 037: later features add their own grants (057 gives support its
-    support:* permissions, for instance), and a catalogue missing them would
-    test a permission model production does not have.
+    The database production has: create_all (db_schema), then EVERY
+    migrations/*.sql in filename order through psql, exactly as the deploy
+    applies them -- with the demo seed switched off, as production is
+    (sribees.demo_seed = off). Tables that exist only in a migration (the
+    courier webhook event log, for one) and every permission grant come from
+    here, so tests run against the real schema rather than the ORM's idea of
+    it. Applied once per run.
     """
-    global _RBAC_SEEDED
-    if not _RBAC_SEEDED:
-        import pathlib
-        import re
+    global _MIGRATED
+    if _MIGRATED:
+        return
+    import os
+    import subprocess
+    from urllib.parse import unquote, urlparse
 
-        import asyncpg
+    url = urlparse(settings.async_database_url.replace("postgresql+asyncpg", "postgresql"))
+    env = {
+        **os.environ,
+        "PGHOST": url.hostname or "localhost",
+        "PGPORT": str(url.port or 5432),
+        "PGUSER": unquote(url.username or ""),
+        "PGPASSWORD": unquote(url.password or ""),
+        "PGDATABASE": url.path.lstrip("/"),
+        "PGOPTIONS": "-c sribees.demo_seed=off",
+    }
+    root = pathlib.Path(__file__).resolve().parents[2]
+    psql = _psql()
+    subprocess.run([psql, "-q", "-v", "ON_ERROR_STOP=1", "-c", 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'],
+                   env=env, check=True, capture_output=True)
+    for f in sorted((root / "migrations").glob("*.sql")):
+        done = subprocess.run([psql, "-q", "-v", "ON_ERROR_STOP=1", "-f", str(f)], env=env,
+                              capture_output=True, text=True)
+        if done.returncode != 0:
+            pytest.fail(f"migration {f.name} failed: {done.stderr[-2000:]}")
+    _MIGRATED = True
 
-        grants = re.compile(r"INSERT INTO (role_permissions|permissions)")
-        files = [
-            # Anchored to this file, not the working directory, which the
-            # app's media setup may have moved.
-            f for f in sorted((pathlib.Path(__file__).resolve().parents[2] / "migrations").glob("*.sql"))
-            if grants.search(f.read_text(encoding="utf-8"))
-        ]
-        assert files, "no permission-seeding migrations found"
-        conn = await asyncpg.connect(settings.async_database_url.replace("postgresql+asyncpg", "postgresql"))
-        try:
-            for f in files:
-                await conn.execute(f.read_text(encoding="utf-8"))
-        finally:
-            await conn.close()
-        _RBAC_SEEDED = True
+
+@pytest.fixture
+async def rbac(migrated):
+    """The production permission catalogue -- it arrives with the migrations."""
