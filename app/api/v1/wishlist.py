@@ -28,7 +28,11 @@ router = APIRouter(tags=["Wishlist"])
 # Helper Functions
 # ============================================================================
 
-def format_wishlist_item(item, cashback_map: Optional[dict] = None) -> dict:
+def format_wishlist_item(
+    item,
+    cashback_map: Optional[dict] = None,
+    branch_inv_map: Optional[dict] = None,
+) -> dict:
     """Format wishlist item for response."""
     data = {
         "wishlist_item_id": str(item.wishlist_item_id),
@@ -41,11 +45,19 @@ def format_wishlist_item(item, cashback_map: Optional[dict] = None) -> dict:
 
     # Add product info if available
     if item.product:
+        inv = (branch_inv_map or {}).get(item.product.product_id)
+        eff = ProductService.compute_effective_data(item.product, inv)
+
         data["product"] = {
             "product_id": str(item.product.product_id),
             "name": item.product.name,
             "slug": item.product.slug,
-            "price": float(item.product.price) if item.product.price else 0,
+            "price": eff.get("effective_price", float(item.product.price) if item.product.price else 0),
+            "global_price": float(item.product.price) if item.product.price else 0,
+            "discount_percentage": eff.get("effective_discount", item.product.discount_percentage),
+            "discount_price": eff.get("effective_discount_price", float(item.product.discount_price) if item.product.discount_price else None),
+            "sale_price": eff.get("effective_discount_price", float(item.product.discount_price) if item.product.discount_price else None),
+            "is_on_sale": eff.get("is_on_sale", item.product.is_on_sale),
             # Branch-resolved rate when the caller's branch is known (see
             # get_wishlist), falling back to the product/platform default
             # otherwise — same resolution order as the product listing.
@@ -127,10 +139,26 @@ async def get_wishlist(
         product_ids = [item.product.product_id for item in items if item.product]
         cashback_map = await ProductService.get_cashback_map(db, product_ids, branch_id)
 
+        # Load branch inventory overrides if branch_id is known
+        branch_inv_map = {}
+        if branch_id and product_ids:
+            from sqlalchemy import select
+            from app.models.product import BranchInventory
+            inv_res = await db.execute(
+                select(BranchInventory).where(
+                    BranchInventory.branch_id == branch_id,
+                    BranchInventory.product_id.in_(product_ids),
+                )
+            )
+            branch_inv_map = {inv.product_id: inv for inv in inv_res.scalars().all()}
+
         return {
             "success": True,
             "data": {
-                "items": [format_wishlist_item(item, cashback_map) for item in items],
+                "items": [
+                    format_wishlist_item(item, cashback_map, branch_inv_map)
+                    for item in items
+                ],
                 "count": len(items)
             }
         }
