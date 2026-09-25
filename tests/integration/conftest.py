@@ -322,3 +322,36 @@ def fake_courier(monkeypatch):
     from tests.integration.fake_courier import install
 
     return install(monkeypatch)
+
+
+@pytest.fixture
+def place_order(api, app_redis, world, fake_courier):
+    """Place a real COD order through the API; returns the order as the API shows it."""
+    import json
+
+    from app.config.redis import RedisKeys
+
+    async def _place(customer: Customer, product_id, qty: int = 1, **extra) -> dict:
+        await app_redis.setex(
+            RedisKeys.branch_context(str(customer.user_id)),
+            600,
+            json.dumps({"branch_id": str(world.branch_id), "branch_name": "ZZ"}),
+        )
+        r = await api.post(
+            "/api/v1/cart/items",
+            json={"product_id": str(product_id), "quantity": qty, "price": "1.00", "name": "ZZ item"},
+            headers=customer.headers,
+        )
+        assert r.status_code == 200, r.text
+        body = {
+            "delivery_address_id": str(customer.address_id),
+            "contact_phone": customer.phone,
+            "alternate_phone": "+94719999999",
+            "payment_method": "COD",
+            **extra,
+        }
+        r = await api.post("/api/v1/orders", json=body, headers=customer.headers)
+        assert r.status_code == 201, r.text
+        return r.json()["data"]
+
+    return _place
