@@ -378,18 +378,33 @@ _RBAC_SEEDED = False
 async def rbac(db_schema):
     """
     The production permission catalogue: system roles, permissions and their
-    grants, from migrations/037 itself (idempotent, applied once per run).
+    grants, from the migrations themselves -- every one that seeds
+    permissions, in filename order, as the deploy applies them (all are
+    idempotent). Applied once per run.
+
+    Not just 037: later features add their own grants (057 gives support its
+    support:* permissions, for instance), and a catalogue missing them would
+    test a permission model production does not have.
     """
     global _RBAC_SEEDED
     if not _RBAC_SEEDED:
         import pathlib
+        import re
 
         import asyncpg
 
-        sql = pathlib.Path("migrations/037_role_permission_system.sql").read_text(encoding="utf-8")
+        grants = re.compile(r"INSERT INTO (role_permissions|permissions)")
+        files = [
+            # Anchored to this file, not the working directory, which the
+            # app's media setup may have moved.
+            f for f in sorted((pathlib.Path(__file__).resolve().parents[2] / "migrations").glob("*.sql"))
+            if grants.search(f.read_text(encoding="utf-8"))
+        ]
+        assert files, "no permission-seeding migrations found"
         conn = await asyncpg.connect(settings.async_database_url.replace("postgresql+asyncpg", "postgresql"))
         try:
-            await conn.execute(sql)
+            for f in files:
+                await conn.execute(f.read_text(encoding="utf-8"))
         finally:
             await conn.close()
         _RBAC_SEEDED = True

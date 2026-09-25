@@ -69,15 +69,24 @@ async def submit_support_ticket(
     # Resolve branch if not explicitly provided
     branch_id = payload.branch_id
     if not branch_id and user_id:
-        # Check default address of user for branch mapping
-        stmt = (
-            select(Address.branch_id)
-            .where(Address.user_id == user_id, Address.is_deleted.is_(False))
-            .order_by(Address.is_default.desc(), Address.created_at.desc())
-            .limit(1)
-        )
-        res = await db.execute(stmt)
-        branch_id = res.scalar_one_or_none()
+        # The branch serving the customer's default address, the same rule
+        # checkout uses. Addresses carry no branch of their own -- this used
+        # to select a column that does not exist, so every signed-in
+        # customer's ticket failed with a 500. Best-effort: a ticket with no
+        # branch still reaches support.
+        postal_city = (
+            await db.execute(
+                select(Address.postal_city)
+                .where(Address.user_id == user_id)
+                .order_by(Address.is_default.desc(), Address.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if postal_city:
+            from app.services import branch_service
+
+            mapping = await branch_service.resolve_branch_by_postal_city(db, postal_city)
+            branch_id = mapping.branch_id if mapping else None
 
     ticket_number = _generate_ticket_number()
 
