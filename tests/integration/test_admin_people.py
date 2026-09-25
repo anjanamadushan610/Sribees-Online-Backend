@@ -15,6 +15,20 @@ import uuid
 import pytest
 
 
+# Passwords are generated per run, never written into the repository: a
+# literal one is indistinguishable from a leaked secret to the scanner, and
+# the scanner is right to ask. Each satisfies the strength rules.
+def _pw() -> str:
+    import secrets
+
+    return f"Zz{secrets.token_urlsafe(10)}9!"
+
+HIJACKED_PASS_1 = _pw()
+MANAGER_PASS_1 = _pw()
+STAFF_PASS_12 = _pw()
+WHATEVER_PASS_1 = _pw()
+
+
 def _email(tag="zz") -> str:
     return f"{tag}.{uuid.uuid4().hex[:10]}@sribees-ci.lk"
 
@@ -37,7 +51,7 @@ async def test_admin_account_lifecycle(api, world, make_admin):
     email = _email("manager")
     r = await api.post(
         "/api/v1/admin/users",
-        json={"email": email, "password": "Manager-Pass-1", "full_name": "ZZ Manager",
+        json={"email": email, "password": MANAGER_PASS_1, "full_name": "ZZ Manager",
               "role": "branch_manager", "branch_id": str(world.branch_id)},
         headers=boss.headers,
     )
@@ -46,7 +60,7 @@ async def test_admin_account_lifecycle(api, world, make_admin):
 
     r = await api.post(
         "/api/v1/admin/users",
-        json={"email": email.upper(), "password": "Manager-Pass-1", "full_name": "Dup", "role": "branch_manager",
+        json={"email": email.upper(), "password": MANAGER_PASS_1, "full_name": "Dup", "role": "branch_manager",
               "branch_id": str(world.branch_id)},
         headers=boss.headers,
     )
@@ -54,12 +68,12 @@ async def test_admin_account_lifecycle(api, world, make_admin):
 
     r = await api.post(
         "/api/v1/admin/users",
-        json={"email": _email(), "password": "Manager-Pass-1", "full_name": "No Branch", "role": "branch_manager"},
+        json={"email": _email(), "password": MANAGER_PASS_1, "full_name": "No Branch", "role": "branch_manager"},
         headers=boss.headers,
     )
     assert r.status_code == 400, "a scoped role needs a branch"
 
-    assert (await _login(api, email, "Manager-Pass-1")).status_code == 200
+    assert (await _login(api, email, MANAGER_PASS_1)).status_code == 200
 
     r = await api.get("/api/v1/admin/users", headers=boss.headers)
     assert r.status_code == 200 and new_id in r.text
@@ -71,7 +85,7 @@ async def test_admin_account_lifecycle(api, world, make_admin):
     assert r.status_code == 400, "a Super Admin cannot lock themselves out"
     r = await api.delete(f"/api/v1/admin/users/{new_id}", headers=boss.headers)
     assert r.status_code == 200, r.text
-    assert (await _login(api, email, "Manager-Pass-1")).status_code in (401, 403)
+    assert (await _login(api, email, MANAGER_PASS_1)).status_code in (401, 403)
 
 
 @pytest.mark.parametrize("role", ["branch_manager", "marketing_manager", "inventory_manager", "customer_support"])
@@ -81,7 +95,7 @@ async def test_only_the_super_admin_manages_admin_accounts(api, world, make_admi
     assert r.status_code == 403
     r = await api.post(
         "/api/v1/admin/users",
-        json={"email": _email(), "password": "Whatever-Pass-1", "full_name": "Escalate", "role": "super_admin"},
+        json={"email": _email(), "password": WHATEVER_PASS_1, "full_name": "Escalate", "role": "super_admin"},
         headers=who.headers,
     )
     assert r.status_code == 403, "no role may mint a Super Admin but a Super Admin"
@@ -117,7 +131,7 @@ async def test_a_manager_delegates_a_subset_of_their_own_permissions(api, db, wo
     if not_held:
         r = await api.post(
             "/api/v1/admin/staff",
-            json={"email": _email("staff"), "password": "Staff-Pass-12", "fullName": "Greedy Staff",
+            json={"email": _email("staff"), "password": STAFF_PASS_12, "fullName": "Greedy Staff",
                   "newRole": {"name": f"Greedy {uuid.uuid4().hex[:4]}", "permissionIds": [_pid(not_held[0])]}},
             headers=manager.headers,
         )
@@ -126,7 +140,7 @@ async def test_a_manager_delegates_a_subset_of_their_own_permissions(api, db, wo
     email = _email("staff")
     r = await api.post(
         "/api/v1/admin/staff",
-        json={"email": email, "password": "Staff-Pass-12", "fullName": "Order Clerk",
+        json={"email": email, "password": STAFF_PASS_12, "fullName": "Order Clerk",
               "newRole": {"name": f"Clerk {uuid.uuid4().hex[:4]}", "permissionIds": [_pid(orders_read)]}},
         headers=manager.headers,
     )
@@ -138,7 +152,7 @@ async def test_a_manager_delegates_a_subset_of_their_own_permissions(api, db, wo
     r = await api.get("/api/v1/admin/roles", headers=manager.headers)
     assert r.status_code == 200
 
-    login = await _login(api, email, "Staff-Pass-12")
+    login = await _login(api, email, STAFF_PASS_12)
     assert login.status_code == 200, login.text
     staff_headers = {"Authorization": f"Bearer {login.json()['data']['token']}"}
     assert (await api.get("/api/v1/admin/orders", headers=staff_headers)).status_code == 200
@@ -146,7 +160,7 @@ async def test_a_manager_delegates_a_subset_of_their_own_permissions(api, db, wo
     # Hierarchy is one level deep: staff never create staff.
     r = await api.post(
         "/api/v1/admin/staff",
-        json={"email": _email(), "password": "Staff-Pass-12", "fullName": "Sub", "roleId": str(uuid.uuid4())},
+        json={"email": _email(), "password": STAFF_PASS_12, "fullName": "Sub", "roleId": str(uuid.uuid4())},
         headers=staff_headers,
     )
     assert r.status_code == 403
@@ -157,10 +171,10 @@ async def test_a_manager_delegates_a_subset_of_their_own_permissions(api, db, wo
     # A colleague in the same branch who lacks the staff's permissions cannot
     # take the account over: editing it means resetting its password.
     marketing = await make_admin("marketing_manager", api=api)
-    r = await api.put(f"/api/v1/admin/staff/{staff_id}", json={"password": "Hijacked-Pass-1"},
+    r = await api.put(f"/api/v1/admin/staff/{staff_id}", json={"password": HIJACKED_PASS_1},
                       headers=marketing.headers)
     assert r.status_code == 403, r.text
-    assert (await _login(api, email, "Hijacked-Pass-1")).status_code == 401
+    assert (await _login(api, email, HIJACKED_PASS_1)).status_code == 401
 
     # Nor can a manager of another branch.
     import uuid as _uuid
@@ -177,7 +191,7 @@ async def test_a_manager_delegates_a_subset_of_their_own_permissions(api, db, wo
 
     r = await api.delete(f"/api/v1/admin/staff/{staff_id}", headers=manager.headers)
     assert r.status_code == 200, r.text
-    assert (await _login(api, email, "Staff-Pass-12")).status_code in (401, 403)
+    assert (await _login(api, email, STAFF_PASS_12)).status_code in (401, 403)
 
 
 async def test_deactivating_an_admin_takes_their_staff_with_them(api, world, make_admin):
@@ -188,14 +202,14 @@ async def test_deactivating_an_admin_takes_their_staff_with_them(api, world, mak
     email = _email("staff")
     r = await api.post(
         "/api/v1/admin/staff",
-        json={"email": email, "password": "Staff-Pass-12", "fullName": "Orphan",
+        json={"email": email, "password": STAFF_PASS_12, "fullName": "Orphan",
               "newRole": {"name": f"R {uuid.uuid4().hex[:4]}", "permissionIds": [pid]}},
         headers=manager.headers,
     )
     assert r.status_code == 201, r.text
     r = await api.delete(f"/api/v1/admin/users/{manager.admin_id}", headers=boss.headers)
     assert r.status_code == 200, r.text
-    assert (await _login(api, email, "Staff-Pass-12")).status_code in (401, 403)
+    assert (await _login(api, email, STAFF_PASS_12)).status_code in (401, 403)
 
 
 # ---------------------------------------------------------------------------

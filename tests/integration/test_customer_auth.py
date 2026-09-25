@@ -14,7 +14,21 @@ from sqlalchemy import select
 
 from app.config.redis import RedisKeys
 
-PASSWORD = "Str0ng-Passw0rd!"
+
+# Passwords are generated per run, never written into the repository: a
+# literal one is indistinguishable from a leaked secret to the scanner, and
+# the scanner is right to ask. Each satisfies the strength rules.
+def _pw() -> str:
+    import secrets
+
+    return f"Zz{secrets.token_urlsafe(10)}9!"
+
+
+PASSWORD = _pw()
+WRONG_PASSW0RD = _pw()
+N3W_PASSW0RD = _pw()
+R3SET_PASSW0RD = _pw()
+AGAIN_PASSW0RD = _pw()
 
 
 def _email() -> str:
@@ -97,7 +111,7 @@ async def test_email_sign_up_needs_verification_then_signs_in(api, db, world):
 async def test_wrong_passwords_and_unknown_accounts_look_the_same(api, db, world):
     email = _email()
     await _register_and_verify(api, db, email)
-    wrong = await _login(api, email, "Wrong-Passw0rd!")
+    wrong = await _login(api, email, WRONG_PASSW0RD)
     nobody = await _login(api, _email(), PASSWORD)
     assert wrong.status_code == nobody.status_code == 401
     assert wrong.json() == nobody.json(), "the reply must not reveal whether the account exists"
@@ -166,7 +180,7 @@ async def test_change_password(api, db, world):
     t = _tokens((await _login(api, email)).json())
     r = await api.post(
         "/api/v1/auth/change-password",
-        json={"current_password": "Wrong-Passw0rd!", "new_password": "N3w-Passw0rd!!"},
+        json={"current_password": WRONG_PASSW0RD, "new_password": N3W_PASSW0RD},
         headers=_bearer(t["access_token"]),
     )
     assert r.status_code in (400, 401), r.text
@@ -178,12 +192,12 @@ async def test_change_password(api, db, world):
     assert r.status_code == 422, "a weak password is refused"
     r = await api.post(
         "/api/v1/auth/change-password",
-        json={"current_password": PASSWORD, "new_password": "N3w-Passw0rd!!"},
+        json={"current_password": PASSWORD, "new_password": N3W_PASSW0RD},
         headers=_bearer(t["access_token"]),
     )
     assert r.status_code == 200, r.text
     assert (await _login(api, email)).status_code == 401
-    assert (await _login(api, email, "N3w-Passw0rd!!")).status_code == 200
+    assert (await _login(api, email, N3W_PASSW0RD)).status_code == 200
 
 
 async def test_forgot_and_reset_password(api, db, world):
@@ -202,13 +216,13 @@ async def test_forgot_and_reset_password(api, db, world):
     user = (await db.execute(select(User).where(User.email == email))).scalar_one()
     token = (await db.execute(select(PasswordReset.token).where(PasswordReset.user_id == user.user_id))).scalar_one()
 
-    r = await api.post("/api/v1/auth/reset-password", json={"token": "nope", "password": "R3set-Passw0rd!"}, headers=_ip())
+    r = await api.post("/api/v1/auth/reset-password", json={"token": "nope", "password": R3SET_PASSW0RD}, headers=_ip())
     assert r.status_code in (400, 401, 404), r.text
-    r = await api.post("/api/v1/auth/reset-password", json={"token": token, "password": "R3set-Passw0rd!"}, headers=_ip())
+    r = await api.post("/api/v1/auth/reset-password", json={"token": token, "password": R3SET_PASSW0RD}, headers=_ip())
     assert r.status_code == 200, r.text
-    r = await api.post("/api/v1/auth/reset-password", json={"token": token, "password": "Again-Passw0rd!"}, headers=_ip())
+    r = await api.post("/api/v1/auth/reset-password", json={"token": token, "password": AGAIN_PASSW0RD}, headers=_ip())
     assert r.status_code in (400, 401, 404), "a reset token is single use"
-    assert (await _login(api, email, "R3set-Passw0rd!")).status_code == 200
+    assert (await _login(api, email, R3SET_PASSW0RD)).status_code == 200
 
 
 async def test_phone_sign_in_with_a_real_code(api, app_redis, world):

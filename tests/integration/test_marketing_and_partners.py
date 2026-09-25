@@ -15,6 +15,17 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 
+# Passwords are generated per run, never written into the repository: a
+# literal one is indistinguishable from a leaked secret to the scanner, and
+# the scanner is right to ask. Each satisfies the strength rules.
+def _pw() -> str:
+    import secrets
+
+    return f"Zz{secrets.token_urlsafe(10)}9!"
+
+PARTNER_PASSWORD = _pw()
+
+
 def _code(prefix="ZZ") -> str:
     return f"{prefix}{uuid.uuid4().hex[:8].upper()}"
 
@@ -240,12 +251,12 @@ async def test_the_partner_programme(api, world, make_admin):
     boss = await make_admin("super_admin", api=api)
     email = f"zz.partner.{uuid.uuid4().hex[:8]}@sribees-ci.lk"
     r = await api.post("/api/v1/admin/partners",
-                       json={"email": email, "password": "Partner-Pass-1", "full_name": "ZZ Partner"},
+                       json={"email": email, "password": PARTNER_PASSWORD, "full_name": "ZZ Partner"},
                        headers=boss.headers)
     assert r.status_code == 201, r.text
     pid = r.json()["data"]["partner_id"]
 
-    r = await api.post("/api/v1/partner/auth/login", json={"email": email, "password": "Partner-Pass-1"},
+    r = await api.post("/api/v1/partner/auth/login", json={"email": email, "password": PARTNER_PASSWORD},
                        headers={"X-Forwarded-For": f"192.0.2.{uuid.uuid4().int % 250}"})
     assert r.status_code == 200, r.text
     token = r.json()["data"]["token"]
