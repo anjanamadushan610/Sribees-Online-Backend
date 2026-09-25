@@ -93,9 +93,10 @@ async def init_db() -> None:
         import app.models  # noqa
 
         async with engine.begin() as conn:
-            # Test connection using text() for raw SQL
             from sqlalchemy import text
-            await conn.execute(text("SELECT 1"))
+
+            # Acquire Postgres advisory transaction lock to serialize init across all concurrent workers
+            await conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('sribees_init_db_lock'))"))
 
             # Ensure admin_role_enum type exists safely (idempotent across multi-worker boot)
             await conn.execute(text("""
@@ -107,6 +108,9 @@ async def init_db() -> None:
                             'INVENTORY_MANAGER', 'CUSTOMER_SUPPORT', 'STAFF'
                         );
                     END IF;
+                EXCEPTION
+                    WHEN duplicate_object THEN NULL;
+                    WHEN unique_violation THEN NULL;
                 END
                 $$;
             """))
@@ -170,6 +174,9 @@ async def _seed_admin_accounts() -> None:
     from app.models.branch import Branch
 
     async with get_db_context() as db:
+        # Acquire Postgres advisory transaction lock to serialize demo seeding across workers
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext('sribees_seed_admin_lock'))"))
+
         # Production is marked `ALTER DATABASE ... SET sribees.demo_seed =
         # 'off'`, the same switch the seed migrations obey. Without this, every
         # boot re-creates the demo admins, whose shared password is in this
