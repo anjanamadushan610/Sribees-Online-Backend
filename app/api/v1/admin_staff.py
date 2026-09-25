@@ -66,6 +66,19 @@ async def _get_own_staff_or_404(db: AsyncSession, current_admin: Admin, admin_id
     if current_admin.role != AdminRole.SUPER_ADMIN:
         if current_admin.branch_id is None or target.branch_id != current_admin.branch_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a staff account in your branch")
+        # Branch-wide management (2f3f022) must not be a way up: whoever can
+        # edit a staff account can reset its password and sign in as it, so a
+        # Marketing Manager editing staff the Branch Manager created would
+        # borrow permissions they were never given. Only staff whose grants
+        # the caller already holds are theirs to manage.
+        if target.parent_admin_id != current_admin.admin_id:
+            theirs = await PermissionService.get_effective_permission_ids(db, target)
+            mine = await PermissionService.get_effective_permission_ids(db, current_admin)
+            if not theirs <= mine:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This staff account has permissions you do not hold.",
+                )
     return target
 
 

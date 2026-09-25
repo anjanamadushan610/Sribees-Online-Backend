@@ -281,12 +281,25 @@ def make_customer(db, world):
 
 
 @pytest.fixture
-def make_admin(db, world):
+def make_admin(db, world, rbac):
     """An admin with a real password, logged in through the real endpoint."""
     from app.core.security import hash_password
     from app.models.admin import Admin, AdminRole
 
-    async def _make(role: str = "super_admin", *, branch_id: Optional[uuid.UUID] = None, api=None) -> AdminLogin:
+    async def _make(
+        role: str = "super_admin",
+        *,
+        branch_id: Optional[uuid.UUID] = None,
+        api=None,
+        real_role: bool = True,
+    ) -> AdminLogin:
+        """Linked to its system role row, exactly as production admins are
+        (migration 037 makes admins.role_id NOT NULL)."""
+        from sqlalchemy import select as _select
+
+        from app.models.role import Role
+
+        role_id = (await db.execute(_select(Role.role_id).where(Role.system_key == role))).scalar_one()
         admin_id = uuid.uuid4()
         email = f"zz.{role}.{uuid.uuid4().hex[:8]}@sribees-ci.lk"
         password = secrets.token_urlsafe(16)  # per test; nothing fixed to leak or reuse
@@ -299,6 +312,7 @@ def make_admin(db, world):
                 full_name=f"ZZ {role}",
                 role=AdminRole(role),
                 branch_id=branch_id or (world.branch_id if scoped else None),
+                role_id=role_id,
                 is_active=True,
             )
         )
@@ -355,3 +369,27 @@ def place_order(api, app_redis, world, fake_courier):
         return r.json()["data"]
 
     return _place
+
+
+_RBAC_SEEDED = False
+
+
+@pytest.fixture
+async def rbac(db_schema):
+    """
+    The production permission catalogue: system roles, permissions and their
+    grants, from migrations/037 itself (idempotent, applied once per run).
+    """
+    global _RBAC_SEEDED
+    if not _RBAC_SEEDED:
+        import pathlib
+
+        import asyncpg
+
+        sql = pathlib.Path("migrations/037_role_permission_system.sql").read_text(encoding="utf-8")
+        conn = await asyncpg.connect(settings.async_database_url.replace("postgresql+asyncpg", "postgresql"))
+        try:
+            await conn.execute(sql)
+        finally:
+            await conn.close()
+        _RBAC_SEEDED = True
