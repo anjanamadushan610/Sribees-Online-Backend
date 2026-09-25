@@ -315,7 +315,9 @@ jobs:
       # Report-only until the base-image backlog is triaged; the summary shows
       # on the run page. Make it gating (exit-code: 1) once it is clean.
       - name: Image vulnerability scan (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to a commit, not a tag (v0.36.0): a moved tag on a security
+        # tool is exactly the supply-chain attack a scan is meant to catch.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: ${{ env.IMAGE }}
           severity: CRITICAL,HIGH

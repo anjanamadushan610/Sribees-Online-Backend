@@ -12,3 +12,9 @@ paths = [
   # A curl example with a placeholder bearer token.
   '''^README\.md$''',
 ]
+# dc85ea6 added the integration fixtures with a fixed test-admin password
+# ("Integration-Pass-9", for a throwaway account in the CI database). The next
+# commit generates it per test instead; this only forgives that one commit.
+commits = [
+  "dc85ea6f202b6bd2337970151cbfdf17301dcf49",
+]

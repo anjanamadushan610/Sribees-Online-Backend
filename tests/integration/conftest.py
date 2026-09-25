@@ -17,6 +17,7 @@ database with fixtures.
 """
 from __future__ import annotations
 
+import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -288,7 +289,7 @@ def make_admin(db, world):
     async def _make(role: str = "super_admin", *, branch_id: Optional[uuid.UUID] = None, api=None) -> AdminLogin:
         admin_id = uuid.uuid4()
         email = f"zz.{role}.{uuid.uuid4().hex[:8]}@sribees-ci.lk"
-        password = "Integration-Pass-9"
+        password = secrets.token_urlsafe(16)  # per test; nothing fixed to leak or reuse
         scoped = role != "super_admin"
         db.add(
             Admin(
