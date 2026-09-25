@@ -14,7 +14,6 @@ shows up against the real deployment.
 
 import json
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest

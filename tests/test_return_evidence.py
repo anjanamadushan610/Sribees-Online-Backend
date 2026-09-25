@@ -18,7 +18,6 @@ import pytest
 from app.schemas.order import ReturnRequest
 from app.services.order_service import resolve_recipient_name
 
-
 # --- the request schema --------------------------------------------------
 
 
@@ -60,10 +59,10 @@ class _FakeSession:
 
 
 def _order(**extra):
-    fields = dict(
-        order_number="SB-0001",
-        user_id="22222222-2222-2222-2222-222222222222",
-    )
+    fields = {
+        "order_number": "SB-0001",
+        "user_id": "22222222-2222-2222-2222-222222222222",
+    }
     fields.update(extra)
     return SimpleNamespace(**fields)
 

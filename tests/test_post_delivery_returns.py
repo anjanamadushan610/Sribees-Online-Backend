@@ -36,25 +36,25 @@ class _FakeSession:
 
 
 def _order(*, delivered_at=None, status=OrderStatus.DELIVERED.value, **extra):
-    fields = dict(
-        order_id="11111111-1111-1111-1111-111111111111",
-        order_number="SB-0001",
-        user_id="22222222-2222-2222-2222-222222222222",
-        status=status,
-        delivered_at=delivered_at,
-        items=[],
-        return_items=None,
-        return_reason=None,
-        return_comments=None,
-        return_requested_at=None,
-        return_resolution=None,
-        return_resolution_note=None,
-        return_approved_at=None,
-        return_received_at=None,
-        refund_amount=None,
-        refunded_at=None,
-        delivery_address=None,
-    )
+    fields = {
+        "order_id": "11111111-1111-1111-1111-111111111111",
+        "order_number": "SB-0001",
+        "user_id": "22222222-2222-2222-2222-222222222222",
+        "status": status,
+        "delivered_at": delivered_at,
+        "items": [],
+        "return_items": None,
+        "return_reason": None,
+        "return_comments": None,
+        "return_requested_at": None,
+        "return_resolution": None,
+        "return_resolution_note": None,
+        "return_approved_at": None,
+        "return_received_at": None,
+        "refund_amount": None,
+        "refunded_at": None,
+        "delivery_address": None,
+    }
     # `extra` overrides rather than duplicates — several tests set a field the
     # defaults above already name.
     fields.update(extra)

@@ -20,7 +20,6 @@ from decimal import Decimal
 from app.services.order_service import RETURN_WINDOW
 from app.services.referral_service import ReferralService
 
-
 # --- the vesting delay ------------------------------------------------------
 
 

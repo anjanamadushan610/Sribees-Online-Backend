@@ -21,9 +21,9 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import text
+
 from app.config.database import engine
 from app.utils.logger import logger
-
 
 # ============================================================================
 # Seed Data

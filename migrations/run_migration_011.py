@@ -15,9 +15,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import text
+
 from app.config.database import engine
 from app.utils.logger import logger
-
 
 MIGRATION_FILE = Path(__file__).parent / "011_create_post_office_branch_mapping.sql"
 
@@ -76,14 +76,14 @@ def _split_sql_statements(sql: str) -> list[str]:
         # End of statement: semicolon at end of line AND not inside $$ block
         if stripped.endswith(";") and not in_dollar_block:
             stmt = "\n".join(current).strip()
-            if stmt and not all(l.strip().startswith("--") or not l.strip() for l in current):
+            if stmt and not all(ln.strip().startswith("--") or not ln.strip() for ln in current):
                 statements.append(stmt)
             current = []
 
     # Catch any trailing content
     if current:
         stmt = "\n".join(current).strip()
-        if stmt and not all(l.strip().startswith("--") or not l.strip() for l in current):
+        if stmt and not all(ln.strip().startswith("--") or not ln.strip() for ln in current):
             statements.append(stmt)
 
     return statements

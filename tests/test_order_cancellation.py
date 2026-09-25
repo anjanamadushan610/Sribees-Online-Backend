@@ -22,19 +22,19 @@ from app.services.order_service import OrderService
 
 
 def _order(**extra):
-    fields = dict(
-        order_id="11111111-1111-1111-1111-111111111111",
-        order_number="SB-0001",
-        user_id="22222222-2222-2222-2222-222222222222",
-        status=OrderStatus.CONFIRMED.value,
-        payment_status=PaymentStatus.PAID.value,
-        payment_method="MARX_OTHER",
-        total_amount=Decimal("5000.00"),
-        wallet_deduction=Decimal("0"),
-        shipping_amount=Decimal("0"),
-        courier_quote_amount=None,
-        courier_shipment_id=None,
-    )
+    fields = {
+        "order_id": "11111111-1111-1111-1111-111111111111",
+        "order_number": "SB-0001",
+        "user_id": "22222222-2222-2222-2222-222222222222",
+        "status": OrderStatus.CONFIRMED.value,
+        "payment_status": PaymentStatus.PAID.value,
+        "payment_method": "MARX_OTHER",
+        "total_amount": Decimal("5000.00"),
+        "wallet_deduction": Decimal("0"),
+        "shipping_amount": Decimal("0"),
+        "courier_quote_amount": None,
+        "courier_shipment_id": None,
+    }
     fields.update(extra)
     return SimpleNamespace(**fields)
 

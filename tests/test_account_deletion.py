@@ -28,18 +28,18 @@ def _closed(user):
 
 
 def _user(**extra):
-    fields = dict(
-        user_id="11111111-1111-1111-1111-111111111111",
-        full_name="Nimal Perera",
-        phone="0771234567",
-        alternate_phone="0779999999",
-        email="nimal@example.com",
-        nic="199012345678",
-        is_active=True,
-        deleted_at=None,
-        deleted_phone=None,
-        deleted_email=None,
-    )
+    fields = {
+        "user_id": "11111111-1111-1111-1111-111111111111",
+        "full_name": "Nimal Perera",
+        "phone": "0771234567",
+        "alternate_phone": "0779999999",
+        "email": "nimal@example.com",
+        "nic": "199012345678",
+        "is_active": True,
+        "deleted_at": None,
+        "deleted_phone": None,
+        "deleted_email": None,
+    }
     fields.update(extra)
     return SimpleNamespace(**fields)
 
