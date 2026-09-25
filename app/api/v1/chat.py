@@ -29,7 +29,7 @@ from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.rate_limiter import rate_limit
 from app.schemas.assistant_commerce import ConfirmAssistantRequest
 from app.schemas.chat import ChatMessageRequest
-from app.services import branch_service
+from app.services import branch_service, chat_language
 from app.services.chat_service import ChatService
 from app.services.embedding_service import GeminiAPIError
 from app.utils.i18n import resolve_language
@@ -52,7 +52,11 @@ async def confirm_assistant_action(
     from app.services.assistant_tools import tr
 
     user_id = current_user.user_id
-    lang = resolve_language(request.headers.get("accept-language"))
+    # A confirmation answers in the language the conversation is in, which
+    # is the customer's, not necessarily the app's.
+    lang = chat_language.last_language(
+        await ChatService.get_history(redis, str(user_id))
+    ) or resolve_language(request.headers.get("accept-language"))
     key = proposal_key(user_id, body.token)
     raw = await redis.get(key)
     if not raw:
@@ -91,6 +95,7 @@ async def confirm_assistant_action(
             ),
             result["reply"],
             response=result,
+            language=lang,
         )
         return {"success": True, "data": result}
     finally:

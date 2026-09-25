@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.redis import RedisKeys, RedisTTL
 from app.config.settings import settings
 from app.schemas.chat import ChatPlan
+from app.services import chat_language
 from app.services.assistant_tools import action, help_result, orders_result, tr
 from app.services.embedding_service import GeminiAPIError
 from app.services.product_service import ProductService
@@ -61,7 +62,7 @@ _SYSTEM_PROMPT = """You are SRIBEES Online's grocery shopping assistant, chattin
 
 The customer may write in English, Sinhala, Tamil, or Singlish, and may attach a photo (an ingredient, a dish they want to recreate, a product they're out of).
 
-Follow the application language supplied in the system instruction. Be warm, respectful and brief.
+Answer in the reply language set at the end of these instructions, whatever language the app itself is set to. Be warm, respectful and brief.
 
 CRITICAL — you do NOT have access to live stock/inventory. A separate system checks the real database AFTER you reply, and will correct or override your reply if it disagrees with real stock. So:
 - NEVER state or imply that a specific item, brand, or size IS or ISN'T in stock (no "Ow thiyenawa", "yes we have it", "sorry we don't have it", etc.).
@@ -161,6 +162,7 @@ class ChatService:
         reply: str,
         search_context: Optional[Dict[str, Any]] = None,
         response: Optional[Dict[str, Any]] = None,
+        language: Optional[str] = None,
     ) -> None:
         # Stamped so a restored conversation can show when each turn
         # happened. Turns written before this shipped carry no "at" and the
@@ -171,6 +173,10 @@ class ChatService:
             "text": reply,
             "at": now,
         }
+        if language:
+            # What the next "ok", photo or shortcut tap continues in -- see
+            # chat_language.last_language.
+            assistant_turn["language"] = language
         if response:
             assistant_turn.update(
                 {
@@ -220,9 +226,15 @@ class ChatService:
         history: List[Dict[str, Any]],
         image_base64: Optional[str],
         image_mime_type: Optional[str],
-        lang: str = DEFAULT_LANGUAGE,
+        lang: Optional[str] = DEFAULT_LANGUAGE,
         application_context: Optional[dict] = None,
+        fallback_lang: str = DEFAULT_LANGUAGE,
     ) -> Dict[str, Any]:
+        """
+        ``lang`` is the reply language when the server has already settled
+        it; None hands the choice to the model (``reply_language``), with
+        ``fallback_lang`` for a message too short to tell.
+        """
         api_key = getattr(settings, "gemini_api_key", None)
         if not api_key:
             raise GeminiAPIError("GEMINI_API_KEY not configured")
@@ -278,13 +290,11 @@ class ChatService:
             "systemInstruction": {
                 "parts": [
                     {
+                        # The per-turn part goes last so the shared prompt
+                        # stays a cacheable prefix.
                         "text": _SYSTEM_PROMPT
-                        + "\nApplication language: "
-                        + {
-                            "si": "Sinhala. ALWAYS write replies in Sinhala Unicode script, even when the user types Singlish or English. Keep brand names and identifiers unchanged. Use natural, friendly Sri Lankan Sinhala, not romanized Sinhala.",
-                            "ta": "Tamil. ALWAYS write replies in Tamil script. Keep brand names and identifiers unchanged.",
-                            "en": "English. Reply in English.",
-                        }.get(lang, "English.")
+                        + "\n"
+                        + chat_language.instruction(lang, fallback_lang)
                     }
                 ]
             },
@@ -581,7 +591,20 @@ class ChatService:
         order_reference: Optional[str] = None,
         on_stage: StageCallback = None,
     ) -> Dict[str, Any]:
+        """
+        ``lang`` is the app's language setting. It is only the last resort
+        for the reply: the customer's own message decides the language of the
+        whole turn -- reply, cards, buttons and panels alike -- and a message
+        with nothing to go on continues the conversation's language.
+        """
         history = await ChatService.get_history(redis, session_id)
+        fallback_lang = chat_language.last_language(history) or lang
+        fixed_lang = (
+            fallback_lang
+            if task
+            else chat_language.fixed_language(message, fallback_lang)
+        )
+        lang = fixed_lang or fallback_lang
 
         response: Dict[str, Any] = {
             "products": [],
@@ -625,8 +648,9 @@ class ChatService:
                         history,
                         image_base64,
                         image_mime_type,
-                        lang=lang,
+                        lang=fixed_lang,
                         application_context=application_context,
+                        fallback_lang=fallback_lang,
                     ),
                     timeout=30,
                 )
@@ -640,6 +664,7 @@ class ChatService:
                             "இப்போது புதிய கேள்விகளைப் புரிந்துகொள்ளும் சேவை கிடைக்கவில்லை. சிறிது நேரத்தில் மீண்டும் முயற்சிக்கவும்.",
                         ),
                         "degraded": True,
+                        "language": lang,
                     }
                 )
                 await ChatService._append_turn(
@@ -649,8 +674,16 @@ class ChatService:
                     message,
                     response["reply"],
                     response=response,
+                    language=lang,
                 )
                 return response
+            lang = chat_language.final_language(
+                fixed_lang,
+                result.get("reply_language"),
+                fallback_lang,
+                reply=result.get("reply"),
+            )
+        response["language"] = lang
 
         if result["intent"] in ("cart_edit", "compare_products", "alternatives"):
             from app.services.assistant_shopping import cart_preview, comparison
@@ -708,6 +741,7 @@ class ChatService:
             response["reply"],
             response.pop("search_context", None),
             response=response,
+            language=lang,
         )
         return response
 
@@ -737,10 +771,9 @@ class ChatService:
 
         if intent == "chitchat":
             reply = result["reply"]
-            script_range = {"si": (0x0D80, 0x0DFF), "ta": (0x0B80, 0x0BFF)}.get(lang)
-            if script_range and not any(
-                script_range[0] <= ord(c) <= script_range[1] for c in reply
-            ):
+            # The model was told the language; this makes sure it listened
+            # (romanised Sinhala, or English answered in Sinhala, fall back).
+            if not chat_language.written_in(reply, lang):
                 reply = tr(
                     lang,
                     "How can I help you today?",

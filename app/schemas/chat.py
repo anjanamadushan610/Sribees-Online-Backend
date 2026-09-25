@@ -44,6 +44,10 @@ ChatTarget = Literal[
 class ChatPlan(BaseModel):
     """Untrusted model output, validated before any tool runs."""
 
+    # First, so the model settles the language before it writes `reply`.
+    # Only consulted when the server could not decide it from the message
+    # itself -- see app/services/chat_language.py.
+    reply_language: Optional[Literal["en", "si", "ta"]] = None
     reply: str = Field(min_length=1, max_length=1600)
     intent: Literal[
         "buy_product",
