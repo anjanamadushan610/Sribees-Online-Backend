@@ -36,6 +36,8 @@ def _android_config() -> "messaging.AndroidConfig":
     return messaging.AndroidConfig(
         priority="high",
         notification=messaging.AndroidNotification(
+            icon="ic_stat_notification",
+            color="#D81B60",
             sound="default",
             click_action="FLUTTER_NOTIFICATION_CLICK",
             channel_id=ANDROID_CHANNEL_ID,
