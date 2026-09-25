@@ -3,7 +3,7 @@ Notification API Endpoints
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,9 +15,11 @@ from app.core.dependencies import (
 from app.schemas.notification import (
     BroadcastNotificationRequest,
     CreateNotificationRequest,
+    NotificationPreferencesUpdate,
     PushTokenRegisterRequest,
     RegisterPushTokenRequest,
 )
+from app.services import notification_i18n as i18n
 from app.services.notification_service import NotificationService
 
 # Prefix "/notifications" is applied by app/api/v1/router.py — do not repeat it here.
@@ -253,12 +255,72 @@ async def delete_all_notifications(
 
 
 # ============================================================================
+# Preferences
+# ============================================================================
+
+def _preferences(user) -> dict:
+    return {
+        "offers": user.notify_offers is not False,
+        "promotions": user.notify_promotions is not False,
+        "general": user.notify_general is not False,
+        "language": i18n.normalize_lang(user.preferred_language),
+    }
+
+
+@router.get("/preferences", response_model=dict)
+async def get_preferences(current_user = Depends(get_current_user)):
+    """
+    The customer's marketing switches (all ON until they change one) and the
+    language notifications are written in. Order, payment and refund updates
+    are not governed by these and always arrive.
+    """
+    return {"success": True, "data": _preferences(current_user)}
+
+
+@router.put("/preferences", response_model=dict)
+async def update_preferences(
+    data: NotificationPreferencesUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Change any of the switches; fields left out keep their value."""
+    if data.offers is not None:
+        current_user.notify_offers = data.offers
+    if data.promotions is not None:
+        current_user.notify_promotions = data.promotions
+    if data.general is not None:
+        current_user.notify_general = data.general
+    if data.language:
+        current_user.preferred_language = i18n.normalize_lang(data.language)
+    await db.commit()
+    await db.refresh(current_user)
+    return {"success": True, "data": _preferences(current_user)}
+
+
+@router.post("/campaigns/{campaign_id}/opened", response_model=dict)
+async def campaign_opened(
+    campaign_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """
+    The customer tapped a campaign push. Marks their copy read and counts
+    them once toward the campaign's opens, however often they tap.
+    """
+    from app.services.campaign_service import mark_opened
+
+    counted = await mark_opened(db, current_user.user_id, campaign_id)
+    return {"success": True, "data": {"counted": counted}}
+
+
+# ============================================================================
 # Push Token Endpoints
 # ============================================================================
 
 @router.post("/push/token", response_model=dict)
 async def register_fcm_push_token(
     data: PushTokenRegisterRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
@@ -268,6 +330,10 @@ async def register_fcm_push_token(
     Upserts into ``push_tokens`` keyed by (user, device_id): a device that
     rotated its token updates its existing row, otherwise a new row is inserted.
     The row is always marked ``is_active = True``.
+
+    Also records the app's language on this device, so pushes to it are
+    written in that language. The app calls this again when the customer
+    switches language.
     """
     try:
         row = await NotificationService.upsert_push_token(
@@ -276,6 +342,7 @@ async def register_fcm_push_token(
             token=data.token,
             platform=data.platform,
             device_id=data.device_id,
+            language=data.language or request.headers.get("accept-language"),
         )
         return {
             "success": True,
@@ -284,6 +351,7 @@ async def register_fcm_push_token(
                 "platform": row.device_type,
                 "device_id": row.device_id,
                 "is_active": row.is_active,
+                "language": row.language,
             },
             "message": "Push token registered",
         }

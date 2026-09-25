@@ -15,7 +15,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 
 from app.config.database import Base
 
@@ -108,8 +108,18 @@ class BranchCategory(Base):
         Index("idx_branch_category_branch_active", "branch_id", "is_active"),
     )
 
-    category = relationship("Category", backref="branch_links")
-    branch = relationship("Branch", backref="category_links")
+    # The rows go when their category or branch goes: the database says so
+    # (ON DELETE CASCADE, migration 043), and passive_deletes lets it. Without
+    # this the ORM set category_id to NULL on the links first, the NOT NULL
+    # constraint refused, and deleting any category failed with a 500.
+    category = relationship(
+        "Category",
+        backref=backref("branch_links", cascade="all, delete-orphan", passive_deletes=True),
+    )
+    branch = relationship(
+        "Branch",
+        backref=backref("category_links", cascade="all, delete-orphan", passive_deletes=True),
+    )
 
     def __repr__(self):
         return f"<BranchCategory category={self.category_id} branch={self.branch_id} active={self.is_active}>"

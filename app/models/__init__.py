@@ -29,7 +29,12 @@ from app.models.loyalty import (
     OrderReward,
     OrderRewardStatus,
 )
-from app.models.notification import Notification, NotificationType, PushToken
+from app.models.notification import (
+    Notification,
+    NotificationCampaign,
+    NotificationType,
+    PushToken,
+)
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
 from app.models.product import (
@@ -115,6 +120,7 @@ __all__ = [
     # Notification models
     "Notification",
     "PushToken",
+    "NotificationCampaign",
     "NotificationType",
     # Admin & RBAC models
     "Admin",

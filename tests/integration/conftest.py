@@ -17,6 +17,7 @@ database with fixtures.
 """
 from __future__ import annotations
 
+import pathlib
 import secrets
 import uuid
 from dataclasses import dataclass, field
@@ -128,7 +129,7 @@ def _phone() -> str:
 
 
 @pytest.fixture
-async def world(db):
+async def world(db, migrated):
     from app.models.branch import Branch, PostalCityBranchMapping, PostalCityDirectory
     from app.models.location import LocationDistrict, LocationProvince
 
@@ -281,12 +282,25 @@ def make_customer(db, world):
 
 
 @pytest.fixture
-def make_admin(db, world):
+def make_admin(db, world, rbac):
     """An admin with a real password, logged in through the real endpoint."""
     from app.core.security import hash_password
     from app.models.admin import Admin, AdminRole
 
-    async def _make(role: str = "super_admin", *, branch_id: Optional[uuid.UUID] = None, api=None) -> AdminLogin:
+    async def _make(
+        role: str = "super_admin",
+        *,
+        branch_id: Optional[uuid.UUID] = None,
+        api=None,
+        real_role: bool = True,
+    ) -> AdminLogin:
+        """Linked to its system role row, exactly as production admins are
+        (migration 037 makes admins.role_id NOT NULL)."""
+        from sqlalchemy import select as _select
+
+        from app.models.role import Role
+
+        role_id = (await db.execute(_select(Role.role_id).where(Role.system_key == role))).scalar_one()
         admin_id = uuid.uuid4()
         email = f"zz.{role}.{uuid.uuid4().hex[:8]}@sribees-ci.lk"
         password = secrets.token_urlsafe(16)  # per test; nothing fixed to leak or reuse
@@ -299,6 +313,7 @@ def make_admin(db, world):
                 full_name=f"ZZ {role}",
                 role=AdminRole(role),
                 branch_id=branch_id or (world.branch_id if scoped else None),
+                role_id=role_id,
                 is_active=True,
             )
         )
@@ -322,3 +337,96 @@ def fake_courier(monkeypatch):
     from tests.integration.fake_courier import install
 
     return install(monkeypatch)
+
+
+@pytest.fixture
+def place_order(api, app_redis, world, fake_courier):
+    """Place a real COD order through the API; returns the order as the API shows it."""
+    import json
+
+    from app.config.redis import RedisKeys
+
+    async def _place(customer: Customer, product_id, qty: int = 1, **extra) -> dict:
+        await app_redis.setex(
+            RedisKeys.branch_context(str(customer.user_id)),
+            600,
+            json.dumps({"branch_id": str(world.branch_id), "branch_name": "ZZ"}),
+        )
+        r = await api.post(
+            "/api/v1/cart/items",
+            json={"product_id": str(product_id), "quantity": qty, "price": "1.00", "name": "ZZ item"},
+            headers=customer.headers,
+        )
+        assert r.status_code == 200, r.text
+        body = {
+            "delivery_address_id": str(customer.address_id),
+            "contact_phone": customer.phone,
+            "alternate_phone": "+94719999999",
+            "payment_method": "COD",
+            **extra,
+        }
+        r = await api.post("/api/v1/orders", json=body, headers=customer.headers)
+        assert r.status_code == 201, r.text
+        return r.json()["data"]
+
+    return _place
+
+
+_MIGRATED = False
+
+
+def _psql() -> str:
+    import shutil
+
+    found = shutil.which("psql")
+    if found:
+        return found
+    for candidate in ("C:/Program Files/PostgreSQL/18/bin/psql.exe", "C:/Program Files/PostgreSQL/16/bin/psql.exe"):
+        if pathlib.Path(candidate).exists():
+            return candidate
+    pytest.fail("psql is needed to apply migrations/*.sql (they use psql meta-commands)")
+
+
+@pytest.fixture
+async def migrated(db_schema):
+    """
+    The database production has: create_all (db_schema), then EVERY
+    migrations/*.sql in filename order through psql, exactly as the deploy
+    applies them -- with the demo seed switched off, as production is
+    (sribees.demo_seed = off). Tables that exist only in a migration (the
+    courier webhook event log, for one) and every permission grant come from
+    here, so tests run against the real schema rather than the ORM's idea of
+    it. Applied once per run.
+    """
+    global _MIGRATED
+    if _MIGRATED:
+        return
+    import os
+    import subprocess
+    from urllib.parse import unquote, urlparse
+
+    url = urlparse(settings.async_database_url.replace("postgresql+asyncpg", "postgresql"))
+    env = {
+        **os.environ,
+        "PGHOST": url.hostname or "localhost",
+        "PGPORT": str(url.port or 5432),
+        "PGUSER": unquote(url.username or ""),
+        "PGPASSWORD": unquote(url.password or ""),
+        "PGDATABASE": url.path.lstrip("/"),
+        "PGOPTIONS": "-c sribees.demo_seed=off",
+    }
+    root = pathlib.Path(__file__).resolve().parents[2]
+    psql = _psql()
+    subprocess.run([psql, "-q", "-v", "ON_ERROR_STOP=1", "-c", 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'],
+                   env=env, check=True, capture_output=True)
+    for f in sorted((root / "migrations").glob("*.sql")):
+        done = subprocess.run([psql, "-q", "-v", "ON_ERROR_STOP=1", "-f", str(f)], env=env,
+                              capture_output=True, text=True)
+        if done.returncode != 0:
+            pytest.fail(f"migration {f.name} failed: {done.stderr[-2000:]}")
+    _MIGRATED = True
+
+
+@pytest.fixture
+async def rbac(migrated):
+    """The production permission catalogue -- it arrives with the migrations."""

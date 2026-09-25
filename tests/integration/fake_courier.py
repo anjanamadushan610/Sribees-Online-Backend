@@ -76,6 +76,47 @@ def build_app(state: CourierState) -> FastAPI:
             "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),
         }
 
+    @app.post(f"{prefix}/shipments")
+    async def book(payload: dict, x_api_key: str | None = Header(None)):
+        _auth(x_api_key)
+        ref = payload["merchant_order_ref"]
+        # Idempotent on merchant_order_ref, as the contract says.
+        for sid, s in state.shipments.items():
+            if s["merchant_order_ref"] == ref:
+                return {"shipment_id": sid, **s}
+        sid = f"SBX{uuid.uuid4().hex[:10].upper()}"
+        state.shipments[sid] = {
+            "merchant_order_ref": ref,
+            "status": "booked",
+            "tracking_url": f"https://track.test/{sid}",
+            "pickup_location_name": "ZZ Branch",
+            "payment_method": payload.get("payment_method"),
+            "cod_amount": payload.get("cod_amount"),
+            "handover": {"required": bool(payload.get("handover_code_required"))},
+        }
+        return {"shipment_id": sid, **state.shipments[sid]}
+
+    @app.get(prefix + "/shipments/{sid}")
+    async def shipment(sid: str, x_api_key: str | None = Header(None)):
+        _auth(x_api_key)
+        if sid not in state.shipments:
+            raise HTTPException(status_code=404, detail={"error": {"code": "not_found"}})
+        return {"shipment_id": sid, **state.shipments[sid], "history": []}
+
+    @app.get(prefix + "/shipments/{sid}/label")
+    async def label(sid: str, x_api_key: str | None = Header(None)):
+        _auth(x_api_key)
+        from fastapi.responses import Response
+
+        return Response(content=b"%PDF-1.4 fake label", media_type="application/pdf")
+
+    @app.post(prefix + "/shipments/{sid}/cancel")
+    async def cancel(sid: str, x_api_key: str | None = Header(None)):
+        _auth(x_api_key)
+        if sid in state.shipments:
+            state.shipments[sid]["status"] = "cancelled"
+        return {"shipment_id": sid, "status": "cancelled"}
+
     @app.api_route(prefix + "/{rest:path}", methods=["GET", "POST", "PATCH", "DELETE"])
     async def anything_else(rest: str, x_api_key: str | None = Header(None)):
         _auth(x_api_key)

@@ -8,10 +8,12 @@ from fastapi import APIRouter
 from app.api.v1 import (
     admin,
     admin_analytics,
+    admin_assistant_briefings,
     admin_auth,
     admin_banners,
     admin_branch_categories,
     admin_branches,
+    admin_campaigns,
     admin_cancellations,
     admin_catalog,
     admin_coupons,
@@ -117,6 +119,15 @@ router.include_router(
     chat.router,
     prefix="/chat",
     tags=["AI Chat"],
+)
+
+# Admin AI Briefings (/admin/assistant-briefings) — what a branch tells the
+# chat assistant for a while (a disruption, an event). briefings:* permission;
+# a Branch Manager is pinned to their own branch.
+router.include_router(
+    admin_assistant_briefings.router,
+    prefix="/admin/assistant-briefings",
+    tags=["Admin AI Briefings"],
 )
 
 router.include_router(
@@ -369,6 +380,15 @@ router.include_router(
     marketing.router,
     prefix="/admin/marketing",
     tags=["Marketing Management"],
+)
+
+# Admin Push Campaigns (/admin/notification-campaigns) — marketing pushes to
+# customers in their language. marketing:read to view, marketing:create to
+# send; a branch's campaign reaches only the customers that branch served.
+router.include_router(
+    admin_campaigns.router,
+    prefix="/admin/notification-campaigns",
+    tags=["Admin Push Campaigns"],
 )
 
 # Admin Banner management (/admin/banners). Branch-scoped via inject_branch_filter;

@@ -226,7 +226,11 @@ async def apply_shipment_payload(
             from app.services.notification_service import NotificationService
 
             await NotificationService.notify_order_status(
-                db, user_id=order.user_id, order_number=order.order_number, status=mapped.value
+                db,
+                user_id=order.user_id,
+                order_number=order.order_number,
+                status=mapped.value,
+                order_id=order.order_id,
             )
         except Exception as exc:  # pragma: no cover - notification is best-effort
             logger.warning(f"Courier status notification failed for {order.order_number}: {exc}")

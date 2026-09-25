@@ -262,6 +262,24 @@ jobs:
             echo "docker-compose.yml written. Validating..."
             sudo docker compose config --quiet && echo "YAML valid!" || { echo "YAML invalid!"; cat docker-compose.yml; exit 1; }
 
+            echo "==== 5b. FREE DISK SPACE ===="
+            # Every release pulls a new ~1 GB image and nothing ever removed
+            # the old ones, until the root disk filled and the pull died with
+            # "no space left on device" (2026-09-25, three deploys in a row).
+            # Only images NO container uses are removed: the running app's
+            # image, Postgres and Redis are all in use and stay, so the site
+            # keeps serving and a failed pull still leaves it running.
+            df -h / | tail -1
+            sudo docker image prune -af >/dev/null || true
+            sudo docker builder prune -af >/dev/null 2>&1 || true
+            df -h / | tail -1
+            AVAIL_KB=$(df --output=avail / | tail -1 | tr -d ' ')
+            if [ "${AVAIL_KB:-0}" -lt 2097152 ]; then
+              echo "ERROR: less than 2 GB free on / even after pruning images -- not pulling."
+              sudo du -xh --max-depth=2 /var/lib/docker 2>/dev/null | sort -h | tail -10 || true
+              exit 1
+            fi
+
             echo "==== 6. LOGIN & PULL DOCKER IMAGES ===="
             echo "$REGISTRY_TOKEN" | sudo docker login ghcr.io -u "$REGISTRY_USERNAME" --password-stdin
             sudo docker compose pull fastapi_backend

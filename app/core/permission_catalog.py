@@ -26,6 +26,8 @@ DELEGATABLE_PERMISSIONS: set[tuple[str, str]] = {
     ("marketing", "create"), ("marketing", "read"), ("marketing", "update"), ("marketing", "delete"),
     ("banners", "create"), ("banners", "read"), ("banners", "update"), ("banners", "delete"),
     ("support", "read"), ("support", "update"),
+    # What a branch tells the AI assistant for a while (migration 072).
+    ("briefings", "create"), ("briefings", "read"), ("briefings", "update"), ("briefings", "delete"),
 }
 
 # Resources that are never delegatable regardless of what a creator holds —
@@ -51,6 +53,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, set[tuple[str, str]]] = {
         ("reviews", "read"), ("reviews", "update"),
         ("transfers", "create"), ("transfers", "read"),
         ("support", "read"), ("support", "update"),
+        ("briefings", "create"), ("briefings", "read"), ("briefings", "update"), ("briefings", "delete"),
     },
     "marketing_manager": {
         ("dashboard", "read"),

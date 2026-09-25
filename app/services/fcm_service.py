@@ -43,12 +43,37 @@ def _android_config() -> "messaging.AndroidConfig":
     )
 
 
-def _apns_config() -> "messaging.APNSConfig":
+def _apns_config(image_url: Optional[str] = None) -> "messaging.APNSConfig":
+    # mutable-content lets an iOS Notification Service Extension attach the
+    # image; without one iOS simply shows the text.
     return messaging.APNSConfig(
         payload=messaging.APNSPayload(
-            aps=messaging.Aps(sound="default", badge=1),
+            aps=messaging.Aps(sound="default", badge=1, mutable_content=bool(image_url)),
         ),
+        fcm_options=messaging.APNSFCMOptions(image=image_url) if image_url else None,
     )
+
+
+# Errors that mean "this token will never work again" -- the app was
+# uninstalled or the token belongs to another Firebase project. Anything else
+# (quota, a network blip, FCM itself down) says nothing about the device, and
+# deactivating on it once switched off every token when FCM was unconfigured.
+def _is_dead_token_error(exc) -> bool:
+    if exc is None or not FIREBASE_AVAILABLE:
+        return False
+    dead = tuple(
+        cls
+        for cls in (
+            getattr(messaging, "UnregisteredError", None),
+            getattr(messaging, "SenderIdMismatchError", None),
+        )
+        if cls is not None
+    )
+    return isinstance(exc, dead)
+
+
+# FCM's multicast limit.
+MULTICAST_LIMIT = 500
 
 
 class FCMService:
@@ -157,7 +182,7 @@ class FCMService:
                 notification=notification,
                 data=data or {},
                 android=_android_config(),
-                apns=_apns_config(),
+                apns=_apns_config(image_url),
                 token=token,
             )
 
@@ -194,61 +219,54 @@ class FCMService:
             image_url: Optional image URL
 
         Returns:
-            Dict with success_count, failure_count, and failed_tokens
+            Dict with success_count, failure_count, failed_tokens, and
+            invalid_tokens -- the subset that will never work again and
+            should be deactivated.
         """
+        empty = {"success_count": 0, "failure_count": 0, "failed_tokens": [], "invalid_tokens": []}
         if not tokens:
-            return {"success_count": 0, "failure_count": 0, "failed_tokens": []}
+            return empty
 
         if not cls._initialized:
             if not cls.initialize():
-                return {"success_count": 0, "failure_count": len(tokens), "failed_tokens": tokens}
+                return {**empty, "failure_count": len(tokens), "failed_tokens": list(tokens)}
 
-        try:
-            # Build notification
-            notification = messaging.Notification(
-                title=title,
-                body=body,
-                image=image_url,
-            )
+        notification = messaging.Notification(title=title, body=body, image=image_url)
+        total = dict(empty, failed_tokens=[], invalid_tokens=[])
 
-            # Build multicast message
+        for start in range(0, len(tokens), MULTICAST_LIMIT):
+            chunk = tokens[start:start + MULTICAST_LIMIT]
             message = messaging.MulticastMessage(
                 notification=notification,
                 data=data or {},
                 android=_android_config(),
-                apns=_apns_config(),
-                tokens=tokens,
+                apns=_apns_config(image_url),
+                tokens=chunk,
             )
+            try:
+                # Off the event loop: firebase-admin is blocking.
+                response = await asyncio.to_thread(
+                    messaging.send_each_for_multicast, message
+                )
+            except Exception as e:
+                logger.error(f"FCM multicast failed: {e}")
+                total["failure_count"] += len(chunk)
+                total["failed_tokens"].extend(chunk)
+                continue
 
-            # Send multicast off the event loop (firebase-admin is blocking).
-            response = await asyncio.to_thread(
-                messaging.send_each_for_multicast, message
-            )
-
-            # Collect failed tokens
-            failed_tokens = []
+            total["success_count"] += response.success_count
+            total["failure_count"] += response.failure_count
             for idx, send_response in enumerate(response.responses):
                 if not send_response.success:
-                    failed_tokens.append(tokens[idx])
+                    total["failed_tokens"].append(chunk[idx])
+                    if _is_dead_token_error(getattr(send_response, "exception", None)):
+                        total["invalid_tokens"].append(chunk[idx])
 
-            logger.info(
-                f"FCM multicast: {response.success_count} success, "
-                f"{response.failure_count} failures"
-            )
-
-            return {
-                "success_count": response.success_count,
-                "failure_count": response.failure_count,
-                "failed_tokens": failed_tokens,
-            }
-
-        except Exception as e:
-            logger.error(f"FCM multicast failed: {e}")
-            return {
-                "success_count": 0,
-                "failure_count": len(tokens),
-                "failed_tokens": tokens,
-            }
+        logger.info(
+            f"FCM multicast: {total['success_count']} success, "
+            f"{total['failure_count']} failures"
+        )
+        return total
 
     @classmethod
     async def send_to_topic(

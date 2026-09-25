@@ -20,11 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import NotificationType
 from app.models.referral import ReferralCommission
+from app.services import notification_i18n as i18n
 from app.services.notification_service import NotificationService
-
-
-def _money(amount: Decimal) -> str:
-    return f"Rs. {amount:,.2f}"
 
 
 async def notify_vested(
@@ -56,21 +53,15 @@ async def notify_vested(
     sent = 0
     for user_id, amount in totals.items():
         orders = counts[user_id]
-        # Say the figure. "You have new earnings" makes people open the app to
-        # find out whether it is worth opening the app.
-        message = (
-            f"{_money(amount)} from {orders} orders is ready to move into your "
-            "wallet."
-            if orders > 1
-            else f"{_money(amount)} is ready to move into your wallet."
-        )
         try:
-            await NotificationService.create(
+            # Say the figure. "You have new earnings" makes people open the
+            # app to find out whether it is worth opening the app.
+            await NotificationService.notify(
                 db,
-                user_id=user_id,
+                user_id,
+                template="referral.ready.many" if orders > 1 else "referral.ready.one",
                 type=NotificationType.PAYMENT,
-                title="Your referral earnings are ready",
-                message=message,
+                params={"amount": i18n.money(amount), "orders": orders},
                 reference_type="referral",
                 data={
                     # Lets the app open the right screen straight from the

@@ -46,6 +46,12 @@ stripe==7.10.0
 # PDF Invoices
 reportlab==4.1.0
 
+# Images: the product-photo strip on order notifications
+# (app/services/notification_media.py). reportlab already pulls it in; named
+# here because it is now a direct import, and a floor so pip-audit's fixes
+# are not held back by a pin.
+pillow>=10.3.0
+
 # Rate Limiting
 slowapi==0.1.9
 

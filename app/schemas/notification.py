@@ -62,6 +62,9 @@ class PushTokenRegisterRequest(BaseModel):
     token: str = Field(..., min_length=1)
     platform: Optional[str] = None
     device_id: Optional[str] = None
+    # The app's current language on this device ('en' | 'si' | 'ta'). Falls
+    # back to the request's Accept-Language when absent (older builds).
+    language: Optional[str] = Field(None, max_length=16)
 
     @field_validator("platform")
     @classmethod
@@ -72,6 +75,17 @@ class PushTokenRegisterRequest(BaseModel):
         if normalized not in {"android", "ios"}:
             raise ValueError("platform must be 'android' or 'ios'")
         return normalized
+
+
+class NotificationPreferencesUpdate(BaseModel):
+    """
+    PUT /notifications/preferences. Every field optional: the app sends only
+    the switch that changed.
+    """
+    offers: Optional[bool] = None
+    promotions: Optional[bool] = None
+    general: Optional[bool] = None
+    language: Optional[str] = Field(None, max_length=16)
 
 
 # ============================================================================

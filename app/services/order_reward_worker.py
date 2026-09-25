@@ -18,21 +18,25 @@ from loguru import logger
 
 from app.config.database import async_session_maker
 from app.models.notification import NotificationType
+from app.services import notification_i18n as i18n
 from app.services.notification_service import NotificationService
 from app.services.order_reward_service import OrderRewardService, SettledReward
 
 SWEEP_INTERVAL_SECONDS = 60
 
 
-def _money(amount: Decimal) -> str:
-    return f"Rs. {amount:,.2f}"
-
-
-def _reward_text(coupon) -> str:
-    value = Decimal(str(coupon.discount_value))
-    off = f"{value:g}% off" if coupon.discount_type == "percentage" else f"{_money(value)} off"
+def _reward_params(coupon):
+    """Per-language {reward} for a level's coupon ("15% off with code …")."""
     days = (coupon.valid_until - coupon.valid_from).days
-    return f"{off} with code {coupon.code}, valid {days} days"
+
+    def per_lang(lang):
+        return {
+            "reward": i18n.reward_text(
+                coupon.discount_type, Decimal(str(coupon.discount_value)), coupon.code, days, lang
+            )
+        }
+
+    return per_lang
 
 
 async def notify_settled(db, settled: list[SettledReward]) -> int:
@@ -51,18 +55,18 @@ async def notify_settled(db, settled: list[SettledReward]) -> int:
     sent = 0
     for user_id, amount in cashback.items():
         numbers = orders[user_id]
-        message = (
-            f"{_money(amount)} cashback from order #{numbers[0]} is now in your wallet."
-            if len(numbers) == 1
-            else f"{_money(amount)} cashback from {len(numbers)} orders is now in your wallet."
-        )
+        one = len(numbers) == 1
         try:
-            await NotificationService.create(
+            await NotificationService.notify(
                 db,
-                user_id=user_id,
+                user_id,
+                template="cashback.settled.one" if one else "cashback.settled.many",
                 type=NotificationType.PAYMENT,
-                title="Cashback added to your wallet",
-                message=message,
+                params={
+                    "amount": i18n.money(amount),
+                    "order_number": numbers[0],
+                    "count": len(numbers),
+                },
                 reference_type="wallet",
                 data={"screen": "wallet", "amount": str(amount)},
             )
@@ -74,18 +78,14 @@ async def notify_settled(db, settled: list[SettledReward]) -> int:
         issued = {r.tier.tier_id: r for r in s.rewards_issued}
         for tier in s.tiers_reached:
             reward = issued.get(tier.tier_id)
-            message = (
-                f"You've reached {tier.name}! Your reward: {_reward_text(reward.coupon)}."
-                if reward
-                else f"You've reached {tier.name} with {s.lifetime_points} points."
-            )
             try:
-                await NotificationService.create(
+                await NotificationService.notify(
                     db,
-                    user_id=s.user_id,
+                    s.user_id,
+                    template="loyalty.level.reward" if reward else "loyalty.level.plain",
                     type=NotificationType.PROMOTION,
-                    title=f"Welcome to {tier.name}",
-                    message=message,
+                    params={"tier": tier.name, "points": s.lifetime_points},
+                    per_lang_params=_reward_params(reward.coupon) if reward else None,
                     reference_type="loyalty",
                     data={
                         "screen": "coupons" if reward else "profile",

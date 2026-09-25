@@ -96,7 +96,10 @@ async def _validate_and_cleanup_coupon(
             return cart
 
         applied_branch_id = await _optional_branch_id(redis, current_user) if redis else None
-        enriched = await CouponService.enrich_items(db, items, applied_branch_id)
+        # Catalogue prices (see apply_coupon): a check on the client's numbers
+        # removed coupons the real cart qualified for.
+        priced = await OrderService._attach_server_prices(db, items, applied_branch_id, strict=False)
+        enriched = await CouponService.enrich_items(db, priced, applied_branch_id)
         subtotal = CouponService.eligible_subtotal(coupon, enriched)
 
         user_redemptions = await CouponService.redemptions_by_user(
@@ -487,9 +490,13 @@ async def apply_coupon(
         # clearance stock, or is restricted to certain categories, must be
         # measured against the goods it can actually discount, or the shopper
         # is told the minimum is met and then refused at checkout.
-        enriched = await CouponService.enrich_items(
-            db, cart["items"], applied_branch_id
+        # Catalogue prices, as checkout will use: the cart holds what the
+        # client sent, and a minimum-order check against that would say
+        # yes or no on numbers the server never agreed to.
+        priced = await OrderService._attach_server_prices(
+            db, cart["items"], applied_branch_id, strict=False
         )
+        enriched = await CouponService.enrich_items(db, priced, applied_branch_id)
         subtotal = CouponService.eligible_subtotal(coupon, enriched)
 
         user_redemptions = await CouponService.redemptions_by_user(
