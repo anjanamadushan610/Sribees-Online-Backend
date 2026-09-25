@@ -549,14 +549,28 @@ class UpdateCustomerPayload(BaseModel):
 
         return normalize_nic(v)
 
-    @field_validator("alternate_phone")
+    @field_validator("phone", "alternate_phone")
     @classmethod
-    def validate_alternate_phone(cls, v: Optional[str]) -> Optional[str]:
+    def validate_mobile(cls, v: Optional[str]) -> Optional[str]:
         if v is None or not v.strip():
             return None
         from app.utils.identity import normalize_mobile
 
         return normalize_mobile(v)
+
+
+def _same_mobile(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two numbers are the same mobile, whichever way each was typed."""
+    from app.utils.identity import normalize_mobile
+
+    def canonical(v: Optional[str]) -> str:
+        try:
+            return normalize_mobile(v or "")
+        except ValueError:
+            return (v or "").strip()
+
+    return canonical(a) == canonical(b)
+
 
 def _closure_fields(user: User) -> dict:
     """Whether and when the customer closed the account, and what it held."""
@@ -784,6 +798,18 @@ async def update_customer(
                     detail="Email address is already in use by another customer"
                 )
             user.email = payload.email
+
+        # The phone number is the customer's OTP login, so changing it hands
+        # the account to whoever holds the new number. Support may edit the
+        # rest of the profile (the form re-sends the phone unchanged); only a
+        # Super Admin may change the number itself.
+        if payload.phone and not _same_mobile(payload.phone, user.phone):
+            role = getattr(current_user.role, "value", current_user.role)
+            if role != "super_admin":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only a Super Admin can change a customer's phone number",
+                )
 
         if payload.phone:
             phone_check = await db.execute(

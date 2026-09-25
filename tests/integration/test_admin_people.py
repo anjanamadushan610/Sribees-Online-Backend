@@ -388,6 +388,36 @@ async def test_editing_a_customer_keeps_contact_details_unique(api, world, make_
     assert r.status_code == 400, "a phone already on another account is refused"
 
 
+async def test_only_the_super_admin_changes_a_customers_phone(api, world, make_customer, make_admin):
+    customer = await make_customer()
+    support = await make_admin("customer_support", branch_id=None, api=api)
+    boss = await make_admin("super_admin", api=api)
+    new_phone = "+947" + f"{uuid.uuid4().int % 10**8:08d}"
+
+    # The phone is the OTP login: support changing it would be a takeover.
+    r = await api.put(f"/api/v1/admin/customers/{customer.user_id}",
+                      json={"full_name": "ZZ Support Edit", "phone": new_phone}, headers=support.headers)
+    assert r.status_code == 403, r.text
+    r = await api.get(f"/api/v1/admin/customers/{customer.user_id}/profile", headers=boss.headers)
+    assert r.json()["data"]["phone"] == customer.phone
+    assert r.json()["data"]["full_name"] != "ZZ Support Edit", "a refused edit changes nothing"
+
+    # The edit form re-sends the current number, in whatever shape it was typed.
+    local = "0" + customer.phone[3:]
+    email = f"zz.cust.{uuid.uuid4().hex[:8]}@sribees-ci.lk"
+    r = await api.put(f"/api/v1/admin/customers/{customer.user_id}",
+                      json={"full_name": "ZZ Support Edit", "email": email, "phone": local},
+                      headers=support.headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["full_name"] == "ZZ Support Edit"
+    assert r.json()["data"]["email"] == email
+
+    r = await api.put(f"/api/v1/admin/customers/{customer.user_id}",
+                      json={"full_name": "ZZ Support Edit", "phone": new_phone}, headers=boss.headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["phone"] == new_phone
+
+
 async def test_deleting_customers(api, db, world, make_customer, make_product, place_order, make_admin):
     from sqlalchemy import select
 
