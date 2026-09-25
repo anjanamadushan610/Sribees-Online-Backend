@@ -471,9 +471,15 @@ def get_pagination(
 
 def get_client_ip(request: Request) -> str:
     """
-    Get client IP address from request.
+    The client address as seen by OUR reverse proxy.
 
-    Handles X-Forwarded-For header for proxied requests.
+    nginx (production) and Caddy (development) append the peer they accepted
+    the connection from to X-Forwarded-For, so the right-most entry is the one
+    a proxy we run wrote. Everything to its left arrived in the request and is
+    whatever the caller chose to send: taking the first entry let anyone
+    rotate a fake address per request and walk straight past every per-IP
+    rate limit. The app port is not published beyond localhost, so a request
+    that carries no header at all came from the host itself.
 
     Args:
         request: FastAPI request object
@@ -483,7 +489,9 @@ def get_client_ip(request: Request) -> str:
     """
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+        if hops:
+            return hops[-1][:64]
     return request.client.host if request.client else "unknown"
 
 

@@ -32,10 +32,25 @@ def safe_stem(filename: str) -> str:
     return (cleaned or "file")[:60]
 
 
+# The only extensions an upload may be stored under. The extension decides the
+# Content-Type the file is later served with, and the upload's declared type
+# is whatever the client said -- so "page.html" sent as image/jpeg used to be
+# stored as .html and served from the API's own origin as a web page (stored
+# XSS). Anything not listed is stored with no extension, which serves as
+# text/plain under nosniff: inert.
+MEDIA_SUFFIXES = frozenset(
+    {
+        ".jpg", ".jpeg", ".jfif", ".png", ".webp", ".gif",
+        ".mp4", ".mov", ".avi", ".webm", ".mkv",
+        ".json",
+    }
+)
+
+
 def safe_suffix(filename: str) -> str:
-    """Keep a plausible extension, or none at all."""
+    """Keep a known media extension, or none at all."""
     suffix = Path(filename).suffix.lower()
-    return suffix if re.fullmatch(r"\.[a-z0-9]{1,8}", suffix) else ""
+    return suffix if suffix in MEDIA_SUFFIXES else ""
 
 
 def safe_folder(folder: str) -> str:

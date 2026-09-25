@@ -28,7 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import async_session_maker, get_db
 from app.config.redis import get_redis
 from app.config.settings import settings
-from app.core.dependencies import get_current_admin, get_current_user_optional
+from app.core.dependencies import (
+    get_current_user_optional,
+    require_super_admin,
+)
 from app.core.media import media_path, media_url
 from app.schemas.product import (
     ProductCreate,
@@ -726,7 +729,7 @@ async def get_product_variants(
 async def create_product(
     data: ProductCreate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Create a new product. (Admin only)
@@ -788,7 +791,7 @@ async def update_product(
     product_id: str,
     data: ProductUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Update a product. (Admin only)
@@ -849,7 +852,7 @@ async def update_product(
 async def delete_product(
     product_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Delete a product. (Admin only)
@@ -883,7 +886,7 @@ async def add_product_image(
     product_id: str,
     data: ProductImageCreate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Add an image to a product. (Admin only)
@@ -923,7 +926,7 @@ async def remove_product_image(
     product_id: str,
     image_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Remove an image from a product. (Admin only)
@@ -953,7 +956,7 @@ async def add_product_variant(
     product_id: str,
     data: ProductVariantCreate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Add a variant to a product. (Admin only)
@@ -997,7 +1000,7 @@ async def update_product_stock(
     quantity: int = Query(..., ge=0),
     variant_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Update product or variant stock quantity. (Admin only)

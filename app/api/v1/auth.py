@@ -181,7 +181,10 @@ async def verify_otp(
     from fastapi import HTTPException
 
     ok = await OTPService.verify_otp(
-        redis, RedisKeys.phone_otp(str(current_user.user_id)), data.code
+        redis,
+        RedisKeys.phone_otp(str(current_user.user_id)),
+        data.code,
+        phone=current_user.phone,
     )
     if not ok:
         raise HTTPException(
@@ -245,7 +248,7 @@ async def verify_otp_by_phone(
     from fastapi import HTTPException
 
     ok = await OTPService.verify_otp(
-        redis, RedisKeys.phone_registration_otp(data.phone), data.code
+        redis, RedisKeys.phone_registration_otp(data.phone), data.code, phone=data.phone
     )
     if not ok:
         raise HTTPException(
@@ -568,6 +571,7 @@ async def confirm_account_deletion(
         redis,
         RedisKeys.account_deletion_otp(str(current_user.user_id)),
         data.code,
+        phone=current_user.phone or current_user.alternate_phone,
     )
     if not ok:
         raise HTTPException(

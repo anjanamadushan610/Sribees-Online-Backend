@@ -81,7 +81,7 @@ class SearchFilters:
             "branch": str(self.branch_id) if self.branch_id else None,
         }
         key_str = json.dumps(key_data, sort_keys=True)
-        return f"search:{hashlib.md5(key_str.encode()).hexdigest()}"
+        return f"search:{hashlib.md5(key_str.encode(), usedforsecurity=False).hexdigest()}"
 
 
 class SearchResult:

@@ -4,13 +4,13 @@ Customer Support Tickets API (Public / Customer facing)
 Allows customers to submit support inquiries / issues from the mobile app.
 Prefix: "/support" (mounted at /api/v1/support).
 """
-import random
+import secrets
 import string
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,10 +24,25 @@ from app.schemas.support_ticket import CreateSupportTicketRequest
 router = APIRouter(prefix="/support", tags=["Customer Support"])
 
 
+def _device_id(request: Request) -> Optional[str]:
+    raw = (request.headers.get("X-Device-Id") or "").strip()
+    return raw[:128] or None
+
+
+def _phone_conditions(phone: str) -> list:
+    phone = phone.strip()
+    conditions = [SupportTicket.contact_phone == phone]
+    digits = "".join(c for c in phone if c.isdigit())
+    if len(digits) >= 9:
+        conditions.append(SupportTicket.contact_phone.ilike(f"%{digits[-9:]}%"))
+    return conditions
+
+
 def _generate_ticket_number() -> str:
     colombo_tz = ZoneInfo("Asia/Colombo")
     timestamp = datetime.now(colombo_tz).strftime("%Y%m%d")
-    random_part = "".join(random.choices(string.ascii_uppercase + string.digits, k=5))
+    alphabet = string.ascii_uppercase + string.digits
+    random_part = "".join(secrets.choice(alphabet) for _ in range(5))
     return f"TKT-{timestamp}-{random_part}"
 
 
@@ -38,6 +53,7 @@ def _generate_ticket_number() -> str:
 )
 async def submit_support_ticket(
     payload: CreateSupportTicketRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
@@ -71,6 +87,7 @@ async def submit_support_ticket(
         branch_id=branch_id,
         contact_phone=payload.contact_phone.strip(),
         customer_name=customer_name,
+        device_id=None if user_id else _device_id(request),
         category=payload.category,
         message=payload.message.strip(),
         status=TicketStatus.PENDING.value,
@@ -97,6 +114,7 @@ async def submit_support_ticket(
     summary="Get support tickets submitted by the current customer",
 )
 async def get_my_support_tickets(
+    request: Request,
     phone: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
@@ -104,26 +122,24 @@ async def get_my_support_tickets(
     """
     Retrieve customer support tickets submitted by the user.
 
-    Matched by authenticated user_id, user's phone, or query param phone for guests.
+    A signed-in customer gets the tickets on their account and on their own
+    phone number; the ``phone`` parameter is ignored for them. A guest gets
+    only tickets filed from this install (X-Device-Id) under ``phone`` -- a
+    phone number by itself is not proof of anything.
     """
-    from sqlalchemy import or_
+    from sqlalchemy import and_, or_
 
     conditions = []
     if current_user:
         conditions.append(SupportTicket.user_id == current_user.user_id)
         if current_user.phone:
-            user_phone = current_user.phone.strip()
-            conditions.append(SupportTicket.contact_phone == user_phone)
-            digits = "".join(c for c in user_phone if c.isdigit())
-            if len(digits) >= 9:
-                conditions.append(SupportTicket.contact_phone.ilike(f"%{digits[-9:]}%"))
-
-    if phone and phone.strip():
-        req_phone = phone.strip()
-        conditions.append(SupportTicket.contact_phone == req_phone)
-        digits = "".join(c for c in req_phone if c.isdigit())
-        if len(digits) >= 9:
-            conditions.append(SupportTicket.contact_phone.ilike(f"%{digits[-9:]}%"))
+            conditions.extend(_phone_conditions(current_user.phone))
+    else:
+        device_id = _device_id(request)
+        if device_id and phone and phone.strip():
+            conditions.append(
+                and_(SupportTicket.device_id == device_id, or_(*_phone_conditions(phone)))
+            )
 
     if not conditions:
         return {"items": [], "total": 0}

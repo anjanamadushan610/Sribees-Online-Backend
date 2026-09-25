@@ -11,8 +11,11 @@ services:
       POSTGRES_DB: sribeesonline
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Loopback only. Everything reaches these through nginx on the host or
+    # `docker compose exec`; published on 0.0.0.0 they were one security-group
+    # edit away from the internet, with the passwords above in the repo.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sribees_user -d sribeesonline"]
       interval: 10s
@@ -28,8 +31,11 @@ services:
     command: redis-server --appendonly yes --requirepass sribees_redis_password
     volumes:
       - redis_data:/data
+    # Loopback only. Everything reaches these through nginx on the host or
+    # `docker compose exec`; published on 0.0.0.0 they were one security-group
+    # edit away from the internet, with the passwords above in the repo.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "sribees_redis_password", "ping"]
       interval: 10s
@@ -62,8 +68,11 @@ services:
       # next push. This line is the difference between a working local-disk
       # backend and one that silently loses data.
       - media_data:/app/media
+    # Loopback only. Everything reaches these through nginx on the host or
+    # `docker compose exec`; published on 0.0.0.0 they were one security-group
+    # edit away from the internet, with the passwords above in the repo.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres_db:
         condition: service_healthy

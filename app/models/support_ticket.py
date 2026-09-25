@@ -43,6 +43,10 @@ class SupportTicket(Base):
 
     contact_phone = Column(String(30), nullable=False, index=True)
     customer_name = Column(String(255), nullable=True)
+    # The install that filed a guest ticket (X-Device-Id). A guest lookup needs
+    # it as well as the phone -- a phone number alone is not proof. See
+    # migrations/070_support_ticket_device.sql.
+    device_id = Column(String(128), nullable=True, index=True)
     category = Column(String(50), nullable=False, default="general")
     message = Column(Text, nullable=False)
 

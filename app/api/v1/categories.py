@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.redis import get_redis
-from app.core.dependencies import get_current_admin, get_current_user_optional
+from app.core.dependencies import (
+    get_current_user_optional,
+    require_super_admin,
+)
 from app.core.media import media_url
 from app.schemas.category import (
     CategoryCreate,
@@ -178,7 +181,7 @@ async def get_category(
 async def create_category(
     data: CategoryCreate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Create a new category. (Admin only)
@@ -233,7 +236,7 @@ async def update_category(
     category_id: str,
     data: CategoryUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Update a category. (Admin only)
@@ -299,7 +302,7 @@ async def update_category(
 async def delete_category(
     category_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Delete a category. (Admin only)

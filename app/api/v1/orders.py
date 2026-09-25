@@ -24,7 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.config.redis import get_redis
 from app.config.settings import settings
-from app.core.dependencies import get_current_admin, get_current_user
+from app.core.dependencies import (
+    get_current_user,
+    require_super_admin,
+)
 from app.core.media import media_url
 from app.models.order import OrderStatus
 from app.schemas.order import (
@@ -577,6 +580,9 @@ async def quote_order(
                 except (KeyError, ValueError, TypeError):
                     branch_id = None
 
+        # The same catalogue prices checkout will charge; see
+        # OrderService._attach_server_prices.
+        quote_items = await OrderService._attach_server_prices(db, quote_items, branch_id)
         items = await OrderService._attach_cashback_rates(
             db, quote_items, branch_id
         )
@@ -644,6 +650,8 @@ async def quote_order(
                 "delivery": delivery_quote_service.delivery_payload(delivery, destination),
             }
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.error(f"Error building order quote: {e}")
         raise HTTPException(
@@ -1159,6 +1167,10 @@ async def reorder(
 # ============================================================================
 # Admin Endpoints
 # ============================================================================
+# Legacy: the admin panel uses /admin/orders, which is permission-checked and
+# branch-scoped. These four had neither -- any admin account, a delegated staff
+# login included, could read every branch's orders and mark any order paid --
+# so they are Super Admin only (tests/security/test_admin_authorization.py).
 
 @router.get("/admin/all", response_model=dict)
 async def get_all_orders(
@@ -1167,7 +1179,7 @@ async def get_all_orders(
     status: Optional[str] = None,
     payment_status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Get all orders (Admin only).
@@ -1207,7 +1219,7 @@ async def update_order_status(
     order_id: str,
     data: UpdateOrderStatusRequest,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Update order status (Admin only).
@@ -1244,7 +1256,7 @@ async def update_payment_status(
     order_id: str,
     data: UpdatePaymentStatusRequest,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Update payment status (Admin only).
@@ -1281,7 +1293,7 @@ async def update_payment_status(
 @router.get("/admin/stats", response_model=dict)
 async def get_order_stats(
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Get order statistics (Admin only).

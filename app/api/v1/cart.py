@@ -32,6 +32,7 @@ from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.coupon_service import CouponService, CouponValidationError
 from app.services.loyalty_service import LoyaltyService
+from app.services.order_service import OrderService
 from app.services.pricing_service import PricingService
 
 # Prefix "/cart" is applied by app/api/v1/router.py — do not repeat it here.
@@ -165,6 +166,10 @@ async def _priced(
     if items:
         try:
             applied_branch_id = await _optional_branch_id(redis, current_user) if redis else None
+            # Show what checkout will charge, not the price the client sent.
+            items = await OrderService._attach_server_prices(
+                db, items, applied_branch_id, strict=False
+            )
             cart["items"] = await CouponService.enrich_items(db, items, applied_branch_id)
             items = cart["items"]
         except Exception:

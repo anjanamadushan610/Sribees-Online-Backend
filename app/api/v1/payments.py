@@ -14,7 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.orders import format_order
 from app.config.database import get_db
 from app.config.settings import settings
-from app.core.dependencies import get_current_admin, get_current_user
+from app.core.dependencies import (
+    get_current_user,
+    require_super_admin,
+)
 from app.schemas.order import PaymentStatusEnum
 from app.schemas.payment import (
     ConfirmPaymentRequest,
@@ -329,7 +332,7 @@ async def get_payment_status(
 async def create_refund(
     data: RefundRequest,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_admin)
+    current_user = Depends(require_super_admin)
 ):
     """
     Create a refund for an order. (Admin only)

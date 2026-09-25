@@ -123,7 +123,9 @@ class Settings(BaseSettings):
     # =========================================================================
     # Server Settings
     # =========================================================================
-    host: str = Field(default="0.0.0.0", description="Server host")
+    # Inside the container; the published port is loopback-only (see
+    # docker/ec2-docker-compose.yml), so this is not an exposure.
+    host: str = Field(default="0.0.0.0", description="Server host")  # nosec B104
     port: int = Field(default=8000, description="Server port")
     workers: int = Field(default=4, description="Number of worker processes")
 
@@ -201,6 +203,16 @@ class Settings(BaseSettings):
     # Backward compatibility with Express backend
     jwt_access_expiry: str = Field(default="15m", description="Access token expiry string")
     jwt_refresh_expiry: str = Field(default="7d", description="Refresh token expiry string")
+
+    # Phone numbers that may sign in with the fixed test OTP instead of a real
+    # one: testers and the store reviewers' demo accounts. Comma-separated, in
+    # any shape normalize_mobile accepts. EMPTY BY DEFAULT, which means no
+    # number can -- the code used to work for every phone in production, which
+    # let anyone sign in as any phone-registered customer (SEC-001).
+    otp_test_phones: str = Field(
+        default="",
+        description="Comma-separated mobile numbers allowed to use the test OTP",
+    )
 
 
     # =========================================================================

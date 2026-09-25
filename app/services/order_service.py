@@ -130,6 +130,61 @@ class OrderService:
     """Service class for order operations."""
 
     @staticmethod
+    async def _attach_server_prices(
+        db: AsyncSession,
+        items: List[dict],
+        branch_id: Optional[UUID],
+        *,
+        strict: bool = True,
+    ) -> List[dict]:
+        """
+        Return *items* with every line's ``price`` replaced by the catalogue's.
+
+        Each line's price used to be whatever the client put in the cart (POST
+        /cart/items takes a ``price``) or in ``items`` on POST /orders, and
+        that number became the order's unit price and total -- so any customer
+        could buy anything for a rupee. The number the client sends is now
+        ignored; this is the only place a line gets a price.
+
+        ``strict`` refuses a line that cannot be sold (unknown, deactivated,
+        switched off for the branch). The cart view passes False and keeps such
+        a line at its old price, so it stays visible for the shopper to remove;
+        checkout never does.
+        """
+        if not items:
+            return []
+
+        from app.services.product_service import ProductService
+
+        def _uuid(raw) -> Optional[UUID]:
+            try:
+                return UUID(str(raw)) if raw else None
+            except (ValueError, TypeError):
+                return None
+
+        prices = await ProductService.get_price_map(
+            db, [u for u in (_uuid(i.get("product_id")) for i in items) if u], branch_id
+        )
+        variants = await ProductService.get_variant_price_map(
+            db, [u for u in (_uuid(i.get("variant_id")) for i in items) if u]
+        )
+
+        repriced = []
+        for item in items:
+            line = dict(item)
+            product_id = str(item.get("product_id") or "")
+            variant = variants.get(str(item.get("variant_id") or ""))
+            if variant is not None and variant[0] == product_id and product_id in prices:
+                line["price"] = float(variant[1])
+            elif product_id in prices:
+                line["price"] = float(prices[product_id])
+            elif strict:
+                name = item.get("name") or "An item in your cart"
+                raise ValueError(f"{name} is no longer available. Please remove it and try again.")
+            repriced.append(line)
+        return repriced
+
+    @staticmethod
     async def _attach_cashback_rates(
         db: AsyncSession,
         items: List[dict],
@@ -286,6 +341,11 @@ class OrderService:
                 branch_id = mapping.branch_id
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Could not resolve branch for order: {exc}")
+
+        # Authoritative prices, before anything below reads a line's price:
+        # the coupon's eligible subtotal, the pricing breakdown and the stored
+        # order lines all use these.
+        order_items = await OrderService._attach_server_prices(db, order_items, branch_id)
 
         # Authoritative coupon: re-validate against the database at checkout and
         # use the DB discount values — never the discount stored in the Redis
@@ -1365,9 +1425,16 @@ class OrderService:
         notes: Optional[str] = None,
         enforce: bool = False,
         actor_role: Optional[str] = None,
+        is_override: bool = False,
     ) -> Order:
         """
         Update order status and log history.
+
+        ``is_override`` marks a Super-Admin emergency change: it is prefixed in
+        the audit trail so it stands out there permanently (B1 section 4). The
+        override endpoint passes it; it was dropped from this signature once
+        and every override then failed with a TypeError, so
+        tests/integration/test_checkout_journey.py drives that endpoint.
 
         ``enforce=True`` (only the admin ``PATCH .../status`` endpoint passes
         it) runs the change through the fulfilment state machine in
@@ -1440,6 +1507,7 @@ class OrderService:
         elif status == OrderStatusEnum.CANCELLED:
             order.cancelled_at = now
             if not was_cancelled:
+                await OrderService._return_stock_to_branch(db, order, old_status)
                 # The same effects as the customer's own button, through the
                 # same helper. This branch used to call
                 # _reverse_order_financials alone, which returned the wallet
@@ -1456,12 +1524,15 @@ class OrderService:
                 )
 
         # Log status transition in audit history
+        history_note = notes or f"Status updated to {status.value.replace('_', ' ').title()}"
+        if is_override:
+            history_note = f"[EMERGENCY OVERRIDE] {history_note}"
         history = OrderStatusHistory(
             order_id=order.order_id,
             old_status=old_status,
             new_status=status.value,
             changed_by=changed_by,
-            notes=notes or f"Status updated to {status.value.replace('_', ' ').title()}",
+            notes=history_note,
             created_at=now,
         )
         db.add(history)
@@ -1813,6 +1884,47 @@ class OrderService:
             )
         )
 
+    # Everything before the courier collects the parcel: the goods are still on
+    # this branch's shelf. From HANDED_TO_COURIER on they are in a van, and they
+    # come back through the RTO / return flow, not through a cancellation.
+    _ON_THE_SHELF = frozenset(
+        {
+            OrderStatus.PENDING.value,
+            OrderStatus.CONFIRMED.value,
+            OrderStatus.PROCESSING.value,
+            OrderStatus.PACKING.value,
+            OrderStatus.PACKED.value,
+            OrderStatus.READY_FOR_PICKUP.value,
+        }
+    )
+
+    @staticmethod
+    async def _return_stock_to_branch(db: AsyncSession, order: Order, previous_status: str) -> None:
+        """
+        Put a cancelled order's goods back into its branch's inventory.
+
+        Checkout takes the quantities out of ``branch_inventory``; nothing ever
+        put them back, so every cancellation made the branch permanently poorer
+        by what was ordered, and products went "out of stock" while sitting on
+        the shelf. Staged in the caller's transaction, like the refunds.
+        """
+        if previous_status not in OrderService._ON_THE_SHELF or order.branch_id is None:
+            return
+        rows = await db.execute(
+            select(OrderItem.product_id, func.sum(OrderItem.quantity))
+            .where(OrderItem.order_id == order.order_id)
+            .group_by(OrderItem.product_id)
+        )
+        for product_id, quantity in rows.all():
+            await db.execute(
+                BranchInventory.__table__.update()
+                .where(
+                    BranchInventory.__table__.c.branch_id == order.branch_id,
+                    BranchInventory.__table__.c.product_id == product_id,
+                )
+                .values(stock_quantity=BranchInventory.__table__.c.stock_quantity + quantity)
+            )
+
     @staticmethod
     async def cancel_order(
         db: AsyncSession,
@@ -1831,6 +1943,7 @@ class OrderService:
         if OrderService.customer_cancel_state(order) == OrderService.CANCEL_BLOCKED:
             raise ValueError(f"Order cannot be cancelled in {order.status} status")
 
+        await OrderService._return_stock_to_branch(db, order, order.status)
         order.status = OrderStatus.CANCELLED.value
         order.cancelled_at = datetime.utcnow()
 

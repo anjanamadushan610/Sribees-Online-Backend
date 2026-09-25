@@ -11,7 +11,7 @@ from typing import Callable, Optional
 from fastapi import HTTPException, Request, status
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from app.config.redis import get_redis_client
 
@@ -55,22 +55,10 @@ class RateLimiter:
         self.key_prefix = key_prefix
 
     def _get_client_ip(self, request: Request) -> str:
-        """Extract client IP from request, handling proxies."""
-        # Check for forwarded headers (behind reverse proxy)
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            # Take the first IP (original client)
-            return forwarded.split(",")[0].strip()
+        """The address a limit is charged to. See get_client_ip()."""
+        from app.core.dependencies import get_client_ip
 
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip
-
-        # Direct connection
-        if request.client:
-            return request.client.host
-
-        return "unknown"
+        return get_client_ip(request)
 
     def _get_rate_limit_key(
         self,
@@ -93,7 +81,7 @@ class RateLimiter:
 
         if endpoint:
             # Endpoint-specific limit
-            endpoint_hash = hashlib.md5(endpoint.encode()).hexdigest()[:8]
+            endpoint_hash = hashlib.md5(endpoint.encode(), usedforsecurity=False).hexdigest()[:8]
             parts.append(f"ep:{endpoint_hash}")
 
         return ":".join(parts)
@@ -200,7 +188,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """
 
     # Endpoints with stricter limits
-    AUTH_PATHS = {"/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/forgot-password"}
+    # Anything that checks a password or a reset token. Per IP, so the phone
+    # OTP routes are NOT here: carrier-grade NAT puts many real shoppers
+    # behind one address. The OTP itself caps wrong guesses per code instead
+    # (OTPService.MAX_ATTEMPTS), which is the limit that actually matters.
+    AUTH_PATHS = {
+        "/api/v1/auth/login",
+        "/api/v1/auth/register",
+        "/api/v1/auth/forgot-password",
+        "/api/v1/auth/reset-password",
+        "/api/v1/admin/auth/login",
+        "/api/v1/partner/auth/login",
+    }
 
     # Endpoints to skip rate limiting
     SKIP_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
@@ -234,7 +233,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             logger.warning(
                 f"Rate limit exceeded: {limiter._get_client_ip(request)} on {path}"
             )
-            raise RateLimitExceeded(retry_after=retry_after)
+            # Returned, never raised. An exception raised inside a
+            # BaseHTTPMiddleware bypasses FastAPI's handlers and reaches the
+            # server-error middleware, so every throttled request used to go
+            # out as a 500 INTERNAL_ERROR -- an attack read as an outage.
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": "RATE_LIMIT_EXCEEDED",
+                        "message": "Too many requests. Please try again later.",
+                        "retry_after": retry_after,
+                    },
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
 
         # Process request
         response = await call_next(request)

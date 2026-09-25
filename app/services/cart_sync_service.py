@@ -229,7 +229,7 @@ class CartSyncService:
             "coupon": cart.get("coupon"),
         }, sort_keys=True)
 
-        return hashlib.md5(cart_data.encode()).hexdigest()[:16]
+        return hashlib.md5(cart_data.encode(), usedforsecurity=False).hexdigest()[:16]
 
     @classmethod
     async def _save_cart(cls, user_id: str, cart: Dict[str, Any]) -> None:

@@ -1,0 +1,51 @@
+# What never belongs in an image.
+#
+# The Dockerfile does `COPY . .`, so without this file the production image
+# carried the whole .git directory (every past commit, and on a CI build the
+# job's auth header in .git/config), and a build from a developer's machine
+# carried .env, secrets.out/ and a multi-hundred-MB virtualenv as well.
+#
+# migrations/ and scripts/ MUST stay in: the deploy copies the SQL migrations
+# out of the image and runs scripts/smoke_test.py inside the container.
+
+.git
+.github
+.gitignore
+.gitattributes
+
+# Secrets and local configuration
+.env
+.env.*
+secrets.out/
+*.pem
+*.key
+
+# Local environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Runtime data -- mounted as volumes in every environment
+media/
+logs/
+
+# Not needed to run the service
+tests/
+docs/
+mock_courier/
+project_proposel/
+*.md
+my doc.txt
+Jenkinsfile
+.vscode/
+.idea/

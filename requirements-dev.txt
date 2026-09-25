@@ -1,0 +1,18 @@
+# Everything CI and developers need on top of the runtime. Not installed in the
+# production image (the Dockerfile installs requirements.txt only), so a test
+# runner, a formatter or a type checker is never part of what faces the internet.
+-r requirements.txt
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+fakeredis[lua]>=2.26,<3
+
+# Development
+black==23.12.1
+isort==5.13.2
+mypy==1.8.0
+ruff==0.1.11
+pre-commit==3.6.0
+

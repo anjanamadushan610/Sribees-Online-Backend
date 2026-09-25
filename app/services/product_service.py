@@ -388,11 +388,22 @@ class ProductService:
 
     @staticmethod
     async def increment_view_count(db: AsyncSession, product_id: UUID) -> None:
-        """Increment product view count."""
-        product = await ProductService.get_by_id(db, product_id, include_inactive=True)
-        if product:
-            product.view_count += 1
-            await db.commit()
+        """
+        Increment product view count.
+
+        A table-level UPDATE, not ``product.view_count += 1``: bumping the ORM
+        object fires ``updated_at``'s onupdate, which expires that attribute on
+        the very Product the caller is about to serialise -- and reading an
+        expired attribute under asyncio is a MissingGreenlet 500 on the product
+        page. A view is not an edit either, so ``updated_at`` is kept as is.
+        """
+        table = Product.__table__
+        await db.execute(
+            table.update()
+            .where(table.c.product_id == product_id)
+            .values(view_count=func.coalesce(table.c.view_count, 0) + 1, updated_at=table.c.updated_at)
+        )
+        await db.commit()
 
     @staticmethod
     async def add_image(
@@ -1031,6 +1042,92 @@ class ProductService:
             resolved.setdefault(str(pid), platform_default)
 
         return resolved
+
+    @staticmethod
+    async def get_price_map(
+        db: AsyncSession,
+        product_ids: List[UUID],
+        branch_id: Optional[UUID],
+    ) -> Dict[str, Decimal]:
+        """
+        The price a customer pays per product in one branch, from the database.
+
+        Same resolution the storefront shows (``compute_effective_data``):
+        branch price, else the global price, less the effective discount. Only
+        sellable products appear -- an unknown id, a deactivated product, or one
+        switched off for this branch is absent, and the caller must refuse it.
+
+        This is what checkout charges. A price that arrived with the request or
+        sits in the Redis cart is only what the client *said*, and the client
+        is not the one who decides what things cost.
+        """
+        if not product_ids:
+            return {}
+
+        rows = (
+            await db.execute(
+                select(
+                    Product.product_id,
+                    Product.price,
+                    Product.discount_percentage,
+                    Product.is_active,
+                    BranchInventory.inventory_id,
+                    BranchInventory.branch_price,
+                    BranchInventory.discount_percentage,
+                    BranchInventory.is_active,
+                )
+                .outerjoin(
+                    BranchInventory,
+                    and_(
+                        BranchInventory.product_id == Product.product_id,
+                        BranchInventory.branch_id == branch_id,
+                    ),
+                )
+                .where(Product.product_id.in_(product_ids))
+            )
+        ).all()
+
+        prices: Dict[str, Decimal] = {}
+        for (
+            product_id,
+            global_price,
+            global_discount,
+            product_active,
+            inventory_id,
+            branch_price,
+            branch_discount,
+            branch_active,
+        ) in rows:
+            if product_active is False or (inventory_id is not None and branch_active is False):
+                continue
+            price = Decimal(str(branch_price)) if branch_price is not None else Decimal(str(global_price or 0))
+            discount = global_discount
+            if inventory_id is not None and branch_discount is not None:
+                discount = branch_discount
+            if discount and discount > 0 and price:
+                factor = Decimal(str(1 - discount / 100))
+                price = (price * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            prices[str(product_id)] = price
+        return prices
+
+    @staticmethod
+    async def get_variant_price_map(
+        db: AsyncSession,
+        variant_ids: List[UUID],
+    ) -> Dict[str, Tuple[str, Decimal]]:
+        """``{variant_id: (product_id, price)}`` for active variants."""
+        if not variant_ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(ProductVariant.variant_id, ProductVariant.product_id, ProductVariant.price)
+                .where(
+                    ProductVariant.variant_id.in_(variant_ids),
+                    ProductVariant.is_active.is_not(False),
+                )
+            )
+        ).all()
+        return {str(v): (str(p), Decimal(str(price or 0))) for v, p, price in rows}
 
     @staticmethod
     async def get_weight_map(
