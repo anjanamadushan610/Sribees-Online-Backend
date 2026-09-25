@@ -2,6 +2,10 @@
 SRIBEESonline FastAPI Backend - Auth Endpoints
 
 Authentication routes for customer users.
+
+Customers sign in with a phone OTP, Google or Apple -- there is no email and
+password sign-in, email verification or password reset. Staff and partners
+have their own password logins (admin_auth.py, partner.py).
 """
 from fastapi import APIRouter, Depends, Request, status
 from redis.asyncio import Redis
@@ -14,24 +18,16 @@ from app.core.dependencies import CurrentUser
 from app.models.user import User
 from app.schemas.auth import (
     AuthResponse,
-    ChangePasswordRequest,
     ConfirmAccountDeletionRequest,
-    ForgotPasswordRequest,
-    LoginRequest,
     MessageResponse,
     ProfileResponse,
     RefreshTokenRequest,
     RefreshTokenResponse,
-    RegisterRequest,
-    RegisterResponse,
     RequestOTPResponse,
     RequestPhoneOTPRequest,
-    ResendVerificationRequest,
-    ResetPasswordRequest,
     SessionsListResponse,
     SocialLoginRequest,
     UpdateProfileRequest,
-    VerifyEmailRequest,
     VerifyOTPRequest,
     VerifyOTPResponse,
     VerifyPhoneOTPRequest,
@@ -40,101 +36,6 @@ from app.services.auth_service import AuthService
 from app.services.otp_service import OTPService
 
 router = APIRouter()
-
-
-@router.post(
-    "/register",
-    response_model=RegisterResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Register new user",
-    description="Create a new user account. A verification email will be sent.",
-)
-async def register(
-    data: RegisterRequest,
-    db: AsyncSession = Depends(get_db),
-) -> RegisterResponse:
-    """
-    Register a new user account.
-
-    - **email**: Valid email address (must be unique)
-    - **password**: Minimum 8 characters with uppercase, lowercase, and digit
-    - **full_name**: User's display name
-
-    Returns the created user (unverified) and sends a verification email.
-    """
-    return await AuthService.register(data, db)
-
-
-@router.post(
-    "/login",
-    response_model=AuthResponse,
-    summary="User login",
-    description="Authenticate user and return JWT tokens.",
-)
-async def login(
-    data: LoginRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> AuthResponse:
-    """
-    Authenticate user with email and password.
-
-    - **email**: Registered email address
-    - **password**: User's password
-    - **remember_me**: If true, extends refresh token to 30 days
-
-    Returns user data and JWT access/refresh tokens.
-    """
-    ip_address = request.client.host if request.client else None
-    user_agent = request.headers.get("user-agent")
-    device_name = request.headers.get("x-device-name")
-    return await AuthService.login(
-        data,
-        db,
-        ip_address=ip_address,
-        user_agent=user_agent,
-        device_name=device_name,
-    )
-
-
-@router.post(
-    "/verify-email",
-    response_model=MessageResponse,
-    summary="Verify email address",
-    description="Verify user's email address using token from email.",
-)
-async def verify_email(
-    data: VerifyEmailRequest,
-    db: AsyncSession = Depends(get_db),
-) -> MessageResponse:
-    """
-    Verify email address using verification token.
-
-    - **token**: Verification token received via email
-
-    Marks the user's email as verified.
-    """
-    return await AuthService.verify_email(data.token, db)
-
-
-@router.post(
-    "/resend-verification",
-    response_model=MessageResponse,
-    summary="Resend verification email",
-    description="Resend email verification link.",
-)
-async def resend_verification(
-    data: ResendVerificationRequest,
-    db: AsyncSession = Depends(get_db),
-) -> MessageResponse:
-    """
-    Resend email verification link.
-
-    - **email**: Email address to send verification link
-
-    Always returns success for security (doesn't reveal if email exists).
-    """
-    return await AuthService.resend_verification_email(data.email, db)
 
 
 @router.post(
@@ -270,47 +171,6 @@ async def verify_otp_by_phone(
 
 
 @router.post(
-    "/forgot-password",
-    response_model=MessageResponse,
-    summary="Request password reset",
-    description="Send password reset link to email.",
-)
-async def forgot_password(
-    data: ForgotPasswordRequest,
-    db: AsyncSession = Depends(get_db),
-) -> MessageResponse:
-    """
-    Request password reset.
-
-    - **email**: Email address for password reset
-
-    Always returns success for security (doesn't reveal if email exists).
-    """
-    return await AuthService.forgot_password(data.email, db)
-
-
-@router.post(
-    "/reset-password",
-    response_model=MessageResponse,
-    summary="Reset password",
-    description="Reset password using token from email.",
-)
-async def reset_password(
-    data: ResetPasswordRequest,
-    db: AsyncSession = Depends(get_db),
-) -> MessageResponse:
-    """
-    Reset password using reset token.
-
-    - **token**: Password reset token from email
-    - **password**: New password (min 8 characters)
-
-    Updates user's password and invalidates the reset token.
-    """
-    return await AuthService.reset_password(data.token, data.password, db)
-
-
-@router.post(
     "/refresh",
     response_model=RefreshTokenResponse,
     summary="Refresh access token",
@@ -389,30 +249,6 @@ async def logout_others(
     Requires authentication. Invalidates all active sessions except the current one.
     """
     return await AuthService.logout_others(current_user, db)
-
-
-@router.post(
-    "/change-password",
-    response_model=MessageResponse,
-    summary="Change password",
-    description="Change user's password.",
-)
-async def change_password(
-    data: ChangePasswordRequest,
-    current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
-) -> MessageResponse:
-    """
-    Change user's password.
-
-    Requires current password verification.
-    """
-    return await AuthService.change_password(
-        current_user,
-        data.current_password,
-        data.new_password,
-        db
-    )
 
 
 @router.get(

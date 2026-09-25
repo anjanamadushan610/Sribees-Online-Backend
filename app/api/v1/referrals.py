@@ -122,10 +122,9 @@ async def redeem_referral_code(
     """
     Attach the caller to the owner of a code.
 
-    The proper place for this is registration (``POST /auth/register`` takes a
-    ``referral_code``). This exists because the app has no signup screen yet,
-    and because a user who registered before being given a code still needs a
-    way in.
+    Sign-up (phone OTP, Google or Apple) takes no code, so this is how a new
+    customer -- or one who signed up before being given a code -- is
+    attached to whoever invited them.
 
     Write-once: a second call always fails, whatever code is supplied.
     """

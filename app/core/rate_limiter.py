@@ -188,15 +188,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """
 
     # Endpoints with stricter limits
-    # Anything that checks a password or a reset token. Per IP, so the phone
-    # OTP routes are NOT here: carrier-grade NAT puts many real shoppers
-    # behind one address. The OTP itself caps wrong guesses per code instead
-    # (OTPService.MAX_ATTEMPTS), which is the limit that actually matters.
+    # Anything that checks a password: the staff and partner logins (customers
+    # have no password). Per IP, so the phone OTP routes are NOT here:
+    # carrier-grade NAT puts many real shoppers behind one address. The OTP
+    # itself caps wrong guesses per code instead (OTPService.MAX_ATTEMPTS),
+    # which is the limit that actually matters.
     AUTH_PATHS = {
-        "/api/v1/auth/login",
-        "/api/v1/auth/register",
-        "/api/v1/auth/forgot-password",
-        "/api/v1/auth/reset-password",
         "/api/v1/admin/auth/login",
         "/api/v1/partner/auth/login",
     }

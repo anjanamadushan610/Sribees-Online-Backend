@@ -33,14 +33,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/.well-known/assetlinks.json"),
     ("GET", "/p/{product_id}"),
     # --- sign-in / sign-up ---------------------------------------------------
-    ("POST", "/api/v1/auth/register"),
-    ("POST", "/api/v1/auth/login"),
-    ("POST", "/api/v1/auth/verify-email"),
-    ("POST", "/api/v1/auth/resend-verification"),
+    # Customers: phone OTP, Google or Apple only; no email/password (2026-09-25).
     ("POST", "/api/v1/auth/phone/request-otp"),
     ("POST", "/api/v1/auth/phone/verify-otp"),
-    ("POST", "/api/v1/auth/forgot-password"),
-    ("POST", "/api/v1/auth/reset-password"),
     ("POST", "/api/v1/auth/refresh-token"),
     ("POST", "/api/v1/auth/refresh"),
     ("POST", "/api/v1/auth/social/login"),

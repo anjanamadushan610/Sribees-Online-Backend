@@ -729,6 +729,12 @@ as the single source of truth so the two can't drift apart again.
 
 ### Authentication Flow
 
+Customers have no password: they sign in with a phone OTP
+(`POST /auth/phone/request-otp` then `/auth/phone/verify-otp`) or with Google/Apple
+(`POST /auth/social/login`, a Firebase ID token verified server-side). Email/password
+sign-up, email verification and password reset were removed on 2026-09-25. Staff and
+partners sign in with a password at `/admin/auth/login` and `/partner/auth/login`.
+
 ```mermaid
 sequenceDiagram
     participant Client
@@ -736,8 +742,9 @@ sequenceDiagram
     participant Redis
     participant PostgreSQL
     
-    Client->>API: POST /auth/login (email, password)
-    API->>PostgreSQL: Verify credentials
+    Client->>API: POST /auth/phone/verify-otp (phone, code)
+    API->>Redis: Check the one-time code
+    API->>PostgreSQL: Find or create the user by phone
     PostgreSQL-->>API: User data
     API->>API: Generate JWT (access + refresh)
     API->>Redis: Store session data
@@ -776,8 +783,10 @@ async def add_security_headers(request, call_next):
 | Endpoint type | Window | Max requests |
 |---|---|---|
 | General API | 1 min | 60 |
-| Auth endpoints | 1 min | 10 |
-| Password reset | 1 hour | 3 |
+| Password logins (staff, partners) | 1 min | 10 |
+
+Phone OTP routes are not on the per-IP limit (carrier NAT puts many shoppers behind
+one address); each code is burnt after 5 wrong guesses instead.
 
 (The February version's numbers — 1000/15min general, 5/15min auth — don't match the
 real config; corrected above.)

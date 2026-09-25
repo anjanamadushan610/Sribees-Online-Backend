@@ -99,7 +99,7 @@ async def test_unhandled_errors_hide_internals_outside_debug(storage_free_app, c
 
 
 async def test_validation_errors_are_422_not_500(client):
-    r = await client.post("/api/v1/auth/login", json={"email": "not-an-email"})
+    r = await client.post("/api/v1/auth/phone/request-otp", json={"phone": "not-a-phone"})
     assert r.status_code in {400, 422}
 
 
@@ -117,7 +117,7 @@ async def test_login_is_rate_limited_with_a_429(client):
     codes = []
     for _ in range(14):
         r = await client.post(
-            "/api/v1/auth/login",
+            "/api/v1/admin/auth/login",
             json={"email": "victim@example.test", "password": "guess"},
             headers={"X-Forwarded-For": "203.0.113.9"},
         )
@@ -165,18 +165,14 @@ def test_client_ip_is_the_hop_our_proxy_appended():
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/v1/auth/login",
         "/api/v1/admin/auth/login",
         "/api/v1/partner/auth/login",
-        "/api/v1/auth/forgot-password",
-        "/api/v1/auth/reset-password",
-        "/api/v1/auth/register",
     ],
 )
 def test_every_password_endpoint_gets_the_strict_limit(path):
     """
-    Anything that checks a password or a reset token sits on the 10/min
-    limiter, not the 100/min general one. (OTP routes are protected per code
+    Anything that checks a password (staff and partners; customers have
+    none) sits on the 10/min limiter, not the 100/min general one. (OTP routes are protected per code
     instead -- see test_otp.py -- because mobile carriers NAT many shoppers
     behind one address.)
     """

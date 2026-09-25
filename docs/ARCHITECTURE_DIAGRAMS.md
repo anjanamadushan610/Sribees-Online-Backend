@@ -263,9 +263,9 @@ Auth Service [icon: shield, color: green]
 PostgreSQL [icon: database, color: red]
 Redis [icon: database, color: orange]
 
-// Login Flow
+// Login Flow (staff: the admin panel. Customers have no password -- phone OTP, Google or Apple)
 User > Web App: Enter credentials
-Web App > API Gateway: POST /auth/login
+Web App > API Gateway: POST /admin/auth/login
 API Gateway > Auth Service: Validate request
 Auth Service > PostgreSQL: Query user
 PostgreSQL > Auth Service: User data

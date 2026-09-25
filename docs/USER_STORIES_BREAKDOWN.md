@@ -1,5 +1,11 @@
 # SRIBEESonline - Complete User Stories Breakdown
 
+> **Customer sign-in (as built, 2026-09-25):** customers sign in with a phone OTP,
+> Google or Apple only. Email/password registration, email verification, password
+> reset and customer password change were removed from the API and the app; the
+> email/password stories below are the original plan and are not implemented.
+> Staff (`/admin/auth/*`) and partners (`/partner/auth/login`) keep password logins.
+
 > **Document Status**: As-Built Implementation (January 2026)  
 > **Last Updated**: January 29, 2026
 

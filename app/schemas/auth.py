@@ -13,154 +13,6 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 # Request Schemas
 # ============================================================================
 
-class RegisterRequest(BaseModel):
-    """User registration request schema."""
-
-    email: EmailStr = Field(..., description="User's email address")
-    password: str = Field(
-        ...,
-        min_length=8,
-        max_length=128,
-        description="Password (min 8 characters)",
-    )
-    full_name: str = Field(
-        ...,
-        min_length=2,
-        max_length=100,
-        description="User's full name",
-    )
-    referral_code: Optional[str] = Field(
-        None,
-        max_length=12,
-        description=(
-            "Invite code of the user who referred this signup. Optional, and "
-            "a bad code never blocks registration — it is simply not applied."
-        ),
-    )
-
-    @field_validator("password")
-    @classmethod
-    def validate_password(cls, v: str) -> str:
-        """Validate password strength."""
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not any(c.islower() for c in v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit")
-        return v
-
-    @field_validator("full_name")
-    @classmethod
-    def validate_full_name(cls, v: str) -> str:
-        """Strip whitespace from name."""
-        return v.strip()
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "email": "user@example.com",
-                "password": "SecurePass123",
-                "fullName": "John Doe",
-            }
-        }
-
-
-class LoginRequest(BaseModel):
-    """User login request schema."""
-
-    email: EmailStr = Field(..., description="User's email address")
-    password: str = Field(..., description="User's password")
-    remember_me: bool = Field(
-        default=False,
-        description="Extend session to 30 days",
-    )
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "email": "user@example.com",
-                "password": "SecurePass123",
-                "rememberMe": False,
-            }
-        }
-
-
-class VerifyEmailRequest(BaseModel):
-    """Email verification request schema."""
-
-    token: str = Field(..., description="Verification token from email")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "token": "abc123def456...",
-            }
-        }
-
-
-class ResendVerificationRequest(BaseModel):
-    """Resend verification email request schema."""
-
-    email: EmailStr = Field(..., description="User's email address")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "email": "user@example.com",
-            }
-        }
-
-
-class ForgotPasswordRequest(BaseModel):
-    """Forgot password request schema."""
-
-    email: EmailStr = Field(..., description="User's email address")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "email": "user@example.com",
-            }
-        }
-
-
-class ResetPasswordRequest(BaseModel):
-    """Reset password request schema."""
-
-    token: str = Field(..., description="Password reset token from email")
-    password: str = Field(
-        ...,
-        min_length=8,
-        max_length=128,
-        description="New password (min 8 characters)",
-    )
-
-    @field_validator("password")
-    @classmethod
-    def validate_password(cls, v: str) -> str:
-        """Validate password strength."""
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not any(c.islower() for c in v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit")
-        return v
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "token": "abc123def456...",
-                "password": "NewSecurePass123",
-            }
-        }
-
-
 class RefreshTokenRequest(BaseModel):
     """Refresh token request schema."""
 
@@ -245,32 +97,6 @@ class UpdateProfileRequest(BaseModel):
         }
 
 
-class ChangePasswordRequest(BaseModel):
-    """Change password request schema."""
-
-    current_password: str = Field(..., description="Current password")
-    new_password: str = Field(
-        ...,
-        min_length=8,
-        max_length=128,
-        description="New password (min 8 characters)",
-    )
-
-    @field_validator("new_password")
-    @classmethod
-    def validate_password(cls, v: str) -> str:
-        """Validate password strength."""
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not any(c.islower() for c in v):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit")
-        return v
-
-
 # ============================================================================
 # Response Schemas
 # ============================================================================
@@ -298,10 +124,23 @@ class VerifyOTPRequest(BaseModel):
         return v
 
 
+def _sri_lankan_mobile(v: str) -> str:
+    from app.utils.identity import normalize_mobile
+
+    return normalize_mobile(v)
+
+
 class RequestPhoneOTPRequest(BaseModel):
     """Request to send a registration OTP to a phone number (no account yet)."""
 
     phone: str = Field(..., min_length=8, max_length=20, description="Phone number, e.g. +94771234567")
+
+    @field_validator("phone")
+    @classmethod
+    def sri_lankan_mobile(cls, v: str) -> str:
+        # Only a real Sri Lankan mobile gets a code: an SMS to any string sent
+        # here would be paid for (and SMS-pumping fraud lives on exactly that).
+        return _sri_lankan_mobile(v)
 
     class Config:
         json_schema_extra = {
@@ -314,6 +153,11 @@ class VerifyPhoneOTPRequest(BaseModel):
 
     phone: str = Field(..., min_length=8, max_length=20)
     code: str = Field(..., min_length=6, max_length=6)
+
+    @field_validator("phone")
+    @classmethod
+    def sri_lankan_mobile(cls, v: str) -> str:
+        return _sri_lankan_mobile(v)
 
     @field_validator("code")
     @classmethod
@@ -411,29 +255,6 @@ class AuthResponse(BaseModel):
                 "tokens": {
                     "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
                     "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                }
-            }
-        }
-
-
-class RegisterResponse(BaseModel):
-    """Registration response schema."""
-
-    success: bool = True
-    message: str
-    user: UserResponse
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "message": "Registration successful. Please check your email to verify your account.",
-                "user": {
-                    "userId": "550e8400-e29b-41d4-a716-446655440000",
-                    "email": "user@example.com",
-                    "fullName": "John Doe",
-                    "isVerified": False,
-                    "createdAt": "2026-01-30T10:00:00Z",
                 }
             }
         }

@@ -5,18 +5,11 @@ Pydantic schemas for request/response validation.
 """
 from app.schemas.auth import (
     AuthResponse,
-    ForgotPasswordRequest,
-    LoginRequest,
     MessageResponse,
     RefreshTokenRequest,
     RefreshTokenResponse,
-    RegisterRequest,
-    RegisterResponse,
-    ResendVerificationRequest,
-    ResetPasswordRequest,
     TokensResponse,
     UserResponse,
-    VerifyEmailRequest,
 )
 from app.schemas.branch import (
     # Admin mapping management
@@ -48,18 +41,11 @@ from app.schemas.branch import (
 
 __all__ = [
     # Auth requests
-    "RegisterRequest",
-    "LoginRequest",
-    "VerifyEmailRequest",
-    "ResendVerificationRequest",
-    "ForgotPasswordRequest",
-    "ResetPasswordRequest",
     "RefreshTokenRequest",
     # Auth responses
     "UserResponse",
     "TokensResponse",
     "AuthResponse",
-    "RegisterResponse",
     "MessageResponse",
     "RefreshTokenResponse",
     # Branch schemas

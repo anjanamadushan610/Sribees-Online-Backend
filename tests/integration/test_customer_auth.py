@@ -1,43 +1,24 @@
 """
-Customer identity, end to end: sign-up, sign-in, sessions, password and phone
-flows, profile, and closing an account.
+Customer identity, end to end: phone sign-in, sessions, profile, and closing
+an account.
 
-Codes and tokens are read from where the server keeps them (Redis for OTPs,
-the database for email/reset tokens), never guessed or bypassed, so every
-check below is the one a real customer passes through.
+Customers sign in with a phone OTP, Google or Apple only -- there is no email
+and password sign-in, email verification or password reset, and those routes
+must stay gone. Codes are read from where the server keeps them (Redis),
+never guessed or bypassed, so every check below is the one a real customer
+passes through.
 """
 from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+import pytest
 
 from app.config.redis import RedisKeys
 
 
-# Passwords are generated per run, never written into the repository: a
-# literal one is indistinguishable from a leaked secret to the scanner, and
-# the scanner is right to ask. Each satisfies the strength rules.
-def _pw() -> str:
-    import secrets
-
-    return f"Zz{secrets.token_urlsafe(10)}9!"
-
-
-PASSWORD = _pw()
-WRONG_PASSW0RD = _pw()
-N3W_PASSW0RD = _pw()
-R3SET_PASSW0RD = _pw()
-AGAIN_PASSW0RD = _pw()
-
-
-def _email() -> str:
-    return f"zz.{uuid.uuid4().hex[:10]}@sribees-ci.lk"
-
-
-def _ip() -> dict:
-    """A distinct client address: the auth routes are rate limited per IP."""
-    return {"X-Forwarded-For": f"198.51.{uuid.uuid4().int % 250}.{uuid.uuid4().int % 250}"}
+def _phone() -> str:
+    return "+947" + f"{uuid.uuid4().int % 10**8:08d}"
 
 
 def _bearer(token: str) -> dict:
@@ -54,74 +35,40 @@ def _tokens(body: dict) -> dict:
     }
 
 
-async def _register_and_verify(api, db, email: str) -> None:
-    from app.models.user import EmailVerification, User
-
-    r = await api.post("/api/v1/auth/register", json={"email": email, "password": PASSWORD, "full_name": "Nimal Test"}, headers=_ip())
-    assert r.status_code == 201, r.text
-    db.expire_all()
-    user = (await db.execute(select(User).where(User.email == email))).scalar_one()
-    token = (await db.execute(select(EmailVerification.token).where(EmailVerification.user_id == user.user_id))).scalar_one()
-    r = await api.post("/api/v1/auth/verify-email", json={"token": token})
+async def _phone_sign_in(api, app_redis, phone: str) -> dict:
+    """One sign-in on one device: request a code, read it, verify it."""
+    r = await api.post("/api/v1/auth/phone/request-otp", json={"phone": phone})
     assert r.status_code == 200, r.text
+    code = await app_redis.get(RedisKeys.phone_registration_otp(phone))
+    r = await api.post("/api/v1/auth/phone/verify-otp", json={"phone": phone, "code": code})
+    assert r.status_code == 200, r.text
+    return _tokens(r.json())
 
 
-async def _login(api, email: str, password: str = PASSWORD, **extra):
-    return await api.post(
-        "/api/v1/auth/login",
-        json={"email": email, "password": password, **extra},
-        headers=_ip(),
-    )
-
-
-async def test_email_sign_up_needs_verification_then_signs_in(api, db, world):
-    email = _email()
-    r = await api.post("/api/v1/auth/register", json={"email": email, "password": PASSWORD, "full_name": "Nimal"}, headers=_ip())
-    assert r.status_code == 201, r.text
-    assert "password" not in r.text.lower() or PASSWORD not in r.text
-
-    # Same address again: refused, and case does not make it new.
-    r = await api.post(
+@pytest.mark.parametrize(
+    "path",
+    [
         "/api/v1/auth/register",
-        json={"email": email.upper(), "password": PASSWORD, "full_name": "Nimal"},
-        headers=_ip(),
-    )
-    assert r.status_code == 400, r.text
-
-    r = await _login(api, email)
-    assert r.status_code == 403, "an unverified email must not sign in"
-
-    from app.models.user import EmailVerification, User
-
-    user = (await db.execute(select(User).where(User.email == email))).scalar_one()
-    token = (await db.execute(select(EmailVerification.token).where(EmailVerification.user_id == user.user_id))).scalar_one()
-    r = await api.post("/api/v1/auth/verify-email", json={"token": "not-the-token"})
-    assert r.status_code in (400, 401, 404), r.text
-    r = await api.post("/api/v1/auth/verify-email", json={"token": token})
-    assert r.status_code == 200, r.text
-
-    r = await _login(api, email)
-    assert r.status_code == 200, r.text
-    tokens = _tokens(r.json())
-    r = await api.get("/api/v1/auth/me", headers=_bearer(tokens["access_token"]))
-    assert r.status_code == 200, r.text
-    assert email in r.text
+        "/api/v1/auth/login",
+        "/api/v1/auth/verify-email",
+        "/api/v1/auth/resend-verification",
+        "/api/v1/auth/forgot-password",
+        "/api/v1/auth/reset-password",
+        "/api/v1/auth/change-password",
+    ],
+)
+async def test_there_is_no_email_and_password_sign_in(api, make_customer, world, path):
+    c = await make_customer()
+    body = {"email": f"zz.{uuid.uuid4().hex[:10]}@sribees-ci.lk", "password": uuid.uuid4().hex, "token": "x"}
+    for headers in ({}, c.headers):
+        r = await api.post(path, json=body, headers=headers)
+        assert r.status_code == 404, f"{path} must not exist: {r.status_code} {r.text}"
 
 
-async def test_wrong_passwords_and_unknown_accounts_look_the_same(api, db, world):
-    email = _email()
-    await _register_and_verify(api, db, email)
-    wrong = await _login(api, email, WRONG_PASSW0RD)
-    nobody = await _login(api, _email(), PASSWORD)
-    assert wrong.status_code == nobody.status_code == 401
-    assert wrong.json() == nobody.json(), "the reply must not reveal whether the account exists"
-
-
-async def test_sessions_refresh_rotation_and_logout(api, db, world):
-    email = _email()
-    await _register_and_verify(api, db, email)
-    first = _tokens((await _login(api, email)).json())
-    second = _tokens((await _login(api, email, remember_me=True)).json())
+async def test_sessions_refresh_and_logout(api, app_redis, world):
+    phone = _phone()
+    first = await _phone_sign_in(api, app_redis, phone)
+    second = await _phone_sign_in(api, app_redis, phone)
 
     r = await api.get("/api/v1/auth/sessions", headers=_bearer(first["access_token"]))
     assert r.status_code == 200, r.text
@@ -153,11 +100,10 @@ async def test_sessions_refresh_rotation_and_logout(api, db, world):
     assert r.status_code == 401, r.text
 
 
-async def test_revoking_one_session_and_logging_out_everywhere(api, db, world):
-    email = _email()
-    await _register_and_verify(api, db, email)
-    a = _tokens((await _login(api, email)).json())
-    b = _tokens((await _login(api, email)).json())
+async def test_revoking_one_session_and_logging_out_everywhere(api, app_redis, world):
+    phone = _phone()
+    a = await _phone_sign_in(api, app_redis, phone)
+    b = await _phone_sign_in(api, app_redis, phone)
 
     r = await api.get("/api/v1/auth/sessions", headers=_bearer(a["access_token"]))
     data = r.json().get("data") or r.json()
@@ -174,59 +120,8 @@ async def test_revoking_one_session_and_logging_out_everywhere(api, db, world):
         assert r.status_code == 401
 
 
-async def test_change_password(api, db, world):
-    email = _email()
-    await _register_and_verify(api, db, email)
-    t = _tokens((await _login(api, email)).json())
-    r = await api.post(
-        "/api/v1/auth/change-password",
-        json={"current_password": WRONG_PASSW0RD, "new_password": N3W_PASSW0RD},
-        headers=_bearer(t["access_token"]),
-    )
-    assert r.status_code == 401, r.text
-    r = await api.post(
-        "/api/v1/auth/change-password",
-        json={"current_password": PASSWORD, "new_password": "weak"},
-        headers=_bearer(t["access_token"]),
-    )
-    assert r.status_code == 422, "a weak password is refused"
-    r = await api.post(
-        "/api/v1/auth/change-password",
-        json={"current_password": PASSWORD, "new_password": N3W_PASSW0RD},
-        headers=_bearer(t["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    assert (await _login(api, email)).status_code == 401
-    assert (await _login(api, email, N3W_PASSW0RD)).status_code == 200
-
-
-async def test_forgot_and_reset_password(api, db, world):
-    from app.models.user import PasswordReset, User
-
-    email = _email()
-    await _register_and_verify(api, db, email)
-
-    # The same answer for a stranger's address: no account enumeration.
-    known = await api.post("/api/v1/auth/forgot-password", json={"email": email}, headers=_ip())
-    unknown = await api.post("/api/v1/auth/forgot-password", json={"email": _email()}, headers=_ip())
-    assert known.status_code == unknown.status_code == 200
-    assert known.json() == unknown.json()
-
-    db.expire_all()
-    user = (await db.execute(select(User).where(User.email == email))).scalar_one()
-    token = (await db.execute(select(PasswordReset.token).where(PasswordReset.user_id == user.user_id))).scalar_one()
-
-    r = await api.post("/api/v1/auth/reset-password", json={"token": "nope", "password": R3SET_PASSW0RD}, headers=_ip())
-    assert r.status_code in (400, 401, 404), r.text
-    r = await api.post("/api/v1/auth/reset-password", json={"token": token, "password": R3SET_PASSW0RD}, headers=_ip())
-    assert r.status_code == 200, r.text
-    r = await api.post("/api/v1/auth/reset-password", json={"token": token, "password": AGAIN_PASSW0RD}, headers=_ip())
-    assert r.status_code in (400, 401, 404), "a reset token is single use"
-    assert (await _login(api, email, R3SET_PASSW0RD)).status_code == 200
-
-
 async def test_phone_sign_in_with_a_real_code(api, app_redis, world):
-    phone = "+947" + f"{uuid.uuid4().int % 10**8:08d}"
+    phone = _phone()
     r = await api.post("/api/v1/auth/phone/request-otp", json={"phone": phone})
     assert r.status_code == 200, r.text
     code = await app_redis.get(RedisKeys.phone_registration_otp(phone))
