@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 class CreateSupportTicketRequest(BaseModel):
     contact_phone: str = Field(..., min_length=7, max_length=25, description="Contact phone number")
-    message: str = Field(..., min_length=5, max_length=3000, description="Detailed problem/issue description")
+    message: str = Field(..., min_length=5, max_length=500, description="Detailed problem/issue description")
     category: str = Field(default="general", max_length=50, description="Ticket category: general, order, delivery, app, payment")
     branch_id: Optional[UUID] = Field(default=None, description="Active branch ID if available")
     customer_name: Optional[str] = Field(default=None, max_length=255, description="Customer name if available")
