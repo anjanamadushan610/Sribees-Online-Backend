@@ -17,7 +17,7 @@ verified claims.
 required at the profile gate, still unique, still write-once. Somebody
 arriving through Google gets past the phone step and nothing else.
 """
-from datetime import datetime, timezone
+from datetime import datetime
 
 from loguru import logger
 from sqlalchemy import select
@@ -125,7 +125,10 @@ async def sign_in(db: AsyncSession, id_token: str) -> tuple[User, bool]:
         if existing.provider_uid is None:
             existing.provider_uid = uid
             existing.auth_provider = provider
-        existing.last_login = datetime.now(timezone.utc)
+        # users.last_login is TIMESTAMP WITHOUT TIME ZONE (naive UTC, as
+        # auth_service writes it). An aware value is refused by asyncpg, which
+        # made every returning Google/Apple sign-in a 500.
+        existing.last_login = datetime.utcnow()
         await db.commit()
         await db.refresh(existing)
         return existing, False
@@ -133,7 +136,10 @@ async def sign_in(db: AsyncSession, id_token: str) -> tuple[User, bool]:
     user = User(
         # Firebase has already proved the address; requiring our own
         # verification email on top would be asking them to prove it twice.
-        email=email,
+        # Only an address the provider proved. An unproven one is not the
+        # user's to claim -- and when it is already someone else's, storing
+        # it hit the unique constraint and failed the sign-in with a 500.
+        email=email if email_verified else None,
         full_name=name or "",
         auth_provider=provider,
         provider_uid=uid,
