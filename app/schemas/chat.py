@@ -82,6 +82,13 @@ class ChatPlan(BaseModel):
     reminder: Optional[ReminderInput] = None
     pantry_items: list[str] = Field(default_factory=list, max_length=20)
     recipes: list[RecipeIdea] = Field(default_factory=list, max_length=3)
+    # Last, so the model answers the question before it thinks about
+    # briefings. Separate from `reply` because the server often replaces
+    # `reply` with verified text; see app/services/assistant_briefings.py.
+    # Loose bounds on purpose: an over-long note must not fail the whole
+    # turn's validation -- the server drops it instead (NOTE_MAX).
+    briefing_note: Optional[str] = Field(None, max_length=2000)
+    briefing_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
 class ChatMessageRequest(BaseModel):

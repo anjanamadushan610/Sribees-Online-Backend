@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     admin,
     admin_analytics,
+    admin_assistant_briefings,
     admin_auth,
     admin_banners,
     admin_branch_categories,
@@ -118,6 +119,15 @@ router.include_router(
     chat.router,
     prefix="/chat",
     tags=["AI Chat"],
+)
+
+# Admin AI Briefings (/admin/assistant-briefings) — what a branch tells the
+# chat assistant for a while (a disruption, an event). briefings:* permission;
+# a Branch Manager is pinned to their own branch.
+router.include_router(
+    admin_assistant_briefings.router,
+    prefix="/admin/assistant-briefings",
+    tags=["Admin AI Briefings"],
 )
 
 router.include_router(

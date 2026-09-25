@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.redis import RedisKeys, RedisTTL
 from app.config.settings import settings
 from app.schemas.chat import ChatPlan
-from app.services import chat_language
+from app.services import assistant_briefings, chat_language
 from app.services.assistant_tools import action, help_result, orders_result, tr
 from app.services.embedding_service import GeminiAPIError
 from app.services.product_service import ProductService
@@ -229,11 +229,15 @@ class ChatService:
         lang: Optional[str] = DEFAULT_LANGUAGE,
         application_context: Optional[dict] = None,
         fallback_lang: str = DEFAULT_LANGUAGE,
+        briefing_prompt: str = "",
     ) -> Dict[str, Any]:
         """
         ``lang`` is the reply language when the server has already settled
         it; None hands the choice to the model (``reply_language``), with
         ``fallback_lang`` for a message too short to tell.
+
+        ``briefing_prompt`` is the branch's live briefings, if any (see
+        assistant_briefings.TurnBriefings.prompt) -- empty costs nothing.
         """
         api_key = getattr(settings, "gemini_api_key", None)
         if not api_key:
@@ -290,9 +294,12 @@ class ChatService:
             "systemInstruction": {
                 "parts": [
                     {
-                        # The per-turn part goes last so the shared prompt
-                        # stays a cacheable prefix.
+                        # Shared prompt, then the branch's briefings (the
+                        # same for all its customers), then the per-turn
+                        # language -- most-shared first, so the longest
+                        # possible prefix stays cacheable.
                         "text": _SYSTEM_PROMPT
+                        + ("\n" + briefing_prompt if briefing_prompt else "")
                         + "\n"
                         + chat_language.instruction(lang, fallback_lang)
                     }
@@ -614,6 +621,7 @@ class ChatService:
             "degraded": False,
             "panels": [],
         }
+        briefings: Optional[assistant_briefings.TurnBriefings] = None
         if task:
             result = ChatPlan(
                 reply="Continue",
@@ -640,6 +648,21 @@ class ChatService:
                         for p in cart.get("items", [])[:30]
                     ],
                 }
+            live = await assistant_briefings.live_for(db, redis, branch_id)
+            if live:
+                briefings = assistant_briefings.TurnBriefings(
+                    live, await assistant_briefings.told(redis, session_id)
+                )
+                first_name = (
+                    await ChatService._first_name(db, user_id) if briefings else None
+                )
+                if first_name:
+                    # Only when there is something to tell: an invitation
+                    # reads better with the customer's name in it.
+                    application_context = {
+                        **(application_context or {}),
+                        "customer_first_name": first_name,
+                    }
             await ChatService._emit(on_stage, "understanding")
             try:
                 result = await asyncio.wait_for(
@@ -651,6 +674,7 @@ class ChatService:
                         lang=fixed_lang,
                         application_context=application_context,
                         fallback_lang=fallback_lang,
+                        briefing_prompt=briefings.prompt() if briefings else "",
                     ),
                     timeout=30,
                 )
@@ -733,6 +757,15 @@ class ChatService:
                     db, branch_id, result, history, lang, on_stage=on_stage
                 )
             )
+        if briefings:
+            # Appended after whatever built the reply -- the model, the
+            # grounding step or a tool -- so it survives all of them.
+            note, used = briefings.accept(
+                result.get("briefing_note"), result.get("briefing_ids") or [], lang
+            )
+            if note:
+                response["reply"] = f"{response['reply']}\n\n{note}"
+                await assistant_briefings.record_mentions(redis, session_id, used)
         await ChatService._append_turn(
             redis,
             session_id,
@@ -744,6 +777,22 @@ class ChatService:
             language=lang,
         )
         return response
+
+    @staticmethod
+    async def _first_name(db: AsyncSession, user_id: Optional[UUID]) -> Optional[str]:
+        """A signed-in customer's first name, for a personal touch -- nothing more."""
+        if not user_id:
+            return None
+        from app.models.user import User
+
+        try:
+            user = await db.get(User, user_id)
+        except Exception:  # noqa: BLE001 - a missing name is not an error
+            return None
+        name = getattr(user, "first_name", None) or getattr(user, "full_name", None)
+        if not isinstance(name, str) or not name.strip():
+            return None
+        return name.strip().split()[0][:40]
 
     @staticmethod
     async def _product_response(db, branch_id, result, history, lang, on_stage=None):
