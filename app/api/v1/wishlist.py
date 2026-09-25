@@ -54,12 +54,12 @@ def format_wishlist_item(
             "product_id": str(item.product.product_id),
             "name": item.product.name,
             "slug": item.product.slug,
-            "price": eff.get("effective_price", float(item.product.price) if item.product.price else 0),
+            "price": eff.get("effective_price") if eff.get("effective_price") is not None else (float(item.product.price) if item.product.price else 0),
             "global_price": float(item.product.price) if item.product.price else 0,
-            "discount_percentage": eff.get("effective_discount", item.product.discount_percentage),
-            "discount_price": eff.get("effective_discount_price", float(item.product.discount_price) if item.product.discount_price else None),
-            "sale_price": eff.get("effective_discount_price", float(item.product.discount_price) if item.product.discount_price else None),
-            "is_on_sale": eff.get("is_on_sale", item.product.is_on_sale),
+            "discount_percentage": eff.get("effective_discount") if eff.get("effective_discount") is not None else item.product.discount_percentage,
+            "discount_price": eff.get("effective_discount_price") or (float(item.product.discount_price) if item.product.discount_price else None),
+            "sale_price": eff.get("effective_discount_price") or (float(item.product.discount_price) if item.product.discount_price else None),
+            "is_on_sale": eff.get("is_on_sale") if eff.get("is_on_sale") is not None else bool(item.product.is_on_sale),
             # Branch-resolved rate when the caller's branch is known (see
             # get_wishlist), falling back to the product/platform default
             # otherwise — same resolution order as the product listing.
