@@ -30,9 +30,10 @@ LOCAL_VIDEO_PATH = os.path.join(
 
 
 async def seed():
+    from app.services.storage_service import StorageService
+
     from app.config.database import async_session_factory, engine
     from app.services.app_settings_service import AppSettingsService
-    from app.services.storage_service import StorageService
 
     print("=" * 60)
     print("Splash Video Seed Script")

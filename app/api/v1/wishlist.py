@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -15,6 +16,7 @@ from app.config.redis import get_redis
 from app.config.settings import settings
 from app.core.dependencies import get_current_user
 from app.core.media import media_url
+from app.models.product import BranchInventory
 from app.schemas.cart import WishlistItemAdd
 from app.services import branch_service
 from app.services.product_service import ProductService
@@ -142,8 +144,6 @@ async def get_wishlist(
         # Load branch inventory overrides if branch_id is known
         branch_inv_map = {}
         if branch_id and product_ids:
-            from sqlalchemy import select
-            from app.models.product import BranchInventory
             inv_res = await db.execute(
                 select(BranchInventory).where(
                     BranchInventory.branch_id == branch_id,
