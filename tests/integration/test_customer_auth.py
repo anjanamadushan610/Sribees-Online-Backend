@@ -250,7 +250,10 @@ async def test_profile_updates_are_validated(api, make_customer, world):
     assert "Kamal Perera" in r.text
     r = await api.patch("/api/v1/auth/me", json={"nic": "not-a-nic"}, headers=c.headers)
     assert r.status_code == 422, r.text
-    nic = "19" + f"{uuid.uuid4().int % 10**10:010d}"
+    # A real shape and a real birth date (1995, day 1-300), random serial:
+    # the server rejects impossible dates, and must accept this.
+    day = 1 + uuid.uuid4().int % 300
+    nic = f"1995{day:03d}{uuid.uuid4().int % 10**5:05d}"
     r = await api.patch("/api/v1/auth/me", json={"nic": nic}, headers=c.headers)
     assert r.status_code == 200, r.text
     # One person, one live account: the same NIC on another account is refused.
