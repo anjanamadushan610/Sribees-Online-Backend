@@ -1530,14 +1530,31 @@ class OrderService:
         await db.refresh(order)
 
         if status == OrderStatusEnum.CANCELLED and not was_cancelled and order.courier_shipment_id:
-            await OrderService._cancel_courier_shipment(db, order)
+            # An admin moving the status is the shop calling it off (a
+            # stock-out, a duplicate) -- the rider must not tell the customer
+            # they cancelled it.
+            await OrderService._cancel_courier_shipment(
+                db, order, previous_status=old_status, requested_by="merchant"
+            )
 
         logger.info(f"Order {order.order_number} status updated to {status.value}")
 
         return order
 
+    # What the rider reads on the parcel, by who called it off.
+    _COURIER_CANCEL_REASON = {
+        "customer": "Customer cancelled the order",
+        "merchant": "Cancelled by the shop",
+    }
+
     @staticmethod
-    async def _cancel_courier_shipment(db: AsyncSession, order: Order) -> None:
+    async def _cancel_courier_shipment(
+        db: AsyncSession,
+        order: Order,
+        *,
+        previous_status: str,
+        requested_by: str,
+    ) -> None:
         """
         Best-effort courier-side cancellation; never blocks an order cancellation.
 
@@ -1545,27 +1562,49 @@ class OrderService:
         ``db`` that was never in scope, so every cancellation of a booked order
         raised NameError after the cancellation had committed — the customer saw
         a 500, and the rider was still sent.
+
+        ``previous_status`` is the status BEFORE the cancellation. Both callers
+        run this after committing ``cancelled``, and it used to read
+        ``order.status`` -- by then always ``cancelled`` -- so a parcel on a
+        motorbike was sent a plain cancel, SribeesExpress refused it with a
+        409, the warning went to a log, and the rider was never told.
+
+        ``requested_by`` (``customer`` or ``merchant``) is what the rider app
+        and the branch screens label the parcel with.
         """
-        rider_has_it = OrderService._rider_already_has_it(order)
+        rider_has_it = OrderService._rider_already_has_it(order, previous_status)
+        reason = OrderService._COURIER_CANCEL_REASON.get(requested_by)
         try:
             async with courier_credentials.for_branch(db, order.branch_id):
-                if rider_has_it:
-                    # The parcel is on a motorbike. SribeesExpress refuses a
-                    # cancel past pickup -- correctly, because an order marked
-                    # cancelled while the goods are still moving would be read
-                    # as fact by their rider app, their branch screens and
-                    # their invoice. A request reaches the rider carrying it,
-                    # who hands nothing over and brings it back.
-                    await CourierService.request_cancellation(
-                        order.courier_shipment_id,
-                        reason="Customer cancelled the order",
-                    )
-                    logger.info(
-                        f"Cancellation requested with the rider for order {order.order_number}"
-                    )
-                else:
-                    await CourierService.cancel_shipment(order.courier_shipment_id)
-                    logger.info(f"Courier shipment cancelled for order {order.order_number}")
+                if not rider_has_it:
+                    try:
+                        await CourierService.cancel_shipment(
+                            order.courier_shipment_id,
+                            reason=reason,
+                            requested_by=requested_by,
+                        )
+                        logger.info(f"Courier shipment cancelled for order {order.order_number}")
+                        return
+                    except CourierError as exc:
+                        # Their rider collected it before the `picked_up`
+                        # webhook reached us. Our status is behind, theirs is
+                        # right -- so ask the rider instead of giving up.
+                        if exc.status_code != 409:
+                            raise
+                # The parcel is on a motorbike. SribeesExpress refuses a
+                # cancel past pickup -- correctly, because an order marked
+                # cancelled while the goods are still moving would be read
+                # as fact by their rider app, their branch screens and
+                # their invoice. A request reaches the rider carrying it,
+                # who hands nothing over and brings it back.
+                await CourierService.request_cancellation(
+                    order.courier_shipment_id,
+                    reason=reason,
+                    requested_by=requested_by,
+                )
+                logger.info(
+                    f"Cancellation requested with the rider for order {order.order_number}"
+                )
         except (
             CourierUnavailableError,
             CourierError,
@@ -1689,15 +1728,21 @@ class OrderService:
 
         return OrderService.CANCEL_FREE
 
-    @staticmethod
-    def _rider_already_has_it(order: Order) -> bool:
-        """Whether a rider is carrying the parcel, so cancelling it with the
-        courier has to be a request rather than an instruction."""
-        return order.status in (
+    _WITH_A_RIDER = frozenset(
+        {
             OrderStatus.HANDED_TO_COURIER.value,
             OrderStatus.SHIPPED.value,
             OrderStatus.OUT_FOR_DELIVERY.value,
-        )
+        }
+    )
+
+    @staticmethod
+    def _rider_already_has_it(order: Order, status: Optional[str] = None) -> bool:
+        """Whether a rider is carrying the parcel, so cancelling it with the
+        courier has to be a request rather than an instruction. ``status``
+        overrides ``order.status`` -- for a caller that has already moved the
+        order to ``cancelled`` and needs to ask about where it was."""
+        return (status if status is not None else order.status) in OrderService._WITH_A_RIDER
 
     @staticmethod
     def customer_can_cancel(order: Order) -> bool:
@@ -1932,7 +1977,8 @@ class OrderService:
         if OrderService.customer_cancel_state(order) == OrderService.CANCEL_BLOCKED:
             raise ValueError(f"Order cannot be cancelled in {order.status} status")
 
-        await OrderService._return_stock_to_branch(db, order, order.status)
+        previous_status = order.status
+        await OrderService._return_stock_to_branch(db, order, previous_status)
         order.status = OrderStatus.CANCELLED.value
         order.cancelled_at = datetime.utcnow()
 
@@ -1952,7 +1998,12 @@ class OrderService:
         await db.refresh(order)
 
         if order.courier_shipment_id:
-            await OrderService._cancel_courier_shipment(db, order)
+            await OrderService._cancel_courier_shipment(
+                db,
+                order,
+                previous_status=previous_status,
+                requested_by="customer" if cancelled_by == "customer" else "merchant",
+            )
 
         logger.info(f"Order {order.order_number} cancelled")
 

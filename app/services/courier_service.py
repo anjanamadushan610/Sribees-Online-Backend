@@ -502,16 +502,40 @@ class CourierService:
         return await CourierService._request("PATCH", f"/shipments/{shipment_id}", json=payload)
 
     @staticmethod
-    async def cancel_shipment(shipment_id: str) -> dict:
+    def _cancel_body(reason: Optional[str], requested_by: Optional[str]) -> dict:
+        body: dict = {}
+        if reason:
+            body["reason"] = reason
+        if requested_by:
+            body["requested_by"] = requested_by
+        return body
+
+    @staticmethod
+    async def cancel_shipment(
+        shipment_id: str,
+        reason: Optional[str] = None,
+        requested_by: Optional[str] = None,
+    ) -> dict:
         """
         ``POST /ecommerce/shipments/{id}/cancel`` (section 9). Legal only
         before pickup; past that it is a ``409`` -- use
         :meth:`request_cancellation` instead.
+
+        ``requested_by`` (``customer`` | ``merchant``) is what their branch
+        screens and rider app label the parcel with.
         """
-        return await CourierService._request("POST", f"/shipments/{shipment_id}/cancel")
+        return await CourierService._request(
+            "POST",
+            f"/shipments/{shipment_id}/cancel",
+            json=CourierService._cancel_body(reason, requested_by),
+        )
 
     @staticmethod
-    async def request_cancellation(shipment_id: str, reason: Optional[str] = None) -> dict:
+    async def request_cancellation(
+        shipment_id: str,
+        reason: Optional[str] = None,
+        requested_by: Optional[str] = None,
+    ) -> dict:
         """
         ``POST /ecommerce/shipments/{id}/cancellation-request``.
 
@@ -526,7 +550,7 @@ class CourierService:
         return await CourierService._request(
             "POST",
             f"/shipments/{shipment_id}/cancellation-request",
-            json={"reason": reason} if reason else {},
+            json=CourierService._cancel_body(reason, requested_by),
         )
 
     # ------------------------------------------------------------------

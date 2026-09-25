@@ -327,3 +327,123 @@ async def test_the_service_still_refuses_a_delivered_order():
     order = _order(status=OrderStatus.DELIVERED.value, notes=None, cancelled_at=None)
     with pytest.raises(ValueError):
         await OrderService.cancel_order(None, order)
+
+
+# --- what SribeesExpress is told --------------------------------------------
+#
+# The rider is the only person who can stop a parcel on a motorbike. These pin
+# that the customer's cancel actually reaches them, labelled with who asked.
+
+
+class _CourierSpy:
+    def __init__(self, cancel_error=None):
+        self.calls = []
+        self.cancel_error = cancel_error
+
+    async def cancel_shipment(self, shipment_id, reason=None, requested_by=None):
+        self.calls.append(("cancel", shipment_id, requested_by))
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        return {}
+
+    async def request_cancellation(self, shipment_id, reason=None, requested_by=None):
+        self.calls.append(("request", shipment_id, requested_by))
+        return {}
+
+
+def _spy_courier(monkeypatch, spy):
+    from contextlib import asynccontextmanager
+
+    from app.services import courier_credentials
+    from app.services import order_service as order_service_module
+
+    @asynccontextmanager
+    async def _no_credentials(db, branch_id):
+        yield
+
+    monkeypatch.setattr(courier_credentials, "for_branch", _no_credentials)
+    monkeypatch.setattr(order_service_module.CourierService, "cancel_shipment", spy.cancel_shipment)
+    monkeypatch.setattr(
+        order_service_module.CourierService, "request_cancellation", spy.request_cancellation
+    )
+
+
+async def _cancel(order, monkeypatch, cancelled_by="customer"):
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(OrderService, "_apply_cancellation_effects", _noop)
+    monkeypatch.setattr(OrderService, "_return_stock_to_branch", _noop)
+
+    class _Db:
+        commit = refresh = staticmethod(_noop)
+
+    await OrderService.cancel_order(_Db(), order, cancelled_by=cancelled_by)
+
+
+@pytest.mark.parametrize("status", ["handed_to_courier", "shipped", "out_for_delivery"])
+async def test_a_parcel_with_a_rider_gets_a_request_from_the_customer(status, monkeypatch):
+    """This used to read the status AFTER it had been set to cancelled, so it
+    always sent a plain cancel, SribeesExpress 409'd it, and the rider carried
+    on to the door knowing nothing."""
+    spy = _CourierSpy()
+    _spy_courier(monkeypatch, spy)
+    order = _order(status=status, courier_shipment_id="WB-1", notes=None, cancelled_at=None, branch_id=None)
+
+    await _cancel(order, monkeypatch)
+
+    assert spy.calls == [("request", "WB-1", "customer")]
+
+
+async def test_a_parcel_not_yet_collected_is_cancelled_as_the_customers(monkeypatch):
+    spy = _CourierSpy()
+    _spy_courier(monkeypatch, spy)
+    order = _order(
+        status=OrderStatus.READY_FOR_PICKUP.value,
+        courier_shipment_id="WB-2",
+        notes=None,
+        cancelled_at=None,
+        branch_id=None,
+    )
+
+    await _cancel(order, monkeypatch)
+
+    assert spy.calls == [("cancel", "WB-2", "customer")]
+
+
+async def test_a_rider_who_got_there_first_is_still_told(monkeypatch):
+    """Their `picked_up` webhook had not reached us yet: we think the parcel
+    is on the shelf, they know it is on a bike. Their 409 is the truth."""
+    from app.services.courier_service import CourierError
+
+    spy = _CourierSpy(cancel_error=CourierError("conflict", "Illegal transition", 409))
+    _spy_courier(monkeypatch, spy)
+    order = _order(
+        status=OrderStatus.READY_FOR_PICKUP.value,
+        courier_shipment_id="WB-3",
+        notes=None,
+        cancelled_at=None,
+        branch_id=None,
+    )
+
+    await _cancel(order, monkeypatch)
+
+    assert spy.calls == [("cancel", "WB-3", "customer"), ("request", "WB-3", "customer")]
+
+
+async def test_an_admin_cancel_is_labelled_as_the_shops(monkeypatch):
+    """A stock-out is not the customer changing their mind, and the rider
+    must not tell them it was."""
+    spy = _CourierSpy()
+    _spy_courier(monkeypatch, spy)
+    order = _order(
+        status=OrderStatus.SHIPPED.value,
+        courier_shipment_id="WB-4",
+        notes=None,
+        cancelled_at=None,
+        branch_id=None,
+    )
+
+    await _cancel(order, monkeypatch, cancelled_by="admin")
+
+    assert spy.calls == [("request", "WB-4", "merchant")]
