@@ -102,7 +102,7 @@ async def test_platform_settings(api, world, make_admin):
 
     r = await api.post("/api/v1/admin/settings/splash-animation",
                        files={"file": ("x.json", b"not json at all", "application/json")}, headers=boss.headers)
-    assert r.status_code in (400, 413, 422), "a broken animation file is refused, not stored"
+    assert r.status_code == 400, "a broken animation file is refused, not stored"
 
     manager = await make_admin("branch_manager", api=api)
     r = await api.patch("/api/v1/admin/settings", json={"order_tax_rate_percent": 0}, headers=manager.headers)
@@ -195,4 +195,4 @@ async def test_courier_reads_through_the_fake_courier(api, world, make_admin, fa
     boss = await make_admin("super_admin", api=api)
     for path in ["/api/v1/admin/courier/cod-balance", "/api/v1/admin/courier/remittances"]:
         r = await api.get(path, headers=boss.headers)
-        assert r.status_code in (200, 502), (path, r.text)
+        assert r.status_code == 200, (path, r.text)

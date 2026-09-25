@@ -310,7 +310,7 @@ async def test_postal_city_directory(api, world, make_admin):
     r = await api.post("/api/v1/admin/locations",
                        json={"postal_city": name, "district": world.district, "province": world.province},
                        headers=boss.headers)
-    assert r.status_code in (400, 409), "postal city names are unique"
+    assert r.status_code == 400, "postal city names are unique"
 
     r = await api.get("/api/v1/admin/locations", params={"district": world.district}, headers=boss.headers)
     # Names are stored title-cased ("Zz Village ..."), so compare without case.

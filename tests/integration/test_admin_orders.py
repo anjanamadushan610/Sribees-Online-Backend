@@ -99,9 +99,11 @@ async def test_the_fulfilment_flow_to_the_courier(
     assert len(fake_courier.shipments) == before
 
     r = await api.post(f"/api/v1/admin/orders/{oid}/courier/refresh", headers=manager.headers)
-    assert r.status_code in (200, 502), r.text
+    assert r.status_code == 200, r.text
     r = await api.get(f"/api/v1/admin/orders/{oid}/courier/label", headers=manager.headers)
-    assert r.status_code in (200, 404, 502), r.text
+    assert r.status_code == 200, r.text
+    label = r.json()["data"]
+    assert label["order_number"] == order["order_number"] and label["waybill_id"]
 
 
 async def test_support_can_read_and_escalate_but_not_dispatch(
@@ -118,7 +120,7 @@ async def test_support_can_read_and_escalate_but_not_dispatch(
     assert r.json()["data"]["actions"] == [] and r.json()["data"]["can_override"] is False
 
     r = await _move(api, support, oid, "confirmed")
-    assert r.status_code in (400, 403), r.text
+    assert r.status_code == 400, r.text
     r = await api.post(f"/api/v1/admin/orders/{oid}/courier/request-pickup", headers=support.headers)
     assert r.status_code == 403, r.text
 

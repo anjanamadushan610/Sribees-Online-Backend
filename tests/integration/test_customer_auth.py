@@ -183,7 +183,7 @@ async def test_change_password(api, db, world):
         json={"current_password": WRONG_PASSW0RD, "new_password": N3W_PASSW0RD},
         headers=_bearer(t["access_token"]),
     )
-    assert r.status_code in (400, 401), r.text
+    assert r.status_code == 401, r.text
     r = await api.post(
         "/api/v1/auth/change-password",
         json={"current_password": PASSWORD, "new_password": "weak"},
@@ -250,8 +250,13 @@ async def test_profile_updates_are_validated(api, make_customer, world):
     assert "Kamal Perera" in r.text
     r = await api.patch("/api/v1/auth/me", json={"nic": "not-a-nic"}, headers=c.headers)
     assert r.status_code == 422, r.text
-    r = await api.patch("/api/v1/auth/me", json={"nic": "199512345678"}, headers=c.headers)
-    assert r.status_code in (200, 400), r.text
+    nic = "19" + f"{uuid.uuid4().int % 10**10:010d}"
+    r = await api.patch("/api/v1/auth/me", json={"nic": nic}, headers=c.headers)
+    assert r.status_code == 200, r.text
+    # One person, one live account: the same NIC on another account is refused.
+    other = await make_customer()
+    r = await api.patch("/api/v1/auth/me", json={"nic": nic}, headers=other.headers)
+    assert r.status_code == 400 and "DUPLICATE" in r.text, r.text
 
 
 async def test_closing_an_account(api, app_redis, make_customer, world):

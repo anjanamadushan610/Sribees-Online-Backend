@@ -165,7 +165,7 @@ async def test_categories_banners_and_location_pickers(api, world, make_product)
 
     r = await api.post("/api/v1/banners/events", json={"banner_id": str(uuid.uuid4()), "event": "view"},
                        headers=headers)
-    assert r.status_code in (200, 202, 204, 404, 422), r.text
+    assert r.status_code == 422, "a malformed banner event is refused, not counted"
 
 
 async def test_app_bootstrap_endpoints(api):

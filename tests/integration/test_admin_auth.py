@@ -53,7 +53,7 @@ async def test_changing_an_admin_password(api, world, make_admin):
     new = _pw()
     r = await api.post("/api/v1/admin/auth/change-password",
                        json={"current_password": "not-it-at-all", "new_password": new}, headers=admin.headers)
-    assert r.status_code in (400, 401), r.text
+    assert r.status_code == 400, r.text
     r = await api.post("/api/v1/admin/auth/change-password",
                        json={"current_password": admin.password, "new_password": "short"}, headers=admin.headers)
     assert r.status_code == 422

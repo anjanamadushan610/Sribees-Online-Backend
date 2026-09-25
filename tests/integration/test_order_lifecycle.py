@@ -174,7 +174,7 @@ async def test_a_returnless_refund_pays_back_to_the_wallet(
     assert r.status_code == 200, r.text
     r = await api.post(f"/api/v1/admin/orders/{oid}/return/approve", json={"resolution": "returnless_refund"},
                        headers=support.headers)
-    assert r.status_code in (400, 403), "support annotates; the branch decides"
+    assert r.status_code == 403, "support annotates; the branch decides"
 
     r = await api.post(f"/api/v1/admin/orders/{oid}/return/approve",
                        json={"resolution": "returnless_refund", "note": "Photo shows damage"},
@@ -214,7 +214,7 @@ async def test_only_delivered_orders_can_be_returned(api, world, make_customer, 
     other = await make_customer()
     r = await api.post(f"/api/v1/orders/{order['order_id']}/return",
                        json={"reason": "x", "images": ["/uploads/returns/x.png"]}, headers=other.headers)
-    assert r.status_code in (400, 404), "nobody returns someone else's order"
+    assert r.status_code == 404, "nobody returns someone else's order"
 
 
 # ---------------------------------------------------------------------------

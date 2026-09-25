@@ -75,5 +75,5 @@ async def test_a_retried_return_booking_is_not_a_second_leg(
                        headers=manager.headers)
     assert r.status_code == 200, r.text
     r = await api.post(f"/api/v1/admin/orders/{oid}/return/retry-booking", headers=manager.headers)
-    assert r.status_code in (200, 400, 409), r.text
+    assert r.status_code == 200, r.text
     assert len(fake_courier.returns) == 1, "an already-booked leg is not booked twice"

@@ -82,12 +82,11 @@ async def test_an_unverified_email_never_takes_over_an_account(api, db, world, f
     owner_id = (await db.execute(select(User.user_id).where(User.email == email))).scalar_one()
 
     r = await _social(api, firebase(uid=f"uid-attacker-{uuid.uuid4().hex}", email=email, verified=False))
-    assert r.status_code in (200, 400, 401, 409), r.text
-    if r.status_code == 200:
-        body = r.json().get("data", r.json())
-        user = body.get("user") or {}
-        assert str(user.get("user_id") or user.get("userId") or "") != str(owner_id), "account taken over"
-    assert r.status_code != 500
+    # A separate account for the claimant, without the unproven address.
+    assert r.status_code == 200, r.text
+    n = (await db.execute(select(func.count()).select_from(User).where(User.email == email))).scalar_one()
+    assert n == 1, "the address still belongs to its owner only"
+    assert str(owner_id) not in r.text, "account taken over"
 
 
 async def test_bad_tokens_and_closed_accounts_are_refused(api, db, world, firebase):
@@ -96,11 +95,11 @@ async def test_bad_tokens_and_closed_accounts_are_refused(api, db, world, fireba
     from app.models.user import User
 
     r = await _social(api, "x" * 40)
-    assert r.status_code in (400, 401), r.text
+    assert r.status_code == 401, r.text
 
     uid, email = f"uid-{uuid.uuid4().hex}", _email()
     assert (await _social(api, firebase(uid=uid, email=email))).status_code == 200
     await db.execute(update(User).where(User.provider_uid == uid).values(is_active=False))
     await db.commit()
     r = await _social(api, firebase(uid=uid, email=email))
-    assert r.status_code in (400, 401, 403), "an inactive account stays out"
+    assert r.status_code == 401, "an inactive account stays out"

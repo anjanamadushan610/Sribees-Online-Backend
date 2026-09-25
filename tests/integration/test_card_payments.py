@@ -82,10 +82,9 @@ async def test_a_declined_card_leaves_the_order_unpaid(api, app_redis, world, ma
     order["_tr_id"] = order["payment_redirect_url"].rsplit("/", 1)[1]
     marx.outcome = "FAILURE"
     r = await api.post("/api/v1/payments/marx/confirm", json=_confirm_body(order), headers=customer.headers)
-    assert r.status_code in (200, 400, 402), r.text
+    assert r.status_code == 200, r.text
     r = await api.get(f"/api/v1/orders/{order['order_id']}", headers=customer.headers)
-    assert r.json()["data"]["payment_status"] in ("failed", "pending")
-    assert r.json()["data"]["payment_status"] != "paid"
+    assert r.json()["data"]["payment_status"] == "failed"
 
 
 async def test_when_the_gateway_is_down_no_order_is_created(api, db, app_redis, world, make_customer,

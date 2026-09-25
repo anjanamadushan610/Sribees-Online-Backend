@@ -84,7 +84,7 @@ async def test_a_referrer_is_paid_once_the_return_window_closes(
 
     # Nothing to claim yet: the goods could still come back.
     r = await api.post("/api/v1/referrals/claim", headers=alice.headers)
-    assert r.status_code in (200, 400)
+    assert r.status_code == 200, r.text
     assert _balance(await api.get("/api/v1/wallet", headers=alice.headers)) == 0.0
 
     await db.execute(update(ReferralCommission).where(ReferralCommission.order_id == order["order_id"])
@@ -189,7 +189,7 @@ async def test_partner_commissions_pay_two_levels(
     agent_email, agent_pw = f"zz.agent.{_uuid.uuid4().hex[:8]}@sribees-ci.lk", _partner_pw()
     r = await api.post("/api/v1/partner/recruits",
                        json={"email": agent_email, "password": agent_pw, "full_name": "ZZ Agent"}, headers=lead)
-    assert r.status_code in (200, 201), r.text
+    assert r.status_code == 201, r.text
     agent = await _partner_login(api, agent_email, agent_pw)
     agent_code = (await api.get("/api/v1/partner/me", headers=agent)).json()["data"]["referralCode"]
 

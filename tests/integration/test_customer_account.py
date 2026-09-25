@@ -105,7 +105,7 @@ async def test_wishlist(api, app_redis, make_customer, make_product, world):
     p2 = await make_product(price="200")
 
     r = await api.post("/api/v1/wishlist", json={"product_id": str(p1), "price_at_watch": 600}, headers=c.headers)
-    assert r.status_code in (200, 201), r.text
+    assert r.status_code == 201, r.text
     r = await api.post(f"/api/v1/wishlist/toggle/{p2}", headers=c.headers)
     assert r.status_code == 200, r.text
 
@@ -185,9 +185,9 @@ async def test_push_tokens(api, make_customer, world):
     token = f"fcm-{uuid.uuid4().hex}"
     r = await api.post("/api/v1/notifications/push-token", json={"token": token, "platform": "android"},
                        headers=c.headers)
-    assert r.status_code in (200, 201), r.text
+    assert r.status_code == 200, r.text
     r = await api.delete(f"/api/v1/notifications/push-token/{token}", headers=c.headers)
-    assert r.status_code in (200, 204), r.text
+    assert r.status_code == 200, r.text
 
 
 # ---------------------------------------------------------------------------

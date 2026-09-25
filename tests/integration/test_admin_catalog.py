@@ -135,7 +135,7 @@ async def test_category_image_upload_accepts_images_only(api, world, make_admin)
         files={"file": ("tea.png", PNG, "image/png")},
         headers=admin.headers,
     )
-    assert r.status_code in (200, 201), r.text
+    assert r.status_code == 201, r.text
     assert r.json()["data"]["image_url"]
     r = await api.post(
         "/api/v1/admin/categories/upload-image",
@@ -280,7 +280,7 @@ async def test_keyword_suggestions_fail_politely_without_an_ai_key(api, world, m
         json={"name": "Coconut oil"},
         headers=admin.headers,
     )
-    assert r.status_code in (429, 503), r.text
+    assert r.status_code == 503, r.text
     assert "detail" in r.json()
 
 
