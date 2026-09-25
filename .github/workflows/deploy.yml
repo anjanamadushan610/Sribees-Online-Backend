@@ -40,7 +40,7 @@ permissions:
 env:
   PYTHON_VERSION: "3.11"
   # Ratchet: raise it when coverage rises, never lower it to get a build out.
-  COVERAGE_FLOOR: "50"
+  COVERAGE_FLOOR: "55"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
