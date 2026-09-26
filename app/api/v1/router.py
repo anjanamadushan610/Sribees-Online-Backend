@@ -54,6 +54,7 @@ from app.api.v1 import (
     reviews,
     session,
     support,
+    sync,
     user_addresses,
     wallet,
     wishlist,
@@ -431,6 +432,12 @@ router.include_router(
     app_usage.router,
     prefix="/app",
     tags=["App Usage"],
+)
+# "Has anything the app shows changed?" (/app/sync-state) -- guests too.
+router.include_router(
+    sync.router,
+    prefix="/app",
+    tags=["App Sync"],
 )
 router.include_router(
     app_usage.admin_router,

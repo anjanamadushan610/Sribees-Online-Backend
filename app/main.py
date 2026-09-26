@@ -179,6 +179,15 @@ from app.core.security_headers import configure_security_middleware
 configure_security_middleware(app)
 app.add_middleware(RateLimitMiddleware)
 
+# Tell open apps what changed (app/services/live_sync.py): every commit that
+# touches something a customer sees bumps a version and, for the catalog and
+# banners, arms one debounced silent push.
+from app.services import live_sync
+
+live_sync.install()
+live_sync.enabled = settings.app_env.strip().lower() != "testing"
+app.add_middleware(live_sync.LiveSyncMiddleware)
+
 
 # Request logging middleware
 @app.middleware("http")
@@ -382,10 +391,27 @@ if (settings.storage_backend or "local").strip().lower() == "local":
 
     # StaticFiles would raise on a directory that is not there, so only mount
     # when we actually have one.
+    class _ImmutableMedia(StaticFiles):
+        """
+        Uploaded media, cached by phones and browsers for a year.
+
+        Safe because a stored file never changes: every upload is written
+        under a new name (storage.base.build_relative_path adds a random
+        suffix), so a replaced product photo is a new URL. The app downloads
+        each picture once and keeps it until it is actually replaced -- the
+        same header the S3 backend already sets.
+        """
+
+        async def get_response(self, path, scope):
+            response = await super().get_response(path, scope)
+            if response.status_code in (200, 304):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return response
+
     if _media_ready:
         app.mount(
             f"/{settings.media_url_prefix.strip('/')}",
-            StaticFiles(directory=str(_media_root)),
+            _ImmutableMedia(directory=str(_media_root)),
             name="media",
         )
 
