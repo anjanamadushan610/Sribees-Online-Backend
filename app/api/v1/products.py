@@ -771,6 +771,9 @@ async def create_product(
 
     try:
         product = await ProductService.create(db, data)
+        # Re-fetch with relationships loaded so format_product is safe (as
+        # admin_catalog does): without it every create answered 500.
+        product = await ProductService.get_by_id(db, product.product_id, include_inactive=True)
         logger.info(f"Product created: {product.product_id} - {product.name}")
 
         return {
@@ -833,6 +836,9 @@ async def update_product(
 
     try:
         updated_product = await ProductService.update(db, product, data)
+        updated_product = await ProductService.get_by_id(
+            db, updated_product.product_id, include_inactive=True
+        )
         logger.info(f"Product updated: {updated_product.product_id}")
 
         return {
