@@ -99,10 +99,13 @@ async def test_a_campaign_reaches_its_audience(api, db, world, make_admin, make_
 
     sent: list[dict] = []
     dead = _token()
+    # Only THIS campaign finds the token dead: another due campaign sent in the
+    # same sweep (some go to everyone) must not retire it first.
+    marker = uuid.uuid4().hex[:6]
 
     async def fake_send(cls, tokens, title, body, data=None, image_url=None):
         sent.append({"tokens": list(tokens), "title": title, "body": body, "data": data, "image": image_url})
-        bad = [t for t in tokens if t == dead]
+        bad = [t for t in tokens if t == dead and marker in body]
         return {"success_count": len(tokens) - len(bad), "failure_count": len(bad), "invalid_tokens": bad}
 
     monkeypatch.setattr(FCMService, "send_to_tokens", classmethod(fake_send))
@@ -119,7 +122,7 @@ async def test_a_campaign_reaches_its_audience(api, db, world, make_admin, make_
     body = {
         "category": "offers",
         "title": {"en": "ZZ Rice week", "si": "ZZ සහල් සතිය"},
-        "message": {"en": "Ten percent off rice", "si": "සහල් 10% අඩුවෙන්"},
+        "message": {"en": f"Ten percent off rice {marker}", "si": f"සහල් 10% අඩුවෙන් {marker}"},
         "image_url": "https://cdn.example.test/rice.jpg",
         "link_type": "offers",
         "branch_id": str(world.branch_id),
@@ -140,10 +143,13 @@ async def test_a_campaign_reaches_its_audience(api, db, world, make_admin, make_
     assert campaign.recipients == 1 and campaign.devices == 2
     assert campaign.delivered == 1 and campaign.failed == 1
 
-    tokens_sent = {t for s in sent for t in s["tokens"]}
+    # Other due campaigns in the database may be sent in the same sweep, some
+    # to everyone; look only at this campaign's sends.
+    ours = [s for s in sent if (s["data"] or {}).get("campaign_id") == str(cid)]
+    tokens_sent = {t for s in ours for t in s["tokens"]}
     assert live in tokens_sent and dead in tokens_sent
-    assert all(s["image"] == "https://cdn.example.test/rice.jpg" for s in sent)
-    assert any("සහල්" in s["body"] for s in sent), "each device hears it in its own language"
+    assert all(s["image"] == "https://cdn.example.test/rice.jpg" for s in ours)
+    assert any("සහල්" in s["body"] for s in ours), "each device hears it in its own language"
 
     inbox = (await db.execute(select(Notification).where(Notification.reference_id == cid))).scalars().all()
     assert [n.user_id for n in inbox] == [customer.user_id]
@@ -180,3 +186,34 @@ async def test_a_scheduled_campaign_can_be_cancelled(api, world, make_admin):
         assert r.status_code == 422, (why, r.text)
     r = await api.post(f"/api/v1/admin/notification-campaigns/{uuid.uuid4()}/cancel", headers=boss.headers)
     assert r.status_code == 404
+
+
+async def test_payment_and_price_drop_notices(db, world, make_customer, monkeypatch, app_engine_reset):
+    """Written in the customer's language; a price drop is an offer they can switch off."""
+    # app_engine_reset: the notices push in the background on the app's own
+    # engine; its connections must not outlive this test's event loop.
+    from app.models.user import User
+    from app.services.fcm_service import FCMService
+    from app.services.notification_service import NotificationService
+
+    async def no_push(cls, *a, **k):
+        return {"success_count": 0, "failure_count": 0, "invalid_tokens": []}
+
+    monkeypatch.setattr(FCMService, "send_to_tokens", classmethod(no_push))
+    c = await make_customer()
+    user = await db.get(User, c.user_id)
+    user.preferred_language = "si"
+    await db.commit()
+
+    paid = await NotificationService.notify_payment_success(db, c.user_id, "ZZ-1001", 2450.0,
+                                                            order_id=uuid.uuid4())
+    assert paid is not None and "ZZ-1001" in paid.message
+    pid = str(uuid.uuid4())
+    drop = await NotificationService.notify_price_drop(db, c.user_id, "ZZ Rice", 500.0, 400.0, pid,
+                                                       image_url="https://cdn.example.test/r.jpg")
+    assert drop is not None and drop.data["drop_percent"] == 20.0
+
+    user.notify_offers = False
+    await db.commit()
+    assert await NotificationService.notify_price_drop(db, c.user_id, "ZZ Rice", 500.0, 400.0, pid) is None, \
+        "a customer who switched offers off is not sent one"

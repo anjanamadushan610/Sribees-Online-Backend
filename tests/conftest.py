@@ -99,8 +99,19 @@ async def app_engine_reset():
     runs each test on its own event loop, so without this the next test reuses
     connections bound to a loop that has since closed, and asyncpg fails in
     teardown with "Event loop is closed". Cheap: one reconnect per test.
+
+    Background work the requests started (pushes, "send now" campaigns) is
+    awaited first: left running, it outlives the test's event loop and fails
+    the NEXT test's first database call instead.
     """
     yield
+    import asyncio
+
+    from app.services.notification_service import _background
+
+    pending = [t for t in list(_background) if not t.done()]
+    if pending:
+        await asyncio.wait(pending, timeout=30)
     from app.config.database import engine
 
     await engine.dispose()
