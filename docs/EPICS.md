@@ -68,9 +68,9 @@
 - **US-2.7**: As a customer, I want to see product availability and stock status
 
 ### Acceptance Criteria
-- ✅ AI-powered semantic search with Gemini embeddings
+- ✅ Keyword search with typo matching (`GET /products/search`); the Gemini semantic
+  search was built, never used by the app, and removed on 2026-09-26
 - ✅ Multilingual support (English, Sinhala, Tamil, Singlish)
-- ✅ Fast autocomplete with popular search suggestions
 - ✅ Multi-level category navigation
 - ✅ High-quality product images with zoom
 - ✅ Real-time stock updates

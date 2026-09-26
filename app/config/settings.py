@@ -430,15 +430,11 @@ class Settings(BaseSettings):
     log_retention: str = Field(default="7 days", description="Log retention period")
 
     # =========================================================================
-    # Gemini AI / Semantic Search Settings
+    # Gemini AI Settings
     # =========================================================================
     gemini_api_key: Optional[str] = Field(
         default=None,
-        description="Google Gemini API key for embeddings"
-    )
-    gemini_embedding_model: str = Field(
-        default="text-embedding-004",
-        description="Gemini embedding model name"
+        description="Google Gemini API key (assistant, briefings, keyword suggestions)"
     )
     gemini_generation_model: str = Field(
         default="gemini-flash-latest",
@@ -457,10 +453,6 @@ class Settings(BaseSettings):
             "are served from a 30-day cache and do not count. 0 turns the "
             "feature off. The hard ceiling on what this feature can cost."
         ),
-    )
-    gemini_embedding_dimension: int = Field(
-        default=768,
-        description="Embedding vector dimension"
     )
     gemini_chat_thinking_budget: int = Field(
         default=0,
@@ -483,24 +475,6 @@ class Settings(BaseSettings):
             "product follow-ups already carry their own search_context, so "
             "this is deliberately short."
         ),
-    )
-
-    # Semantic Search Configuration
-    semantic_search_similarity_threshold: float = Field(
-        default=0.35,
-        description="Default minimum similarity threshold (0.0-1.0)"
-    )
-    semantic_search_max_results: int = Field(
-        default=100,
-        description="Maximum search results per query"
-    )
-    semantic_search_cache_ttl: int = Field(
-        default=3600,
-        description="Search results cache TTL in seconds (1 hour)"
-    )
-    embedding_cache_ttl: int = Field(
-        default=86400,
-        description="Embedding cache TTL in seconds (24 hours)"
     )
 
     # Circuit Breaker for AI Services

@@ -12,7 +12,6 @@ pydantic-settings==2.15.0
 # Database
 sqlalchemy[asyncio]==2.0.25
 asyncpg==0.29.0
-pgvector==0.2.5
 
 # Redis
 redis[hiredis]==5.0.1

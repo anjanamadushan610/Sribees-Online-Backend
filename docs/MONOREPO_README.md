@@ -15,13 +15,13 @@ inventory, orders, analytics, marketing — is branch-aware.
 
 ### Key features (what's actually built, not what's planned)
 
-- 🔐 **JWT auth** for both customers (email/password, Google/Facebook OAuth, phone OTP)
+- 🔐 **JWT auth** for both customers (phone OTP, Google, Apple — no passwords)
   and a separate admin realm (5 RBAC roles — see below)
 - 🌍 **Global-to-local catalog** — one product record, per-branch price/discount/
   cashback/stock overrides (`branch_inventory`)
-- 🔍 **AI-powered multilingual search** — Gemini embeddings + pgvector semantic search,
-  with fuzzy/typo-tolerant fallback across English, Sinhala, Tamil, Singlish and
-  Tamilish, plus an AI keyword-suggestion tool
+- 🔍 **Multilingual search** — a keyword index with fuzzy/typo-tolerant matching
+  across English, Sinhala, Tamil, Singlish and Tamilish, plus an AI
+  keyword-suggestion tool for admins
 - 💬 **AI shopping assistant** — a Gemini-backed chat that answers over the real
   catalog and can add matched products straight to the cart
 - 🛍️ **Cart, wishlist, coupons, Quick Sale** (branch-scoped flash-discount campaigns),
@@ -112,8 +112,8 @@ SRIBEESonline/                     ← workspace root (local-only git history, n
 
 - **Backend**: Python FastAPI (async), one process serving the customer API and the
   admin API (`/api/v1/admin/*`) side by side — not separate services.
-- **Database**: PostgreSQL 15+ with the `pgvector` extension (semantic search
-  embeddings), accessed via SQLAlchemy 2.0's async ORM + `asyncpg`. Schema lives in the
+- **Database**: PostgreSQL 15+ (the `pgvector` image, though nothing queries vectors
+  since the semantic search was removed), accessed via SQLAlchemy 2.0's async ORM + `asyncpg`. Schema lives in the
   default `public` schema — **not** a custom `sribees` schema (an early prototype
   briefly did this via `docker/postgres/init.sql`; that file corrupted a fresh local
   database and was trimmed down to just extension setup).
@@ -176,10 +176,10 @@ partners, customers) are in [`admin/ADMIN_CREDENTIALS.md`](../../admin/ADMIN_CRE
   `requirements.txt` but not actually wired up — there's no `alembic/versions/`
   directory, no revision history.**
 - **Validation**: Pydantic v2
-- **Auth**: python-jose (JWT) + passlib[argon2]; separate token realms for customers
+- **Auth**: PyJWT + passlib[argon2]; separate token realms for customers
   (`users`) and admins (`admins`)
-- **AI**: `google-genai` (Gemini) — embeddings for semantic search, generation for the
-  shopping chat assistant
+- **AI**: Gemini over its REST API (httpx) — the shopping chat assistant, branch
+  briefings and admin keyword suggestions
 
 ### Admin dashboard & partner portal (same stack)
 - React 19, Vite 7, Ant Design 6, TanStack Query 5, Zustand, Recharts

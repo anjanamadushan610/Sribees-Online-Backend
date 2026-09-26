@@ -416,15 +416,16 @@ products: {
 - Search history dropdown
 - Language indicator (detected query language)
 
-**API Endpoints**:
+**API Endpoints** (as built, 2026-09-26):
 ```
-POST /api/v1/search                    # Semantic search
-GET  /api/v1/search/suggestions?q=org  # Autocomplete
-GET  /api/v1/search/popular            # Trending searches
-GET  /api/v1/search/health             # Service health
-GET  /api/v1/search/history            # User search history
-DELETE /api/v1/search/history          # Clear history
+GET /api/v1/products/search?q=...      # The app's search: keyword index + typo matching
 ```
+
+> The Gemini/pgvector semantic search (`POST /api/v1/search` and its
+> `/suggestions`, `/popular` and `/health` routes) was never called by the app
+> or the admin panel, and the SQL functions it needed never reached
+> production. It was removed on 2026-09-26. The design below is kept as the
+> original plan only.
 
 **Search Request Schema**:
 ```json

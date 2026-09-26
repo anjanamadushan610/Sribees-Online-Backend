@@ -51,7 +51,6 @@ from app.api.v1 import (
     products,
     referrals,
     reviews,
-    search,
     session,
     support,
     user_addresses,
@@ -86,12 +85,6 @@ router.include_router(
     reviews.router,
     prefix="/products",
     tags=["Reviews"],
-)
-
-router.include_router(
-    search.router,
-    prefix="/search",
-    tags=["Search"],
 )
 
 router.include_router(

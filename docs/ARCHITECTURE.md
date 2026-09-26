@@ -410,10 +410,6 @@ Redis serves as the **primary cache layer** and **session store** with a circuit
 | **Wishlist** | `watchlist:{userId}` | 7 days | SET of `{productId}:{variantId}` |
 | **Product Cache** | `product:{productId}` | 1 hour | Cached product data |
 | **Inventory** | `inventory:branch:{branchId}:product:{productId}` | 5 min | Branch stock cache |
-| **Search Embedding** | `search:embedding:{hash}` | 24 hours | Cached Gemini query embeddings |
-| **Search Results** | `search:results:{hash}` | 1 hour | Cached semantic search results |
-| **Popular Searches** | `search:popular` | - | Sorted set of trending queries |
-| **Search Suggestions** | `search:suggestions:{prefix}` | 15 min | Autocomplete cache |
 | **Branch Context** | `session:{userId}:branch_context` | 30 days | Active branch for customer session |
 
 ### Session Management
