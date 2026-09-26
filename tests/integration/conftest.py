@@ -347,10 +347,13 @@ def place_order(api, app_redis, world, fake_courier):
     from app.config.redis import RedisKeys
 
     async def _place(customer: Customer, product_id, qty: int = 1, **extra) -> dict:
+        from app.services.branch_service import _build_branch_context
+
+        # The exact shape the server stores when a customer picks a location.
         await app_redis.setex(
             RedisKeys.branch_context(str(customer.user_id)),
             600,
-            json.dumps({"branch_id": str(world.branch_id), "branch_name": "ZZ"}),
+            json.dumps(_build_branch_context(world.branch_id, "ZZ", world.postal_city)),
         )
         r = await api.post(
             "/api/v1/cart/items",

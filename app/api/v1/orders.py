@@ -673,7 +673,8 @@ async def quote_order(
 async def get_my_orders(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    status: Optional[str] = None,
+    # Named apart from fastapi.status, which the error path below needs.
+    status_filter: Optional[str] = Query(None, alias="status"),
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
@@ -687,7 +688,7 @@ async def get_my_orders(
             user_id=current_user.user_id,
             limit=limit,
             offset=offset,
-            status=status
+            status=status_filter
         )
 
         return {
@@ -1185,7 +1186,7 @@ async def reorder(
 async def get_all_orders(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    status: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
     payment_status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user = Depends(require_super_admin)
@@ -1199,7 +1200,7 @@ async def get_all_orders(
             db,
             limit=limit,
             offset=offset,
-            status=status,
+            status=status_filter,
             payment_status=payment_status
         )
 

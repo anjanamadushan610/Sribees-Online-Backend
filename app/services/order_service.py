@@ -1291,7 +1291,10 @@ class OrderService:
         """Get all orders (admin)."""
         query = select(Order).options(
             selectinload(Order.items),
-            selectinload(Order.user)
+            selectinload(Order.user),
+            # format_order reads these two, as it does for get_by_id.
+            selectinload(Order.delivery_address),
+            selectinload(Order.status_history),
         )
 
         if status:
