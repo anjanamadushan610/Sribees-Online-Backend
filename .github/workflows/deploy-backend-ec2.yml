@@ -22,11 +22,6 @@ on:
   # only way to re-run a deploy is to invent a commit.
   workflow_dispatch:
 
-env:
-  # ghcr.io path is derived from the repo itself: ghcr.io/<owner>/<repo>.
-  # GHCR rejects uppercase, so the owner/repo must stay lowercase.
-  DOCKER_IMAGE: ghcr.io/${{ github.repository }}
-
 jobs:
   # The whole CI gate (deploy.yml), as a prerequisite. Nothing is built, pushed
   # or deployed unless lint, the security scans, every test suite and the
@@ -49,10 +44,17 @@ jobs:
 
     outputs:
       compose_b64: ${{ steps.encode.outputs.compose_b64 }}
+      image: ${{ steps.image.outputs.image }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      # ghcr.io/<owner>/<repo>, lower-cased: registries reject uppercase, and
+      # the repository name (Sribees-Online-Backend) has capitals.
+      - name: Image name
+        id: image
+        run: echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -72,8 +74,8 @@ jobs:
           target: production
           push: true
           tags: |
-            ${{ env.DOCKER_IMAGE }}:latest
-            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+            ${{ steps.image.outputs.image }}:latest
+            ${{ steps.image.outputs.image }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -103,7 +105,7 @@ jobs:
           # EC2 host only holds a valid credential for the length of the deploy.
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DOCKER_IMAGE: ghcr.io/${{ github.repository }}
+          DOCKER_IMAGE: ${{ needs.build-and-push.outputs.image }}
           # Layered on top of ENV_CONTENT (see step 4b below) instead of living
           # inside that single consolidated blob -- lets the Marx production
           # key be rotated/set on its own, without anyone needing to view or
