@@ -89,6 +89,10 @@ E2E per `playwright.config.ts`. Mobile: `flutter analyze --no-fatal-infos && flu
 - **Coverage floor**: `COVERAGE_FLOOR` in `deploy.yml` (backend) and
   `thresholds` in `admin/vitest.config.ts`. They are ratchets: raise them as
   coverage rises, and never lower them to get a build out.
+  The backend floor is 80% (82.5% measured on 2026-09-26). Coverage traces
+  greenlets (`[tool.coverage.run]` in `pyproject.toml`): SQLAlchemy's async
+  session runs queries in one, and without it every line after a handler's
+  first query counted as never run -- the old 62-66% figures were that.
 - **Dependency CVEs**: `pip-audit` ignores exactly the IDs in
   `.github/pip-audit-baseline.txt` (empty), so any advisory on what ships
   fails CI.
