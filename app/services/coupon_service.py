@@ -21,7 +21,19 @@ class CouponValidationError(ValueError):
 
     Subclasses ``ValueError`` so existing endpoint handlers map it to a
     400 with the (user-friendly) message.
+
+    ``code`` names the rule that failed and ``params`` carries its figures, so
+    the refusal can be said in the customer's language (the presenter that
+    does so is not written yet; tests/test_coupon_error_codes.py pins the
+    codes). The English
+    message stays exactly as it was: app builds already in the Play Store
+    show it verbatim.
     """
+
+    def __init__(self, message: str, code: str = "invalid", **params) -> None:
+        super().__init__(message)
+        self.code = code
+        self.params = params
 
 
 # Orders in these states never actually cost the branch money, so they release
@@ -274,22 +286,24 @@ class CouponService:
         # Distinct from "usage limit" for the same reason: the offer is over,
         # the customer did not do anything wrong.
         if coupon.is_budget_depleted:
-            raise CouponValidationError("This promotion has ended.")
+            raise CouponValidationError("This promotion has ended.", "budget_ended")
 
         if not coupon.is_active:
-            raise CouponValidationError("This coupon is no longer active.")
+            raise CouponValidationError("This coupon is no longer active.", "inactive")
 
         coupon_branch = getattr(coupon, "branch_id", None)
         if coupon_branch is not None and branch_id is not None and coupon_branch != branch_id:
             raise CouponValidationError(
-                "This coupon is not valid for your delivery branch."
+                "This coupon is not valid for your delivery branch.", "wrong_branch"
             )
 
         if coupon.valid_from and now < _as_aware_utc(coupon.valid_from):
-            raise CouponValidationError("This coupon is not valid yet.")
+            raise CouponValidationError(
+                "This coupon is not valid yet.", "not_started", starts_at=coupon.valid_from
+            )
 
         if coupon.valid_until and now > _as_aware_utc(coupon.valid_until):
-            raise CouponValidationError("This coupon has expired.")
+            raise CouponValidationError("This coupon has expired.", "expired")
 
         # A targeted coupon belongs to one named customer. Checked before the
         # generic rules so the wrong person is told it isn't theirs rather than
@@ -297,14 +311,16 @@ class CouponService:
         if coupon.target_user_id is not None:
             if user_id is None or coupon.target_user_id != user_id:
                 raise CouponValidationError(
-                    "This coupon was issued to a specific customer."
+                    "This coupon was issued to a specific customer.", "not_yours"
                 )
 
         if (
             coupon.usage_limit is not None
             and (coupon.used_count or 0) >= coupon.usage_limit
         ):
-            raise CouponValidationError("This coupon has reached its usage limit.")
+            raise CouponValidationError(
+                "This coupon has reached its usage limit.", "usage_limit"
+            )
 
         if (
             coupon.per_user_limit is not None
@@ -312,19 +328,21 @@ class CouponService:
             and user_redemptions >= coupon.per_user_limit
         ):
             raise CouponValidationError(
-                "You have already used this coupon the maximum number of times."
+                "You have already used this coupon the maximum number of times.",
+                "per_user_limit",
+                limit=coupon.per_user_limit,
             )
 
         if coupon.first_order_only and user_has_completed_order:
             raise CouponValidationError(
-                "This coupon is only valid on a customer's first order."
+                "This coupon is only valid on a customer's first order.", "first_order"
             )
 
         # A 'specific' coupon is for the customers on its list. Fails closed
         # like the level check below: no customer, no match, no coupon.
         if not CouponService.whitelist_allows(coupon, user_id, user_phone):
             raise CouponValidationError(
-                "This coupon is only for selected customers."
+                "This coupon is only for selected customers.", "not_whitelisted"
             )
 
         if getattr(coupon, "min_tier_id", None) is not None:
@@ -332,7 +350,7 @@ class CouponService:
             if tier is None or user_points is None or user_points < tier.min_points:
                 level = tier.name if tier is not None else "a higher level"
                 raise CouponValidationError(
-                    f"This coupon is for {level} members and above."
+                    f"This coupon is for {level} members and above.", "tier", tier=tier
                 )
 
 
@@ -342,7 +360,10 @@ class CouponService:
         min_order = Decimal(str(coupon.min_order_value or 0))
         if min_order > 0 and subtotal < min_order:
             raise CouponValidationError(
-                f"This coupon requires a minimum order of Rs {min_order:.2f}."
+                f"This coupon requires a minimum order of Rs {min_order:.2f}.",
+                "min_order",
+                min_order=min_order,
+                short_by=min_order - subtotal,
             )
 
     @staticmethod
