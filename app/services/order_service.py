@@ -597,21 +597,24 @@ class OrderService:
                 inv = res.scalars().first()
                 if inv is not None:
                     if inv.stock_quantity < item["quantity"]:
+                        # Read before the rollback: it expires inv, and touching
+                        # it afterwards is a lazy load that 500s the checkout.
+                        left = inv.stock_quantity
                         await db.rollback()
                         item_name = item.get("name") or item.get("product_name", "Product")
                         if not data.is_buy_now:
-                            if inv.stock_quantity > 0:
+                            if left > 0:
                                 try:
                                     await CartService.update_item_quantity(
                                         user_id=str(user_id),
                                         product_id=str(p_id),
-                                        quantity=inv.stock_quantity,
+                                        quantity=left,
                                         variant_id=item.get("variant_id")
                                     )
                                 except Exception:
                                     pass
                                 raise ValueError(
-                                    f"Stock changed for {item_name}. Only {inv.stock_quantity} available. Your cart has been updated."
+                                    f"Stock changed for {item_name}. Only {left} available. Your cart has been updated."
                                 )
                             else:
                                 try:
@@ -627,7 +630,7 @@ class OrderService:
                                 )
                         else:
                             raise ValueError(
-                                f"Only {inv.stock_quantity} available for {item_name}."
+                                f"Only {left} available for {item_name}."
                             )
                     inv.stock_quantity = max(0, inv.stock_quantity - item["quantity"])
 
