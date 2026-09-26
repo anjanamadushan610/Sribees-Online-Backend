@@ -387,24 +387,6 @@ class CategoryService:
         return (result.scalar() or 0) > 0
 
     @staticmethod
-    async def get_children(
-        db: AsyncSession,
-        parent_id: UUID,
-        include_inactive: bool = False,
-    ) -> List[Category]:
-        """Get the sub-categories of *parent_id* (one level down)."""
-        query = (
-            select(Category)
-            .where(Category.parent_category_id == parent_id)
-            .order_by(Category.name)
-        )
-        if not include_inactive:
-            query = query.where(Category.is_active.is_(True))
-
-        result = await db.execute(query)
-        return list(result.scalars().all())
-
-    @staticmethod
     async def get_branch_ids(db: AsyncSession, category_id: UUID) -> List[UUID]:
         """
         Return *category_id* plus the ids of its sub-categories.

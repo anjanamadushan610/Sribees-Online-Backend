@@ -159,22 +159,6 @@ class PaymentService:
             "event_id": event["id"],
         }
 
-    @staticmethod
-    async def create_customer(
-        email: str,
-        name: Optional[str] = None,
-        phone: Optional[str] = None
-    ) -> str:
-        """
-        Create a Stripe customer.
-        """
-        import uuid
-
-        customer_id = f"cus_{uuid.uuid4().hex[:24]}"
-        logger.info(f"Created Stripe customer: {customer_id}")
-
-        return customer_id
-
     # ========================================================================
     # Saved Cards Methods
     # ========================================================================

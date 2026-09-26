@@ -233,42 +233,6 @@ class ProductService:
         return await ProductService.get_by_slug(db, identifier, include_inactive)
 
     @staticmethod
-    async def get_featured(
-        db: AsyncSession,
-        limit: int = 10
-    ) -> List[Product]:
-        """Get featured products."""
-        query = (
-            select(Product)
-            .options(
-                selectinload(Product.category),
-                selectinload(Product.subcategory),
-                selectinload(Product.images)
-            )
-            .where(and_(Product.is_active == True, Product.is_featured == True))
-            .order_by(Product.created_at.desc())
-            .limit(limit)
-        )
-
-        result = await db.execute(query)
-        return result.scalars().all()
-
-    @staticmethod
-    async def get_by_category(
-        db: AsyncSession,
-        category_id: UUID,
-        limit: int = 20,
-        offset: int = 0
-    ) -> Tuple[List[Product], int]:
-        """Get products by category."""
-        return await ProductService.get_all(
-            db,
-            limit=limit,
-            offset=offset,
-            category_id=category_id
-        )
-
-    @staticmethod
     async def search(
         db: AsyncSession,
         query_string: str,
@@ -968,29 +932,6 @@ class ProductService:
         }
 
     @staticmethod
-    async def get_effective_product_data(
-        db: AsyncSession,
-        product_id: UUID,
-        branch_id: UUID,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Full effective-data lookup for a single product in a branch.
-
-        Returns None if the product doesn't exist or is hidden for the branch.
-        """
-        product = await ProductService.get_by_id(db, product_id)
-        if product is None:
-            return None
-
-        inv = await ProductService.get_branch_inventory(db, product_id, branch_id)
-
-        # If a BranchInventory row exists and is_active=False, product is hidden
-        if inv is not None and not inv.is_active:
-            return None
-
-        return ProductService.compute_effective_data(product, inv)
-
-    @staticmethod
     async def get_cashback_map(
         db: AsyncSession,
         product_ids: List[UUID],
@@ -1454,43 +1395,3 @@ class ProductService:
         query = query.order_by(Product.name).limit(limit).offset(offset)
         products = (await db.execute(query)).scalars().all()
         return list(products), total
-
-    @staticmethod
-    async def update_product_discount(
-        db: AsyncSession,
-        product_id: UUID,
-        discount_percentage: Optional[float],
-        is_on_sale: Optional[bool],
-    ) -> Product:
-        """
-        Update global-level discount on a Product (Super Admin use).
-
-        Auto-computes ``discount_price`` from the base price.
-        """
-        product = await ProductService.get_by_id(db, product_id, include_inactive=True)
-        if product is None:
-            from app.core.exceptions import ProductNotFoundError
-            raise ProductNotFoundError(str(product_id))
-
-        if discount_percentage is not None:
-            product.discount_percentage = discount_percentage
-
-            if discount_percentage > 0 and product.price:
-                factor = Decimal(str(1 - discount_percentage / 100))
-                product.discount_price = (
-                    product.price * factor
-                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            else:
-                product.discount_price = None
-
-        if is_on_sale is not None:
-            product.is_on_sale = is_on_sale
-
-        await db.commit()
-        await db.refresh(product)
-
-        logger.info(
-            f"Global discount updated for product {product_id}: "
-            f"{discount_percentage}% | on_sale={product.is_on_sale}"
-        )
-        return product
