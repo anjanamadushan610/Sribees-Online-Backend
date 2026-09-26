@@ -66,6 +66,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/api/v1/products/{product_id}/reviews"),
     ("GET", "/api/v1/coupons/available"),
     ("GET", "/api/v1/coupons/collected"),
+    # The offers a guest may browse, as /coupons/available shows them. Pricing
+    # an order (`items` / `use_cart`) is a 401 without a login.
+    ("POST", "/api/v1/coupons/evaluate"),
     ("GET", "/api/v1/banners"),
     ("POST", "/api/v1/banners/events"),
     ("POST", "/api/v1/branch/resolve-by-location"),

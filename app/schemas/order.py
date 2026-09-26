@@ -404,6 +404,11 @@ class OrderQuoteBreakdown(BaseModel):
     wallet_balance: float
     wallet_applied: bool
     item_count: int
+    # The coupon on this order and what it did: `applied` false with a
+    # `reason` (in the customer's language) when checkout would not take it,
+    # so the app never shows "Coupon applied" over a zero discount. Null when
+    # no coupon was asked for.
+    coupon: Optional[dict] = None
 
 
 class OrderQuoteResponse(BaseModel):

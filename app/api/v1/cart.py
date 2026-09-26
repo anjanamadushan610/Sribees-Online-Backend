@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -27,13 +27,14 @@ from app.schemas.cart import (
     ApplyCouponRequest,
     UpdateCartItemRequest,
 )
-from app.services import delivery_quote_service
+from app.services import coupon_presenter, delivery_quote_service
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.coupon_service import CouponService, CouponValidationError
 from app.services.loyalty_service import LoyaltyService
 from app.services.order_service import OrderService
 from app.services.pricing_service import PricingService
+from app.utils.i18n import resolve_language
 
 # Prefix "/cart" is applied by app/api/v1/router.py — do not repeat it here.
 router = APIRouter(tags=["Cart"])
@@ -453,6 +454,7 @@ async def clear_cart(
 @router.post("/coupon", response_model=dict)
 async def apply_coupon(
     data: ApplyCouponRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
     current_user = Depends(get_current_user)
@@ -465,19 +467,23 @@ async def apply_coupon(
     database, never from the request. All validation failures return a 400 with
     a user-friendly message.
     """
+    # Every refusal in the customer's language -- builds already in the
+    # store show `detail` as it comes, so they get the translation too.
+    lang = resolve_language(request.headers.get("accept-language"))
+    coupon = None
     try:
         cart = await CartService.get_cart(str(current_user.user_id))
         if not cart.get("items"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Your cart is empty.",
+                detail=coupon_presenter.text(lang, "reason.cart_empty"),
             )
 
         coupon = await CouponService.get_by_code(db, data.code)
         if coupon is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid coupon code.",
+                detail=coupon_presenter.text(lang, "reason.not_found"),
             )
 
         # Everything here is best-effort and exists so the shopper learns the
@@ -553,7 +559,14 @@ async def apply_coupon(
             "message": "Coupon applied successfully",
         }
     except CouponValidationError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=coupon_presenter.reason(
+                e,
+                lang,
+                restricted=coupon is not None and coupon_presenter.is_restricted(coupon),
+            ),
+        )
     except HTTPException:
         raise
     except Exception as e:

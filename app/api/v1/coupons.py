@@ -2,11 +2,12 @@
 Shopper-facing Coupons API Endpoints
 """
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from loguru import logger
+from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,8 +16,10 @@ from app.config.database import get_db
 from app.config.redis import get_redis_client, get_redis_optional
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.models.coupon import Coupon
+from app.services import coupon_presenter
 from app.services.coupon_service import CouponService
 from app.services.loyalty_service import LoyaltyService
+from app.utils.i18n import localized, resolve_language
 
 router = APIRouter(tags=["Coupons"])
 
@@ -379,3 +382,255 @@ async def collect_coupon(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to collect coupon",
         )
+
+
+
+# ---------------------------------------------------------------------------
+# POST /coupons/evaluate -- every coupon, decided and worded by the server
+# ---------------------------------------------------------------------------
+
+
+class EvaluateItem(BaseModel):
+    product_id: str
+    variant_id: Optional[str] = None
+    quantity: int = Field(1, ge=1, le=999)
+
+
+class EvaluateCouponsRequest(BaseModel):
+    """
+    What the customer is choosing a coupon for.
+
+    - ``items`` -- the lines of this order (the ticked cart lines, or the one
+      Buy Now line). Only product, variant and quantity are read: prices come
+      from the catalogue, exactly as checkout prices them.
+    - ``use_cart`` -- evaluate against the whole server-side cart instead.
+    - neither -- browsing the Offers page with no order in mind.
+    - ``items: []`` -- an order with nothing ticked yet; the cards are shown
+      as for browsing, with a notice asking for a selection.
+
+    ``applied_code`` is the coupon already on this order, reported back in
+    ``applied`` with its real discount (or the reason it no longer applies).
+    ``include_offers: false`` skips the list and answers only that -- what the
+    cart needs to show its coupon line.
+    """
+
+    items: Optional[List[EvaluateItem]] = Field(None, max_length=200)
+    use_cart: bool = False
+    applied_code: Optional[str] = Field(None, max_length=50)
+    include_offers: bool = True
+
+
+async def _branch_id_for(redis: Optional[Redis], current_user) -> Optional[UUID]:
+    if redis is None or current_user is None:
+        return None
+    try:
+        from app.services import branch_service
+
+        context = await branch_service.get_branch_context(redis, str(current_user.user_id))
+        if context and context.get("branch_id"):
+            return UUID(context["branch_id"])
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not resolve branch context for coupon evaluation: {exc}")
+    return None
+
+
+async def _category_names(db: AsyncSession, coupons: list, lang: str) -> dict[str, str]:
+    from app.models.category import Category
+
+    ids = {c.category_id for coupon in coupons for c in (coupon.eligible_categories or [])}
+    if not ids:
+        return {}
+    rows = (await db.execute(select(Category).where(Category.category_id.in_(ids)))).scalars()
+    return {str(row.category_id): localized(row, "name", lang) or row.name for row in rows}
+
+
+def _in_window(coupon: Coupon, now: datetime) -> bool:
+    until, since = _as_utc(coupon.valid_until), _as_utc(coupon.valid_from)
+    return (until is None or now <= until) and (since is None or now >= since)
+
+
+@router.post("/evaluate", response_model=dict)
+async def evaluate_coupons(
+    payload: EvaluateCouponsRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
+    current_user=Depends(get_current_user_optional),
+):
+    """
+    Every coupon this customer can see, ready to draw, and the one on their
+    order with its real discount.
+
+    The app renders this and decides nothing: which section a card sits in,
+    what its button does, what its fine print says and why it is locked all
+    come from here, in the ``Accept-Language`` language, from the same rules
+    checkout runs. A new kind of coupon, a new restriction, or a reworded
+    reason is a backend change only.
+    """
+    lang = resolve_language(request.headers.get("accept-language"))
+    now = datetime.now(timezone.utc)
+
+    if (payload.items is not None or payload.use_cart) and current_user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sign in to use coupons.")
+
+    branch_id = await _branch_id_for(redis, current_user)
+
+    # ---- the basket, priced the way checkout prices it -------------------
+    raw_items: Optional[list[dict]] = None
+    if payload.use_cart and current_user is not None:
+        from app.services.cart_service import CartService
+
+        cart = await CartService.get_cart(str(current_user.user_id))
+        raw_items = list(cart.get("items") or [])
+    elif payload.items is not None:
+        raw_items = [i.model_dump(exclude_none=True) for i in payload.items]
+
+    basket = bool(raw_items)
+    priced: Optional[list[dict]] = None
+    if raw_items:
+        from app.services.order_service import OrderService
+
+        lines = await OrderService._attach_server_prices(db, raw_items, branch_id, strict=False)
+        priced = await CouponService.enrich_items(db, lines, branch_id)
+
+    # ---- which coupons ---------------------------------------------------
+    user_id = str(current_user.user_id) if current_user else None
+    collected_codes = await _get_collected_codes(user_id)
+    where_here = await _redeemable_here(redis, current_user)
+
+    public: list = []
+    wallet: list = []
+    if payload.include_offers:
+        rows = await db.execute(
+            select(Coupon).where(
+                Coupon.is_active.is_(True),
+                Coupon.is_public.is_(True),
+                Coupon.target_user_id.is_(None),
+                where_here,
+            )
+        )
+        public = [c for c in rows.scalars().all() if _in_window(c, now)]
+        if current_user is not None:
+            rows = await db.execute(
+                select(Coupon).where(
+                    Coupon.is_active.is_(True),
+                    where_here,
+                    or_(
+                        func.upper(Coupon.code).in_(sorted(collected_codes) or [""]),
+                        Coupon.target_user_id == current_user.user_id,
+                    ),
+                )
+            )
+            wallet = list(rows.scalars().all())
+
+    by_code: dict[str, Coupon] = {}
+    for c in [*public, *wallet]:
+        by_code.setdefault(c.code.upper(), c)
+
+    applied_code = (payload.applied_code or "").strip().upper() or None
+    applied_row = None
+    if applied_code:
+        applied_row = by_code.get(applied_code) or await CouponService.get_by_code(db, applied_code)
+
+    points = await LoyaltyService.get_points(db, current_user.user_id) if current_user else None
+    candidates = [
+        c
+        for c in by_code.values()
+        if _level_allows(c, points) and _audience_allows(c, current_user)
+    ]
+    if applied_row is not None and all(c.coupon_id != applied_row.coupon_id for c in candidates):
+        candidates.append(applied_row)
+
+    wallet_codes = {c.code.upper() for c in wallet} | {code.upper() for code in collected_codes}
+    names = await _category_names(db, candidates, lang)
+
+    completed_cache: dict[Optional[UUID], bool] = {}
+
+    async def _facts(coupon: Coupon) -> dict:
+        if current_user is None:
+            return {}
+        had_completed = None
+        if coupon.first_order_only:
+            key = coupon.branch_id
+            if key not in completed_cache:
+                completed_cache[key] = await CouponService.has_completed_order(
+                    db, current_user.user_id, key
+                )
+            had_completed = completed_cache[key]
+        return {
+            "user_id": current_user.user_id,
+            "user_phone": getattr(current_user, "phone", None),
+            "user_points": points,
+            "user_redemptions": await CouponService.redemptions_by_user(
+                db, coupon.code, current_user.user_id
+            ),
+            "user_has_completed_order": had_completed,
+        }
+
+    cards: list[dict] = []
+    applied_block = None
+    for coupon in candidates:
+        evaluation = coupon_presenter.evaluate(
+            coupon,
+            priced if basket else None,
+            now=now,
+            branch_id=branch_id,
+            **(await _facts(coupon)),
+        )
+        is_applied = applied_row is not None and coupon.coupon_id == applied_row.coupon_id
+        card = coupon_presenter.present(
+            coupon,
+            lang,
+            evaluation=evaluation,
+            collected=coupon.code.upper() in wallet_codes,
+            applied=is_applied,
+            basket=basket,
+            category_names=names,
+        )
+        if is_applied:
+            applied_block = {
+                "code": coupon.code,
+                "label": card["label"],
+                "eligible": evaluation.eligible,
+                "discount": card["estimated_discount"],
+                "saving": card["saving"],
+                "reason": card["reason"],
+            }
+        if payload.include_offers:
+            cards.append(card)
+
+    if applied_code and applied_row is None:
+        applied_block = {
+            "code": applied_code,
+            "label": None,
+            "eligible": False,
+            "discount": 0.0,
+            "saving": None,
+            "reason": coupon_presenter.text(lang, "reason.not_found"),
+        }
+
+    # Best first: the applied coupon, then the biggest saving, then whatever
+    # ends soonest.
+    cards.sort(
+        key=lambda c: (
+            coupon_presenter.SECTION_ORDER.index(c["section"]),
+            not c["applied"],
+            -c["estimated_discount"],
+            c["valid_until"] or "9999",
+        )
+    )
+
+    return {
+        "success": True,
+        "data": {
+            "basket": basket,
+            "notice": (
+                coupon_presenter.text(lang, "notice.select_items")
+                if raw_items is not None and not basket
+                else None
+            ),
+            "sections": coupon_presenter.sections(cards, lang),
+            "coupons": cards,
+            "applied": applied_block,
+        },
+    }

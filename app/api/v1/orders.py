@@ -477,12 +477,17 @@ def format_order_summary(order) -> dict:
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_order(
     data: CreateOrderRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     """
     Create a new order from cart.
     """
+    from app.services import coupon_presenter
+    from app.services.coupon_service import CouponValidationError
+    from app.utils.i18n import resolve_language
+
     try:
         order, payment_redirect_url = await OrderService.create_from_cart(
             db,
@@ -503,6 +508,14 @@ async def create_order(
             "data": format_order(order, payment_redirect_url=payment_redirect_url),
             "message": message
         }
+    except CouponValidationError as e:
+        # A coupon refusal in the customer's language, like every other.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=coupon_presenter.reason(
+                e, resolve_language(request.headers.get("accept-language"))
+            ),
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -519,6 +532,7 @@ async def create_order(
 @router.post("/quote", response_model=OrderQuoteResponse)
 async def quote_order(
     data: QuoteOrderRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
     current_user = Depends(get_current_user)
@@ -544,8 +558,14 @@ async def quote_order(
             if (data.items is not None and len(data.items) > 0)
             else cart.get("items", [])
         )
-        from app.services.coupon_service import CouponService
+        from app.services import coupon_presenter
+        from app.services.coupon_service import CouponService, CouponValidationError
+        from app.utils.i18n import resolve_language
+
+        lang = resolve_language(request.headers.get("accept-language"))
         quote_coupon = None
+        coupon_refusal: Optional[str] = None
+        coupon_row = None
         coupon_code_to_check = (
             data.coupon_code.strip() if data.coupon_code else None
         )
@@ -564,6 +584,8 @@ async def quote_order(
                     "min_order_value": float(coupon_row.min_order_value or 0),
                     "max_discount_amount": float(coupon_row.max_discount_amount) if coupon_row.max_discount_amount is not None else None,
                 }
+            else:
+                coupon_refusal = coupon_presenter.text(lang, "reason.not_found")
 
         # The delivery quote and the fulfilling branch are resolved the SAME
         # way create_from_cart resolves them: from the chosen delivery
@@ -624,6 +646,11 @@ async def quote_order(
                     user_points=await LoyaltyService.get_points(db, current_user.user_id),
                     user_phone=current_user.phone,
                 )
+            except CouponValidationError as exc:
+                quote_coupon = None
+                coupon_refusal = coupon_presenter.reason(
+                    exc, lang, restricted=coupon_presenter.is_restricted(coupon_row)
+                )
             except Exception:
                 quote_coupon = None
 
@@ -657,6 +684,17 @@ async def quote_order(
                 "wallet_applied": breakdown.wallet_deduction > 0,
                 "item_count": item_count,
                 "delivery": delivery_quote_service.delivery_payload(delivery, destination),
+                "coupon": (
+                    {
+                        "code": coupon_row.code if coupon_row else coupon_code_to_check,
+                        "label": coupon_presenter.label(coupon_row, lang) if coupon_row else None,
+                        "applied": quote_coupon is not None and breakdown.discount > 0,
+                        "discount": float(breakdown.discount),
+                        "reason": coupon_refusal,
+                    }
+                    if coupon_code_to_check
+                    else None
+                ),
             }
         )
     except ValueError as e:

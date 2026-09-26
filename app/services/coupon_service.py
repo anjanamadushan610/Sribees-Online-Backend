@@ -73,21 +73,20 @@ class CouponService:
         """
         The part of the cart this coupon may actually discount.
 
-        Two independent restrictions narrow it, and both deliberately affect
-        ``min_order_value`` as well as the discount base — otherwise a customer
-        could clear a Rs 3,000 minimum with Rs 2,900 of excluded clearance stock
-        and Rs 100 of eligible goods, which is the loophole this exists to close.
+        Catalog eligibility is the one restriction: when the coupon names
+        categories and/or products, only lines matching one of them count, for
+        ``min_order_value`` as well as the discount base -- otherwise Rs 2,900
+        of other goods could clear a Rs 3,000 minimum for Rs 100 of eligible
+        ones. Naming NEITHER means the entire catalog is eligible, which is why
+        every coupon that predates the feature keeps working unchanged.
 
-        1. ``exclude_quick_sale`` — clearance lines are already at or below
-           cost, so stacking a coupon on them is the double-discounting that
-           turns a promotion into a loss.
-        2. Catalog eligibility — when the coupon names categories and/or
-           products, only lines matching one of them count. Naming NEITHER
-           means the entire catalog is eligible, which is why every coupon that
-           predates the feature keeps working unchanged.
+        Quick Sale lines count like any other. There used to be an "exclude
+        Quick Sale" switch; its check was dropped on 2026-09-17 and the owner
+        confirmed on 2026-09-26 that the rule is not wanted, so the switch left
+        the admin too (the column stays, unread).
 
-        Each item needs ``price``, ``quantity``, and (for the restrictions to
-        bite) ``is_on_sale``, ``product_id`` and ``category_id``. A caller that
+        Each item needs ``price``, ``quantity``, and (for the restriction to
+        bite) ``product_id`` and ``category_id``. A caller that
         cannot supply those gets the full subtotal back rather than a silently
         wrong zero — checkout always supplies them; see
         ``CartService.items_for_coupon``.
