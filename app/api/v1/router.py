@@ -33,6 +33,7 @@ from app.api.v1 import (
     admin_transfers,
     admin_users,
     app_public,
+    app_usage,
     auth,
     banners,
     branch,
@@ -422,6 +423,19 @@ router.include_router(
     app_public.router,
     prefix="/app",
     tags=["App Configuration"],
+)
+
+# App presence: the app's heartbeat (/app/usage/heartbeat, guests too) and the
+# Super Admin "App Users" page (/admin/app-usage).
+router.include_router(
+    app_usage.router,
+    prefix="/app",
+    tags=["App Usage"],
+)
+router.include_router(
+    app_usage.admin_router,
+    prefix="/admin/app-usage",
+    tags=["Admin App Usage"],
 )
 
 # Customer support tickets (/support)

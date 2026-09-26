@@ -50,6 +50,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/api/v1/app/splash-config"),
     ("GET", "/api/v1/app/support-info"),
     ("GET", "/api/v1/app/app-config"),
+    # The app's presence heartbeat: guests have the app open too. Writes only
+    # its own install's row; a customer comes from the token, never the body.
+    ("POST", "/api/v1/app/usage/heartbeat"),
     # --- storefront (guest browsing; a login only personalises) --------------
     ("GET", "/api/v1/categories"),
     ("GET", "/api/v1/categories/{category_id}"),
