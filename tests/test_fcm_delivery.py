@@ -74,6 +74,17 @@ def test_topic_broadcast(sent):
     _assert_reaches_background(sent[0])
 
 
+def test_silent_topic_message(sent):
+    """The banners refresh: data only, so nothing is drawn, but sent now."""
+    asyncio.run(FCMService.send_data_to_topic("banners", {"type": "banners_changed"}))
+    message = sent[0]
+    assert message.notification is None, "a silent message must draw nothing"
+    assert message.topic == "banners"
+    assert message.data == {"type": "banners_changed"}
+    assert message.android.priority == "high"
+    assert message.apns.payload.aps.content_available is True
+
+
 def test_channel_matches_the_app():
     """The app creates this channel by name; a mismatch silently demotes it."""
     assert ANDROID_CHANNEL_ID == "sribeesonline_notifications"

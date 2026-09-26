@@ -305,6 +305,40 @@ class FCMService:
             return False
 
     @classmethod
+    async def send_data_to_topic(cls, topic: str, data: Dict[str, str]) -> bool:
+        """
+        Send a silent, data-only message to a topic.
+
+        No notification block: nothing is drawn on the phone. An open app
+        reads ``data`` in its foreground handler and acts on it (the home
+        banners use this to re-fetch). High priority on Android and
+        content-available on iOS so it arrives now rather than batched.
+        """
+        if not cls._initialized:
+            if not cls.initialize():
+                return False
+
+        try:
+            message = messaging.Message(
+                data=data,
+                android=messaging.AndroidConfig(priority="high"),
+                apns=messaging.APNSConfig(
+                    headers={"apns-push-type": "background", "apns-priority": "5"},
+                    payload=messaging.APNSPayload(
+                        aps=messaging.Aps(content_available=True)
+                    ),
+                ),
+                topic=topic,
+            )
+            # Off the event loop: firebase-admin is blocking.
+            response = await asyncio.to_thread(messaging.send, message)
+            logger.info(f"FCM data message sent to '{topic}': {response}")
+            return True
+        except Exception as e:
+            logger.error(f"FCM data send to '{topic}' failed: {e}")
+            return False
+
+    @classmethod
     async def subscribe_to_topic(cls, tokens: List[str], topic: str) -> bool:
         """Subscribe tokens to a topic."""
         if not cls._initialized:

@@ -23,6 +23,7 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -40,6 +41,7 @@ from app.core.dependencies import BranchScope, inject_branch_filter, require_per
 from app.core.media import media_url
 from app.models.banner import Banner, BannerEvent, BannerEventType
 from app.schemas.banner import BannerCreate, BannerUpdate
+from app.services.fcm_service import FCMService
 from app.services.storage import StorageError, get_storage
 
 # Banner curation is a Marketing Manager job. Branch Managers run the branch's
@@ -51,6 +53,23 @@ router = APIRouter(
 )
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+# Every app install listens on this FCM topic (push_notification_service.dart
+# in the mobile app -- change both together).
+BANNERS_TOPIC = "banners"
+BANNERS_CHANGED = {"type": "banners_changed"}
+
+
+def _tell_open_apps(background: BackgroundTasks) -> None:
+    """
+    Make every open app re-fetch its carousel, after the response is sent.
+
+    A deleted banner has to leave customers' screens the moment it is
+    deleted, not at their next launch. The message is silent and carries no
+    banner data -- each app asks GET /banners again, which applies its own
+    branch and schedule -- so one broadcast serves every branch.
+    """
+    background.add_task(FCMService.send_data_to_topic, BANNERS_TOPIC, BANNERS_CHANGED)
 
 
 # ============================================================================
@@ -312,6 +331,7 @@ async def upload_banner_image(
              dependencies=[Depends(require_permission("banners", "create"))])
 async def create_banner(
     body: BannerCreate,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
 ):
@@ -340,6 +360,7 @@ async def create_banner(
     db.add(banner)
     await db.commit()
     await db.refresh(banner)
+    _tell_open_apps(background)
 
     logger.info(
         f"[admin] Banner '{banner.title}' created "
@@ -361,6 +382,7 @@ async def create_banner(
 async def update_banner(
     banner_id: UUID,
     body: BannerUpdate,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
 ):
@@ -388,6 +410,7 @@ async def update_banner(
 
     await db.commit()
     await db.refresh(banner)
+    _tell_open_apps(background)
 
     logger.info(f"[admin] Banner {banner_id} updated")
     return {
@@ -405,6 +428,7 @@ async def update_banner(
                dependencies=[Depends(require_permission("banners", "delete"))])
 async def delete_banner(
     banner_id: UUID,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
 ):
@@ -414,6 +438,7 @@ async def delete_banner(
 
     await db.delete(banner)
     await db.commit()
+    _tell_open_apps(background)
 
     logger.info(f"[admin] Banner {banner_id} ('{title}') deleted")
     return {

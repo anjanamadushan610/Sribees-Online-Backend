@@ -210,7 +210,17 @@ async def test_first_order_only_coupons(api, world, make_admin, make_customer, m
 # ---------------------------------------------------------------------------
 
 
-async def test_banners(api, world, make_admin):
+async def test_banners(api, world, make_admin, monkeypatch):
+    from app.services.fcm_service import FCMService
+
+    told = []
+
+    async def fake_send(topic, data):
+        told.append((topic, data))
+        return True
+
+    monkeypatch.setattr(FCMService, "send_data_to_topic", staticmethod(fake_send))
+
     marketing = await make_admin("marketing_manager", api=api)
     r = await api.post("/api/v1/admin/banners",
                        json={"title": "ZZ Avurudu Sale", "image_url": "/uploads/banners/zz.png", "sort_order": 1},
@@ -223,9 +233,13 @@ async def test_banners(api, world, make_admin):
     assert r.status_code == 200, r.text
     r = await api.delete(f"/api/v1/admin/banners/{bid}", headers=marketing.headers)
     assert r.status_code == 200, r.text
+    # Create, rename and delete each tell every open app to re-fetch, so a
+    # deleted banner leaves customers' screens at once.
+    assert told == [("banners", {"type": "banners_changed"})] * 3
     support = await make_admin("customer_support", api=api)
     r = await api.post("/api/v1/admin/banners", json={"title": "x"}, headers=support.headers)
     assert r.status_code == 403
+    assert len(told) == 3, "a refused write tells nobody"
 
 
 async def test_quick_sale_and_the_marketing_dashboard(api, db, world, make_admin, make_product):
