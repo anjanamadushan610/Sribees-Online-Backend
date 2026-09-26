@@ -75,6 +75,12 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --cov=app --cov-report=html --cov-report=term-missing"
 
+[tool.coverage.run]
+# SQLAlchemy's async session runs each query inside a greenlet. Without this,
+# the tracer loses its place at the first database call and every line after
+# it in a route handler is reported as never run.
+concurrency = ["greenlet", "thread"]
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"
