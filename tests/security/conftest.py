@@ -17,9 +17,9 @@ from typing import Iterator
 
 import fakeredis.aioredis
 import httpx
+import jwt
 import pytest
 from fastapi.routing import APIRoute
-from jose import jwt
 
 from app.config.settings import settings
 

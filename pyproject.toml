@@ -8,25 +8,20 @@ packages = [{include = "app"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-fastapi = "^0.109.0"
+fastapi = "0.136.3"
 uvicorn = {extras = ["standard"], version = "^0.27.0"}
-pydantic = "^2.5.3"
-pydantic-settings = "^2.1.0"
+pydantic = "^2.13.5"
+pydantic-settings = "^2.15.0"
 sqlalchemy = {extras = ["asyncio"], version = "^2.0.25"}
 asyncpg = "^0.29.0"
-alembic = "^1.13.1"
 redis = {extras = ["hiredis"], version = "^5.0.1"}
-python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+pyjwt = "^2.15.0"
 passlib = {extras = ["argon2"], version = "^1.7.4"}
-python-multipart = "^0.0.6"
+python-multipart = "^0.0.32"
 httpx = "^0.26.0"
-fastapi-mail = "^1.4.1"
 stripe = "^7.10.0"
-slowapi = "^0.1.9"
 loguru = "^0.7.2"
-aiofiles = "^23.2.1"
-python-dateutil = "^2.8.2"
-gunicorn = "^21.2.0"
+gunicorn = "^26.2.0"
 reportlab = "^4.1.0"
 
 [tool.poetry.group.dev.dependencies]

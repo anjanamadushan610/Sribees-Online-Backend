@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 from uuid import UUID
 
-from jose import JWTError, jwt
+import jwt
 from passlib.context import CryptContext
 
 from app.config.settings import settings
@@ -192,7 +192,7 @@ def decode_token(token: str) -> Optional[dict[str, Any]]:
             algorithms=[settings.jwt_algorithm]
         )
         return payload
-    except JWTError:
+    except jwt.PyJWTError:
         return None
 
 

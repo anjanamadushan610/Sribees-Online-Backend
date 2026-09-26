@@ -90,8 +90,8 @@ E2E per `playwright.config.ts`. Mobile: `flutter analyze --no-fatal-infos && flu
   `thresholds` in `admin/vitest.config.ts`. They are ratchets: raise them as
   coverage rises, and never lower them to get a build out.
 - **Dependency CVEs**: `pip-audit` ignores exactly the IDs in
-  `.github/pip-audit-baseline.txt`, so a new advisory fails CI. Every line is
-  debt, cleared by the upgrade below.
+  `.github/pip-audit-baseline.txt` (empty), so any advisory on what ships
+  fails CI.
 - **Secrets**: gitleaks scans the full history of each repository. Reviewed
   false positives are allowlisted in `.gitleaks.toml`, each with its reason.
 - **SAST**: bandit at medium severity and confidence. A false positive gets
@@ -108,10 +108,16 @@ E2E per `playwright.config.ts`. Mobile: `flutter analyze --no-fatal-infos && flu
 2. `PUBLIC_API_URL` repository variable in the backend repo, if the API ever
    moves off `https://api.sribees.com` (the public-edge check uses it).
 
-## Dependency upgrade (the CVE baseline)
+## Dependencies
 
-One planned change clears the whole `pip-audit` baseline: FastAPI (and with it
-Starlette) plus python-multipart to current releases, python-jose replaced by
-PyJWT, gunicorn 22+, sentry-sdk 1.45+. The full suite already passes on
-FastAPI 0.128 / Starlette 0.50 under Python 3.14 locally. Do it as its own pull
-request, run this whole gate against it, then delete the baseline lines.
+The `pip-audit` baseline has been empty since the 2026-09-26 upgrade: FastAPI
+0.136.3 on Starlette 1.x, python-multipart 0.0.32, python-jose replaced by
+PyJWT, gunicorn 26, sentry-sdk 2, pydantic 2.13, and the never-imported
+fastapi-mail, google-generativeai, slowapi, aiofiles, alembic and
+python-dateutil removed (fastapi-mail had been the only source of
+email-validator, so `pydantic[email]` now names it).
+
+FastAPI is held at 0.136.3 on purpose. From 0.137 an included router is kept
+as one lazy `_IncludedRouter` entry, so `app.routes` no longer lists the
+real routes, and the security route matrix (and several tests) walk exactly
+that list. Moving past it means rewriting that walk first.
