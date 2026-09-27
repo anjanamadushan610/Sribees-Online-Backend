@@ -4,7 +4,7 @@ SRIBEESonline FastAPI Backend - Auth Schemas
 Pydantic models for authentication request/response validation.
 """
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -357,10 +357,17 @@ class ConfirmAccountDeletionRequest(BaseModel):
 
 
 class SocialLoginRequest(BaseModel):
-    """A Firebase ID token from a Google or Apple sign-in.
+    """An ID token from Google or Apple, verified on the server.
 
-    The token is the only thing trusted. Email, name and provider are read
-    from its verified claims, never from the request body.
+    The token is the only thing trusted: identity and email come out of its
+    verified claims, never from the request body. ``nonce`` is the raw value
+    whose SHA-256 the app put into the sign-in request; when the token carries
+    a nonce it must match, so a token lifted from another sign-in is useless.
+    ``full_name`` is only a display-name hint (Apple puts no name in its token
+    and hands it to the app once); it never identifies anyone.
     """
 
-    id_token: str = Field(..., min_length=20)
+    provider: Literal["google", "apple"]
+    id_token: str = Field(..., min_length=20, max_length=8192)
+    nonce: Optional[str] = Field(default=None, max_length=256)
+    full_name: Optional[str] = Field(default=None, max_length=200)

@@ -231,6 +231,9 @@ jobs:
           NOTIFYLK_USER_ID: ${{ secrets.DEV_NOTIFYLK_USER_ID }}
           NOTIFYLK_API_KEY: ${{ secrets.DEV_NOTIFYLK_API_KEY }}
           NOTIFYLK_SENDER_ID: ${{ secrets.DEV_NOTIFYLK_SENDER_ID }}
+          # Sign-in client IDs: the same apps sign in against dev and prod.
+          GOOGLE_CLIENT_IDS: ${{ secrets.GOOGLE_CLIENT_IDS }}
+          APPLE_SERVICES_ID: ${{ secrets.APPLE_SERVICES_ID }}
         run: |
           if [ -z "$DEV_ENV_FILE" ]; then
             echo "::error::secret DEV_ENV_FILE is empty"
@@ -239,7 +242,7 @@ jobs:
           # The SMS gateway keys live as their own secrets, so they can be set
           # or rotated without rebuilding DEV_ENV_FILE. Each set one replaces
           # the same key in it; nothing is echoed.
-          for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID; do
+          for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID; do
             value=$(printenv "$key" || true)
             if [ -n "$value" ]; then
               DEV_ENV_FILE=$(printf '%s\n' "$DEV_ENV_FILE" | grep -v "^${key}=" || true)

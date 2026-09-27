@@ -585,11 +585,18 @@ class Settings(BaseSettings):
         return f"https://{self.s3_bucket_name}.s3.{self.aws_region}.amazonaws.com"
 
     # =========================================================================
-    # OAuth Settings (Optional)
+    # Google / Apple sign-in (verified here directly, no Firebase)
     # =========================================================================
-    google_client_id: str = Field(default="", description="Google OAuth client ID")
-    google_client_secret: str = Field(default="", description="Google OAuth client secret")
-    google_callback_url: str = Field(default="", description="Google OAuth callback URL")
+    # A Google ID token is accepted only when its audience is one of these:
+    # the Web OAuth client the app passes as serverClientId. No client secret
+    # is needed to verify an ID token, so none is configured.
+    google_client_ids: str = Field(default="", description="Comma-separated Google OAuth client IDs")
+    # Apple: the Services ID (Android's web flow) and, once there is an iOS
+    # app, its bundle ID. Either may be the audience of an Apple identity token.
+    apple_services_id: str = Field(default="", description="Sign in with Apple Services ID")
+    apple_bundle_id: str = Field(default="", description="iOS bundle ID (when an iOS app exists)")
+    # Where Apple's Android web flow hands the result back to the app.
+    android_package: str = Field(default="com.sribeesonline.sribees_mobile")
 
     facebook_app_id: str = Field(default="", description="Facebook App ID")
     facebook_app_secret: str = Field(default="", description="Facebook App Secret")

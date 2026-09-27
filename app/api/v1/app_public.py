@@ -17,13 +17,14 @@ Mobile connectivity:
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from loguru import logger
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.redis import get_redis
+from app.config.settings import settings
 from app.core.media import media_url_for_client
 from app.services.app_settings_service import AppSettingsService
 
@@ -158,6 +159,7 @@ async def get_support_info(db: AsyncSession = Depends(get_db)):
     ),
 )
 async def get_app_config(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
     x_client_platform: Optional[str] = Header(default=None),
@@ -168,7 +170,7 @@ async def get_app_config(
             data = json.loads(cached)
             return {
                 "success": True,
-                "data": _for_client(data, x_client_platform),
+                "data": {**_for_client(data, x_client_platform), "sign_in": _sign_in_config(request)},
                 "cached": True,
             }
         except ValueError:
@@ -194,6 +196,7 @@ async def get_app_config(
                 "maintenance": {"active": False, "message": None},
                 "flags": {},
                 "splash": None,
+                "sign_in": _sign_in_config(request),
             },
             "degraded": True,
         }
@@ -201,8 +204,31 @@ async def get_app_config(
     await redis.setex(APP_CONFIG_CACHE_KEY, APP_CONFIG_CACHE_TTL, json.dumps(data))
     return {
         "success": True,
-        "data": _for_client(data, x_client_platform),
+        "data": {**_for_client(data, x_client_platform), "sign_in": _sign_in_config(request)},
         "cached": False,
+    }
+
+
+def _sign_in_config(request: Request) -> dict:
+    """
+    What the app needs to start a Google or Apple sign-in, from this server's
+    settings -- so a new OAuth client or return URL needs no app release.
+    None means "not set up here": the app says the option is unavailable.
+    """
+    from app.services.social_auth_service import audiences
+
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    # Only our own hosts; anything else (a test client, a spoofed Host) gets
+    # production's address rather than one it chose.
+    base = f"https://{host}" if host == "sribees.com" or host.endswith(".sribees.com") else "https://api.sribees.com"
+    google = audiences("google")
+    apple_services_id = (settings.apple_services_id or "").strip() or None
+    return {
+        # The first configured Google client is the one the app hands to
+        # Google as serverClientId; the tokens it gets back are issued to it.
+        "google_server_client_id": google[0] if google else None,
+        "apple_services_id": apple_services_id,
+        "apple_redirect_uri": f"{base}/api/v1/auth/apple/callback" if apple_services_id else None,
     }
 
 

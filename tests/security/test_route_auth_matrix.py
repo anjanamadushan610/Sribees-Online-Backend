@@ -39,6 +39,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("POST", "/api/v1/auth/refresh-token"),
     ("POST", "/api/v1/auth/refresh"),
     ("POST", "/api/v1/auth/social/login"),
+    # Apple posts the Android web sign-in result here; it only bounces it back
+    # into the app. Stores nothing, trusts nothing (social/login verifies).
+    ("POST", "/api/v1/auth/apple/callback"),
     ("POST", "/api/v1/admin/auth/login"),
     ("POST", "/api/v1/admin/auth/refresh"),
     ("POST", "/api/v1/partner/auth/login"),

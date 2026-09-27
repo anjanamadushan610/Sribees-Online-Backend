@@ -1,73 +1,142 @@
 """
 SRIBEESonline — signing in with Google or Apple.
 
-Both go through Firebase Auth. The app signs in with the provider, Firebase
-hands it an ID token, and the server verifies that token with the Admin SDK it
-already has initialised for push. One verification path for both providers,
-and no second copy of Apple's JWKS handling to keep correct as Apple rotates
-keys.
+The app signs in with the provider and sends us the provider's own ID token;
+this server verifies it directly against the provider's published signing
+keys. No Firebase in between: nobody but us holds a customer's identity.
+
+- **Google**: an RS256 JWT from accounts.google.com whose audience is our Web
+  OAuth client (the one the app passes as serverClientId).
+- **Apple**: an RS256 JWT from appleid.apple.com whose audience is our Services
+  ID (Android's web flow) or, when there is one, our iOS bundle ID.
 
 **The token is the only thing trusted.** Not the email in the request body,
-not the name, not a uid the client claims — those are whatever the client
-chose to send. `verify_id_token` checks the signature, the audience and the
-expiry against Google's keys, and everything used afterwards comes out of the
-verified claims.
+not the name, not a uid the client claims. Signature, issuer, audience and
+expiry are checked; everything used afterwards comes out of the verified
+claims. When the token carries a nonce, the raw nonce the app sends must hash
+to it, so a token lifted from someone else's sign-in cannot be replayed.
 
 **A social sign-in is an account, not an exemption.** The NIC is still
 required at the profile gate, still unique, still write-once. Somebody
 arriving through Google gets past the phone step and nothing else.
 """
+import asyncio
+import hashlib
+import hmac
 from datetime import datetime
+from typing import Optional
 
+import jwt
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config.settings import settings
 from app.models.user import User
-
-try:
-    from firebase_admin import auth as firebase_auth
-
-    FIREBASE_AUTH_AVAILABLE = True
-except ImportError:  # pragma: no cover - mirrors fcm_service's optional import
-    FIREBASE_AUTH_AVAILABLE = False
 
 
 class SocialAuthError(Exception):
     """The token could not be trusted, or the account cannot be used."""
 
 
-# What Firebase reports, mapped to what we store. Anything else is recorded as
-# given rather than rejected: a provider we have not thought about is still a
-# verified sign-in, and refusing it would lock out a real person.
-_PROVIDERS = {
-    "google.com": "google",
-    "apple.com": "apple",
+_GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
+_APPLE_ISSUER = "https://appleid.apple.com"
+
+# Keys are fetched once and cached; a token signed with a key we have not seen
+# makes PyJWKClient refetch, which is how both providers' key rotation works.
+_JWKS = {
+    "google": jwt.PyJWKClient("https://www.googleapis.com/oauth2/v3/certs", cache_keys=True, lifespan=3600),
+    "apple": jwt.PyJWKClient("https://appleid.apple.com/auth/keys", cache_keys=True, lifespan=3600),
 }
 
 
-def _verify(id_token: str) -> dict:
-    """The verified claims, or an error. Never trusts the request body."""
-    if not FIREBASE_AUTH_AVAILABLE:
-        raise SocialAuthError("Social sign-in is not available on this server.")
+def _ids(*values: str) -> list[str]:
+    out = []
+    for value in values:
+        out.extend(v.strip() for v in (value or "").split(",") if v.strip())
+    return out
 
-    from app.services.fcm_service import FCMService
 
-    # Shares the app the push service initialises. Calling it here means a
-    # server that has never sent a push still verifies tokens.
-    FCMService.initialize()
+def audiences(provider: str) -> list[str]:
+    if provider == "google":
+        return _ids(settings.google_client_ids)
+    if provider == "apple":
+        return _ids(settings.apple_services_id, settings.apple_bundle_id)
+    return []
 
+
+def _truthy(value) -> bool:
+    # Apple sends email_verified as the STRING "true"; Google as a boolean.
+    return value is True or (isinstance(value, str) and value.lower() == "true")
+
+
+def _decode(provider: str, id_token: str, nonce: Optional[str]) -> dict:
+    """Verify one token synchronously (the key fetch is blocking I/O)."""
+    audience = audiences(provider)
+    if not audience:
+        raise SocialAuthError("This sign-in is not available yet.")
     try:
-        return firebase_auth.verify_id_token(id_token)
+        signing_key = _JWKS[provider].get_signing_key_from_jwt(id_token)
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=audience,
+            issuer=_GOOGLE_ISSUERS if provider == "google" else _APPLE_ISSUER,
+            options={"require": ["exp", "iat", "iss", "aud", "sub"]},
+            leeway=60,
+        )
     except Exception as exc:
         # Deliberately not echoed to the caller. The reasons -- expired,
         # wrong audience, bad signature -- are useful to us and are a probing
         # aid to anybody else.
-        logger.warning(f"Rejected a social sign-in token: {exc}")
+        logger.warning(f"Rejected a {provider} sign-in token: {type(exc).__name__}: {exc}")
         raise SocialAuthError("That sign-in could not be verified.") from exc
 
+    token_nonce = claims.get("nonce")
+    if token_nonce is not None or provider == "apple":
+        # Apple always gets a nonce from our app; a token without one did not
+        # come from our sign-in screen.
+        if not nonce or token_nonce is None:
+            raise SocialAuthError("That sign-in could not be verified.")
+        # Only the HASH is in the token, so only whoever holds the raw value --
+        # the app that started this sign-in -- can present it. Accepting the
+        # hash itself would let anyone holding the token pass.
+        hashed = hashlib.sha256(nonce.encode()).hexdigest()
+        if not hmac.compare_digest(hashed, str(token_nonce)):
+            logger.warning(f"{provider} sign-in nonce mismatch")
+            raise SocialAuthError("That sign-in could not be verified.")
+    return claims
 
-async def sign_in(db: AsyncSession, id_token: str) -> tuple[User, bool]:
+
+async def _verify(provider: str, id_token: str, nonce: Optional[str] = None) -> dict:
+    """
+    The verified identity, or an error. Never trusts the request body.
+
+    Returns ``{"uid", "email", "email_verified", "name"}``. ``uid`` is
+    namespaced by provider ("google:<sub>", "apple:<sub>"): the two providers'
+    subject ids are separate spaces and must never be able to meet.
+    """
+    if provider not in _JWKS:
+        raise SocialAuthError("That sign-in could not be verified.")
+    claims = await asyncio.to_thread(_decode, provider, id_token, nonce)
+    email = (claims.get("email") or "").strip().lower() or None
+    return {
+        "uid": f"{provider}:{claims['sub']}",
+        "email": email,
+        "email_verified": bool(email) and _truthy(claims.get("email_verified")),
+        "name": (claims.get("name") or "").strip(),
+    }
+
+
+async def sign_in(
+    db: AsyncSession,
+    provider: str,
+    id_token: str,
+    *,
+    nonce: Optional[str] = None,
+    full_name: Optional[str] = None,
+) -> tuple[User, bool]:
     """
     Find or create the account behind a verified Google/Apple token.
 
@@ -76,7 +145,7 @@ async def sign_in(db: AsyncSession, id_token: str) -> tuple[User, bool]:
     Matching order, and it matters:
 
       1. ``provider_uid`` — the stable identity. Always tried first.
-      2. the verified email, if Firebase says the provider verified it. This
+      2. the verified email, if the provider says it verified it. This
          is what links a Google sign-in to an account someone already made
          with the same address, instead of silently giving them a second one.
 
@@ -84,17 +153,14 @@ async def sign_in(db: AsyncSession, id_token: str) -> tuple[User, bool]:
     set without proving it, and matching on one would hand over an existing
     account to whoever claimed the address.
     """
-    claims = _verify(id_token)
+    identity = await _verify(provider, id_token, nonce)
 
-    uid = claims.get("uid") or claims.get("sub")
-    if not uid:
-        raise SocialAuthError("That sign-in could not be verified.")
-
-    provider_id = (claims.get("firebase", {}) or {}).get("sign_in_provider", "")
-    provider = _PROVIDERS.get(provider_id, provider_id or "unknown")
-    email = (claims.get("email") or "").strip().lower() or None
-    email_verified = bool(claims.get("email_verified"))
-    name = (claims.get("name") or "").strip()
+    uid = identity["uid"]
+    email = identity["email"]
+    email_verified = identity["email_verified"]
+    # Apple's token carries no name; the app passes the one Apple showed it,
+    # once. It only ever fills an empty display name.
+    name = identity["name"] or (full_name or "").strip()[:200]
 
     # 1. The stable identity.
     existing = (
@@ -134,7 +200,7 @@ async def sign_in(db: AsyncSession, id_token: str) -> tuple[User, bool]:
         return existing, False
 
     user = User(
-        # Firebase has already proved the address; requiring our own
+        # The provider has already proved the address; requiring our own
         # verification email on top would be asking them to prove it twice.
         # Only an address the provider proved. An unproven one is not the
         # user's to claim -- and when it is already someone else's, storing

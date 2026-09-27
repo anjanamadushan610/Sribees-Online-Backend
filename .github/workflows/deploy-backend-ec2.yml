@@ -139,12 +139,17 @@ jobs:
           NOTIFYLK_USER_ID: ${{ secrets.NOTIFYLK_USER_ID }}
           NOTIFYLK_API_KEY: ${{ secrets.NOTIFYLK_API_KEY }}
           NOTIFYLK_SENDER_ID: ${{ secrets.NOTIFYLK_SENDER_ID }}
+          # Google / Apple sign-in, verified by the backend itself: the OAuth
+          # client IDs a token may be issued to. Public values, kept as
+          # secrets only so they live next to the rest of the config.
+          GOOGLE_CLIENT_IDS: ${{ secrets.GOOGLE_CLIENT_IDS }}
+          APPLE_SERVICES_ID: ${{ secrets.APPLE_SERVICES_ID }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON,OTP_TEST_PHONES,SMOKE_ADMIN_EMAIL,SMOKE_ADMIN_PASSWORD,SMS_PROVIDER,NOTIFYLK_USER_ID,NOTIFYLK_API_KEY,NOTIFYLK_SENDER_ID
+          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON,OTP_TEST_PHONES,SMOKE_ADMIN_EMAIL,SMOKE_ADMIN_PASSWORD,SMS_PROVIDER,NOTIFYLK_USER_ID,NOTIFYLK_API_KEY,NOTIFYLK_SENDER_ID,GOOGLE_CLIENT_IDS,APPLE_SERVICES_ID
           # MUST stay false. script_stop makes the action test every command's
           # exit status itself and return on the first non-zero one. That check
           # sits outside bash, so it ignores `set +e` AND the rule that a
@@ -255,8 +260,8 @@ jobs:
               mv .env.tmp .env
               echo "SMOKE_ADMIN_PASSWORD=${SMOKE_ADMIN_PASSWORD}" >> .env
             fi
-            # SMS gateway. Same pattern; a value is never echoed.
-            for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID; do
+            # SMS gateway and sign-in client IDs. Same pattern; a value is never echoed.
+            for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID; do
               value=$(printenv "$key" || true)
               if [ -n "$value" ]; then
                 grep -v "^${key}=" .env > .env.tmp || true

@@ -456,9 +456,9 @@ async def confirm_account_deletion(
     response_model=AuthResponse,
     summary="Sign in with Google or Apple",
     description=(
-        "Takes a Firebase ID token from a Google or Apple sign-in, verifies "
-        "it server-side, and returns a session. Creates the account on first "
-        "use. "
+        "Takes the provider's own ID token from a Google or Apple sign-in, "
+        "verifies it here against the provider's keys (no Firebase), and "
+        "returns a session. Creates the account on first use. "
         "A social sign-in skips the phone STEP, not the phone: the profile "
         "gate still collects the phone number and the NIC before an order can "
         "be placed, and the NIC is still unique and still write-once."
@@ -474,7 +474,9 @@ async def social_login(
     from app.services.social_auth_service import SocialAuthError, sign_in
 
     try:
-        user, created = await sign_in(db, data.id_token)
+        user, created = await sign_in(
+            db, data.provider, data.id_token, nonce=data.nonce, full_name=data.full_name
+        )
     except SocialAuthError as exc:
         # 401, not 400: the token is a credential, and a rejected credential
         # is an authentication failure however it was malformed.
@@ -490,3 +492,40 @@ async def social_login(
         device_name=request.headers.get("x-device-name"),
         message="Welcome to Sribees Online" if created else "Login successful",
     )
+
+
+# Apple posts at most these back; anything else is dropped rather than passed on.
+_APPLE_CALLBACK_FIELDS = {"code": 2048, "id_token": 8192, "state": 512, "user": 2048, "error": 256}
+
+
+@router.post(
+    "/apple/callback",
+    include_in_schema=False,
+    summary="Sign in with Apple on Android: hand Apple's answer back to the app",
+)
+async def apple_callback(request: Request):
+    """
+    Android has no native Apple sheet, so the app opens Apple's web sign-in
+    with this URL as the return address. Apple POSTs the result here and we
+    send the browser straight back into the app (the sign_in_with_apple
+    plugin's ``signinwithapple://callback`` intent). Nothing is stored and
+    nothing is trusted here: the app then posts the identity token to
+    /auth/social/login, which verifies it.
+    """
+    from urllib.parse import urlencode
+
+    from fastapi.responses import RedirectResponse
+
+    from app.config.settings import settings
+
+    form = await request.form()
+    params = {
+        key: value
+        for key, value in form.items()
+        if key in _APPLE_CALLBACK_FIELDS and isinstance(value, str) and len(value) <= _APPLE_CALLBACK_FIELDS[key]
+    }
+    target = (
+        f"intent://callback?{urlencode(params)}"
+        f"#Intent;package={settings.android_package};scheme=signinwithapple;end"
+    )
+    return RedirectResponse(target, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
