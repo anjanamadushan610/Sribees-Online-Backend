@@ -154,6 +154,18 @@ async def test_a_guest_sees_only_tickets_from_their_own_device(api, world):
 
     r = await api.get("/api/v1/support/my-tickets", params={"phone": phone}, headers=mine)
     assert tid in r.text
+
+    # Any contact number: a second ticket from the same install with another
+    # number keeps the first one in view, with or without ?phone=.
+    other = "0" + f"{uuid.uuid4().int % 10**9:09d}"
+    r = await api.post("/api/v1/support/tickets",
+                       json={"contact_phone": other, "category": "general", "message": "Please call my wife instead"},
+                       headers=mine)
+    assert r.status_code == 201, r.text
+    tid2 = r.json()["ticket_id"]
+    for params in ({}, {"phone": other}, {"phone": phone}):
+        r = await api.get("/api/v1/support/my-tickets", params=params, headers=mine)
+        assert tid in r.text and tid2 in r.text, params
     # Same phone number, another install: nothing. A phone number is not proof.
     r = await api.get("/api/v1/support/my-tickets", params={"phone": phone},
                       headers={"X-Device-Id": "zz-attacker-device"})

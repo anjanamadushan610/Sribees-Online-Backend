@@ -132,11 +132,14 @@ async def get_my_support_tickets(
     Retrieve customer support tickets submitted by the user.
 
     A signed-in customer gets the tickets on their account and on their own
-    phone number; the ``phone`` parameter is ignored for them. A guest gets
-    only tickets filed from this install (X-Device-Id) under ``phone`` -- a
-    phone number by itself is not proof of anything.
+    phone number. A guest gets every ticket filed from this install
+    (X-Device-Id), whatever contact number each one carries: a customer may
+    give any number to be called back on, and a second ticket with another
+    number must not hide the first. ``phone`` is accepted from older apps
+    and ignored -- a phone number by itself is not proof of anything, so it
+    never widens what anyone sees.
     """
-    from sqlalchemy import and_, or_
+    from sqlalchemy import or_
 
     conditions = []
     if current_user:
@@ -145,10 +148,8 @@ async def get_my_support_tickets(
             conditions.extend(_phone_conditions(current_user.phone))
     else:
         device_id = _device_id(request)
-        if device_id and phone and phone.strip():
-            conditions.append(
-                and_(SupportTicket.device_id == device_id, or_(*_phone_conditions(phone)))
-            )
+        if device_id:
+            conditions.append(SupportTicket.device_id == device_id)
 
     if not conditions:
         return {"items": [], "total": 0}
