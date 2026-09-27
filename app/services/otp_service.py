@@ -1,20 +1,92 @@
 """
 OTP Service — short-lived phone-verification codes (Module 1.7).
 
-Codes are 6 digits, stored in Redis under a per-user key with a 3-minute TTL.
-For the MVP the "SMS gateway" is a console log — swap ``_dispatch`` for a real
-provider (Notify.lk / Twilio) later without touching the endpoints.
+Codes are 6 digits, stored in Redis under a per-user key with a 3-minute TTL,
+and delivered through app/services/sms_gateway.py -- whichever provider this
+server is configured for.
+
+Endpoints call ``OTPService.issue``: it applies the sending limits, sends, and
+returns an ``OtpChallenge`` that tells the app everything it draws -- how many
+digits, how long until "Resend" unlocks, where the code went. The app decides
+none of it, so a change of provider or policy never needs an app release.
 """
 import secrets
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
+from fastapi import status
 from loguru import logger
 from redis.asyncio import Redis
 
 from app.config.redis import RedisTTL
 from app.config.settings import settings
+from app.core.exceptions import AppException
+from app.services.sms_gateway import SmsSendError, get_sms_gateway, mask_phone
 
 _OTP_DIGITS = 6
+_LK_TZ = ZoneInfo("Asia/Colombo")
+
+# What the customer reads, in the app's language (Accept-Language). The SMS
+# itself stays English: a Sinhala or Tamil text is billed as two or three.
+_COPY = {
+    "sent": {
+        "en": "We sent a {length}-digit code to {destination}.",
+        "si": "{destination} අංකයට ඉලක්කම් {length} කේතයක් යැව්වා.",
+        "ta": "{destination} எண்ணுக்கு {length} இலக்கக் குறியீடு அனுப்பப்பட்டது.",
+    },
+    "too_soon": {
+        "en": "Please wait {seconds} seconds before asking for another code.",
+        "si": "තවත් කේතයක් ඉල්ලීමට තත්පර {seconds}ක් රැඳී සිටින්න.",
+        "ta": "இன்னொரு குறியீட்டைக் கேட்க {seconds} வினாடிகள் காத்திருக்கவும்.",
+    },
+    "too_many": {
+        "en": "Too many codes were asked for this number. Please try again in {minutes} minutes.",
+        "si": "මෙම අංකයට කේත බොහොමයක් ඉල්ලා ඇත. මිනිත්තු {minutes}කින් නැවත උත්සාහ කරන්න.",
+        "ta": "இந்த எண்ணுக்கு அதிகமான குறியீடுகள் கோரப்பட்டுள்ளன. {minutes} நிமிடங்களில் மீண்டும் முயற்சிக்கவும்.",
+    },
+    "unavailable": {
+        "en": "We couldn't send a code right now. Please try again in a few minutes.",
+        "si": "දැන් කේතය යැවීමට නොහැකි විය. මිනිත්තු කිහිපයකින් නැවත උත්සාහ කරන්න.",
+        "ta": "இப்போது குறியீட்டை அனுப்ப முடியவில்லை. சில நிமிடங்களில் மீண்டும் முயற்சிக்கவும்.",
+    },
+    "invalid": {
+        "en": "That code is not right, or it has expired.",
+        "si": "එම කේතය වැරදියි, නැතහොත් කල් ඉකුත් වී ඇත.",
+        "ta": "அந்தக் குறியீடு தவறானது அல்லது காலாவதியானது.",
+    },
+}
+
+_SMS_TEXT = (
+    "{code} is your Sribees Online verification code. "
+    "It expires in {minutes} minutes. Never share it with anyone."
+)
+
+
+def otp_copy(key: str, lang: str, **values) -> str:
+    table = _COPY[key]
+    return table.get(lang, table["en"]).format(**values)
+
+
+def invalid_code_error(lang: str) -> AppException:
+    """The one answer for a wrong, used, expired or burned code."""
+    return AppException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        message=otp_copy("invalid", lang),
+        error_code="OTP_INVALID",
+    )
+
+
+@dataclass(frozen=True)
+class OtpChallenge:
+    """What the app needs to draw the code screen. Nothing else is assumed."""
+
+    expires_in_seconds: int
+    resend_in_seconds: int
+    code_length: int
+    destination: str
+    message: str
 
 # The test OTP. It verifies ONLY for the numbers in settings.otp_test_phones
 # (testers, store-review demo accounts), never for anyone else. It used to
@@ -72,7 +144,9 @@ class OTPService:
     async def request_otp(redis: Redis, key: str, phone: str) -> None:
         """
         Generate an OTP, store it in Redis under ``key`` (3-min expiry) and
-        'send' it. Overwrites any existing code under that key.
+        send it. Overwrites any existing code under that key. No limits here:
+        endpoints go through ``issue``. Raises SmsSendError when the provider
+        refuses, after removing the code.
 
         ``key`` is caller-supplied so the same flow serves both an
         already-authenticated user re-verifying their phone
@@ -81,16 +155,138 @@ class OTPService:
         """
         code = OTPService._generate_code()
         await redis.set(key, code, ex=RedisTTL.PHONE_OTP)
-        OTPService._dispatch(phone, code)
+        if is_test_phone(phone):
+            # Listed test numbers sign in with the test code; most are not
+            # real phones, and a text to them is credit thrown away.
+            logger.info(f"OTP for listed test number {phone} not texted")
+            return
+        text = _SMS_TEXT.format(code=code, minutes=RedisTTL.PHONE_OTP // 60)
+        try:
+            await get_sms_gateway().send(phone, text)
+        except SmsSendError:
+            # A code nobody received must not linger as a guessable target.
+            await redis.delete(key)
+            raise
+
+    # ------------------------------------------------------------------
+    # Sending limits
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _dispatch(phone: str, code: str) -> None:
-        """Mock SMS gateway: log the code to the console (MVP)."""
-        target = phone or "<no phone on file>"
-        logger.info(
-            f"[MOCK SMS] SRIBEESonline verification code for {target}: {code} "
-            f"(valid {RedisTTL.PHONE_OTP // 60} min)"
+    def _lk_day() -> str:
+        return datetime.now(timezone.utc).astimezone(_LK_TZ).strftime("%Y%m%d")
+
+    @staticmethod
+    async def _count(redis: Redis, key: str, window: int) -> tuple[int, int]:
+        """Add one to a windowed counter. Returns (count, seconds left)."""
+        count = await redis.incr(key)
+        if count == 1:
+            await redis.expire(key, window)
+        ttl = await redis.ttl(key)
+        return count, ttl if ttl and ttl > 0 else window
+
+    @staticmethod
+    def _refuse(code: str, message: str, retry_after: int, http: int = status.HTTP_429_TOO_MANY_REQUESTS):
+        return AppException(
+            status_code=http,
+            message=message,
+            error_code=code,
+            details={"retry_after": max(1, int(retry_after))},
         )
+
+    @staticmethod
+    async def issue(
+        redis: Redis,
+        key: str,
+        phone: str,
+        *,
+        client_ip: Optional[str] = None,
+        lang: str = "en",
+    ) -> OtpChallenge:
+        """
+        Send a code to ``phone`` if the sending limits allow it.
+
+        The request endpoint needs no login and every text is paid for, so
+        the limits are about money as much as about the recipient: a resend
+        cooldown and hourly/daily caps per number (nobody gets text-bombed),
+        a generous per-address cap, and a daily ceiling for the whole server
+        that no amount of rotating numbers and addresses gets past.
+        """
+        from app.utils.identity import normalize_mobile
+
+        phone = normalize_mobile(phone)
+        destination = mask_phone(phone)
+        cooldown = max(0, settings.otp_resend_cooldown_seconds)
+        challenge = OtpChallenge(
+            expires_in_seconds=RedisTTL.PHONE_OTP,
+            resend_in_seconds=cooldown,
+            code_length=_OTP_DIGITS,
+            destination=destination,
+            message=otp_copy("sent", lang, length=_OTP_DIGITS, destination=destination),
+        )
+        if is_test_phone(phone):
+            await OTPService.request_otp(redis, key, phone)
+            return challenge
+
+        cooldown_key = f"otp:send:wait:{phone}"
+        if cooldown > 0 and not await redis.set(cooldown_key, "1", ex=cooldown, nx=True):
+            wait = await redis.ttl(cooldown_key)
+            wait = wait if wait and wait > 0 else cooldown
+            raise OTPService._refuse("OTP_RESEND_TOO_SOON", otp_copy("too_soon", lang, seconds=wait), wait)
+
+        day = OTPService._lk_day()
+        limits = [
+            (f"otp:send:hour:{phone}", 3600, settings.otp_max_sends_per_phone_per_hour),
+            (f"otp:send:day:{phone}:{day}", 86400, settings.otp_max_sends_per_phone_per_day),
+        ]
+        if client_ip:
+            limits.append((f"otp:send:ip:{client_ip}", 3600, settings.otp_max_sends_per_ip_per_hour))
+        for counter, window, limit in limits:
+            count, left = await OTPService._count(redis, counter, window)
+            if limit > 0 and count > limit:
+                logger.warning(f"OTP send limit hit on {counter.split(':')[2]} ({count}/{limit})")
+                raise OTPService._refuse(
+                    "OTP_TOO_MANY_REQUESTS",
+                    otp_copy("too_many", lang, minutes=max(1, (left + 59) // 60)),
+                    left,
+                )
+
+        budget_key = f"sms:sent:{day}"
+        sent_today, _ = await OTPService._count(redis, budget_key, 86400 + 3600)
+        if settings.sms_daily_limit > 0 and sent_today > settings.sms_daily_limit:
+            await redis.decr(budget_key)
+            await redis.delete(cooldown_key)
+            logger.error(
+                f"SMS daily limit reached ({settings.sms_daily_limit}); refusing codes until "
+                "tomorrow. Raise SMS_DAILY_LIMIT if this is real demand."
+            )
+            raise OTPService._refuse(
+                "OTP_SMS_UNAVAILABLE",
+                otp_copy("unavailable", lang),
+                600,
+                http=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            await OTPService.request_otp(redis, key, phone)
+        except SmsSendError as exc:
+            # Nothing was delivered: give back the credit and the cooldown so
+            # the customer can simply try again.
+            await redis.decr(budget_key)
+            await redis.delete(cooldown_key)
+            logger.error(f"SMS to {destination} failed: {exc}")
+            raise OTPService._refuse(
+                "OTP_SMS_UNAVAILABLE",
+                otp_copy("unavailable", lang),
+                30,
+                http=status.HTTP_503_SERVICE_UNAVAILABLE,
+            ) from exc
+        return challenge
+
+    @staticmethod
+    async def sent_today(redis: Redis) -> int:
+        value = await redis.get(f"sms:sent:{OTPService._lk_day()}")
+        return int(value) if value else 0
 
     @staticmethod
     async def verify_otp(redis: Redis, key: str, code: str, *, phone: Optional[str] = None) -> bool:

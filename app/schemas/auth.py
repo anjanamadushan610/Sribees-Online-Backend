@@ -102,25 +102,45 @@ class UpdateProfileRequest(BaseModel):
 # ============================================================================
 
 class RequestOTPResponse(BaseModel):
-    """Response after requesting a phone OTP."""
+    """
+    Response after requesting a phone OTP.
+
+    Everything the code screen draws comes from here -- the number of boxes,
+    the resend countdown, where the code went -- so the provider or the
+    policy can change without an app release.
+    """
     success: bool = True
     message: str = "OTP sent"
     expires_in_seconds: int = Field(..., alias="expiresInSeconds")
+    resend_in_seconds: int = Field(60, alias="resendInSeconds")
+    code_length: int = Field(6, alias="codeLength")
+    destination: str = Field("", description="The number the code went to, masked")
+    channel: str = Field("sms", description="How the code travels")
 
     class Config:
         populate_by_name = True
 
+    @classmethod
+    def from_challenge(cls, challenge) -> "RequestOTPResponse":
+        return cls(
+            message=challenge.message,
+            expires_in_seconds=challenge.expires_in_seconds,
+            resend_in_seconds=challenge.resend_in_seconds,
+            code_length=challenge.code_length,
+            destination=challenge.destination,
+        )
+
 
 class VerifyOTPRequest(BaseModel):
     """Request to verify a phone OTP."""
-    code: str = Field(..., min_length=6, max_length=6)
+    code: str = Field(..., min_length=4, max_length=8)
 
     @field_validator("code")
     @classmethod
     def digits_only(cls, v: str) -> str:
         v = v.strip()
         if not v.isdigit():
-            raise ValueError("OTP code must be 6 digits")
+            raise ValueError("OTP code must be digits only")
         return v
 
 
@@ -152,7 +172,7 @@ class VerifyPhoneOTPRequest(BaseModel):
     """Request to verify a registration OTP and log in/register by phone."""
 
     phone: str = Field(..., min_length=8, max_length=20)
-    code: str = Field(..., min_length=6, max_length=6)
+    code: str = Field(..., min_length=4, max_length=8)
 
     @field_validator("phone")
     @classmethod
@@ -164,7 +184,7 @@ class VerifyPhoneOTPRequest(BaseModel):
     def digits_only(cls, v: str) -> str:
         v = v.strip()
         if not v.isdigit():
-            raise ValueError("OTP code must be 6 digits")
+            raise ValueError("OTP code must be digits only")
         return v
 
 

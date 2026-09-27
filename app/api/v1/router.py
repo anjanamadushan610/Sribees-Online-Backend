@@ -28,6 +28,7 @@ from app.api.v1 import (
     admin_partners,
     admin_roles,
     admin_settings,
+    admin_sms,
     admin_staff,
     admin_support,
     admin_transfers,
@@ -355,6 +356,12 @@ router.include_router(
     admin_location_rollout.router,
     prefix="/admin/service-areas",
     tags=["Admin Service Areas"],
+)
+
+router.include_router(
+    admin_sms.router,
+    prefix="/admin/sms",
+    tags=["Admin SMS"],
 )
 
 router.include_router(

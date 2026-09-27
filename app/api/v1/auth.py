@@ -13,7 +13,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.config.redis import RedisKeys, RedisTTL, get_redis
+from app.config.redis import RedisKeys, get_redis
 from app.core.dependencies import CurrentUser
 from app.models.user import User
 from app.schemas.auth import (
@@ -33,9 +33,20 @@ from app.schemas.auth import (
     VerifyPhoneOTPRequest,
 )
 from app.services.auth_service import AuthService
-from app.services.otp_service import OTPService
+from app.services.otp_service import OTPService, invalid_code_error
+from app.utils.i18n import resolve_language
 
 router = APIRouter()
+
+
+def _lang(request: Request) -> str:
+    return resolve_language(request.headers.get("accept-language"))
+
+
+def _client_ip(request: Request) -> str:
+    from app.core.dependencies import get_client_ip
+
+    return get_client_ip(request)
 
 
 @router.post(
@@ -43,24 +54,31 @@ router = APIRouter()
     response_model=RequestOTPResponse,
     summary="Request a phone verification OTP",
     description=(
-        "Generates a 6-digit code for the authenticated user's phone, stores it "
-        "in Redis for 3 minutes, and dispatches it (mock SMS → server log)."
+        "Texts a code to the authenticated user's phone (valid 3 minutes). "
+        "The response says how many digits it has and when a resend unlocks."
     ),
 )
 async def request_otp(
+    request: Request,
     current_user: CurrentUser,
     redis: Redis = Depends(get_redis),
 ) -> RequestOTPResponse:
-    """Generate + 'send' a phone-verification OTP for the current user."""
-    await OTPService.request_otp(
+    """Send a phone-verification OTP to the current user's number."""
+    from fastapi import HTTPException
+
+    if not current_user.phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Add a phone number first.",
+        )
+    challenge = await OTPService.issue(
         redis,
-        key=RedisKeys.phone_otp(str(current_user.user_id)),
-        phone=current_user.phone or "",
+        RedisKeys.phone_otp(str(current_user.user_id)),
+        current_user.phone,
+        client_ip=_client_ip(request),
+        lang=_lang(request),
     )
-    return RequestOTPResponse(
-        message="Verification code sent",
-        expires_in_seconds=RedisTTL.PHONE_OTP,
-    )
+    return RequestOTPResponse.from_challenge(challenge)
 
 
 @router.post(
@@ -74,13 +92,12 @@ async def request_otp(
 )
 async def verify_otp(
     data: VerifyOTPRequest,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> VerifyOTPResponse:
     """Verify the OTP and set is_phone_verified=True on success."""
-    from fastapi import HTTPException
-
     ok = await OTPService.verify_otp(
         redis,
         RedisKeys.phone_otp(str(current_user.user_id)),
@@ -88,10 +105,7 @@ async def verify_otp(
         phone=current_user.phone,
     )
     if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired verification code.",
-        )
+        raise invalid_code_error(_lang(request))
 
     await db.execute(
         update(User)
@@ -108,25 +122,26 @@ async def verify_otp(
     response_model=RequestOTPResponse,
     summary="Request a phone registration OTP",
     description=(
-        "Generates a 6-digit code for the given phone number and dispatches "
-        "it (mock SMS → server log). No account or login required — this is "
-        "the first step of phone-first sign-up."
+        "Texts a code to the given phone number. No account or login "
+        "required -- the first step of phone sign-in. Limited per number, "
+        "per address and per day (429 / 503 carry retry_after and a message "
+        "in the Accept-Language language)."
     ),
 )
 async def request_otp_by_phone(
     data: RequestPhoneOTPRequest,
+    request: Request,
     redis: Redis = Depends(get_redis),
 ) -> RequestOTPResponse:
-    """Generate + 'send' an OTP for a phone number that has no account yet."""
-    await OTPService.request_otp(
+    """Send an OTP to a phone number that may have no account yet."""
+    challenge = await OTPService.issue(
         redis,
-        key=RedisKeys.phone_registration_otp(data.phone),
-        phone=data.phone,
+        RedisKeys.phone_registration_otp(data.phone),
+        data.phone,
+        client_ip=_client_ip(request),
+        lang=_lang(request),
     )
-    return RequestOTPResponse(
-        message="Verification code sent",
-        expires_in_seconds=RedisTTL.PHONE_OTP,
-    )
+    return RequestOTPResponse.from_challenge(challenge)
 
 
 @router.post(
@@ -146,16 +161,11 @@ async def verify_otp_by_phone(
     redis: Redis = Depends(get_redis),
 ) -> AuthResponse:
     """Verify the OTP, then find-or-create the account by phone and log in."""
-    from fastapi import HTTPException
-
     ok = await OTPService.verify_otp(
         redis, RedisKeys.phone_registration_otp(data.phone), data.code, phone=data.phone
     )
     if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired verification code.",
-        )
+        raise invalid_code_error(_lang(request))
 
     ip_address = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
@@ -339,13 +349,14 @@ async def revoke_session(
     response_model=RequestOTPResponse,
     summary="Send a code to confirm closing this account",
     description=(
-        "Sends a 6-digit code to one of the numbers on the account. Closing "
+        "Texts a code to one of the numbers on the account. Closing "
         "an account is irreversible for the person doing it, so it is gated "
         "on proving control of the phone rather than on a password somebody "
         "may have left signed in on a shared handset."
     ),
 )
 async def request_account_deletion_otp(
+    request: Request,
     current_user: CurrentUser,
     redis: Redis = Depends(get_redis),
 ) -> RequestOTPResponse:
@@ -367,15 +378,14 @@ async def request_account_deletion_otp(
             ),
         )
 
-    await OTPService.request_otp(
+    challenge = await OTPService.issue(
         redis,
-        key=RedisKeys.account_deletion_otp(str(current_user.user_id)),
-        phone=phone,
+        RedisKeys.account_deletion_otp(str(current_user.user_id)),
+        phone,
+        client_ip=_client_ip(request),
+        lang=_lang(request),
     )
-    return RequestOTPResponse(
-        message="Verification code sent",
-        expires_in_seconds=RedisTTL.PHONE_OTP,
-    )
+    return RequestOTPResponse.from_challenge(challenge)
 
 
 @router.post(
@@ -392,6 +402,7 @@ async def request_account_deletion_otp(
 )
 async def confirm_account_deletion(
     data: ConfirmAccountDeletionRequest,
+    request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
@@ -410,10 +421,7 @@ async def confirm_account_deletion(
         phone=current_user.phone or current_user.alternate_phone,
     )
     if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="That code is not right, or it has expired.",
-        )
+        raise invalid_code_error(_lang(request))
 
     try:
         await close_account(db, current_user.user_id, reason=data.reason)

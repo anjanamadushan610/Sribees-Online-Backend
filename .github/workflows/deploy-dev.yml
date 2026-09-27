@@ -21,6 +21,9 @@
 #   SSH_PORT                  — optional, defaults to 22
 #   DEV_DEPLOY_PATH           — optional, defaults to /opt/sribees-online-dev
 #   DEV_ENV_FILE              — the whole .env for the dev stack
+#   DEV_SMS_PROVIDER, DEV_NOTIFYLK_USER_ID, DEV_NOTIFYLK_API_KEY,
+#   DEV_NOTIFYLK_SENDER_ID, DEV_SMS_DAILY_LIMIT
+#                             — optional; override those keys of DEV_ENV_FILE
 #   DEV_DOMAIN                — e.g. dev-api.sribees.com
 # =============================================================================
 
@@ -224,11 +227,26 @@ jobs:
       - name: Install the environment file (0600, never echoed)
         env:
           DEV_ENV_FILE: ${{ secrets.DEV_ENV_FILE }}
+          SMS_PROVIDER: ${{ secrets.DEV_SMS_PROVIDER }}
+          NOTIFYLK_USER_ID: ${{ secrets.DEV_NOTIFYLK_USER_ID }}
+          NOTIFYLK_API_KEY: ${{ secrets.DEV_NOTIFYLK_API_KEY }}
+          NOTIFYLK_SENDER_ID: ${{ secrets.DEV_NOTIFYLK_SENDER_ID }}
+          SMS_DAILY_LIMIT: ${{ secrets.DEV_SMS_DAILY_LIMIT }}
         run: |
           if [ -z "$DEV_ENV_FILE" ]; then
             echo "::error::secret DEV_ENV_FILE is empty"
             exit 1
           fi
+          # The SMS gateway keys live as their own secrets, so they can be set
+          # or rotated without rebuilding DEV_ENV_FILE. Each set one replaces
+          # the same key in it; nothing is echoed.
+          for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID SMS_DAILY_LIMIT; do
+            value=$(printenv "$key" || true)
+            if [ -n "$value" ]; then
+              DEV_ENV_FILE=$(printf '%s\n' "$DEV_ENV_FILE" | grep -v "^${key}=" || true)
+              DEV_ENV_FILE=$(printf '%s\n%s=%s' "$DEV_ENV_FILE" "$key" "$value")
+            fi
+          done
           # Piped over the SSH channel and written under umask 077 — the value
           # never lands in a log, in a process argv, or in a world-readable
           # temp file. Written to .new and moved so a failed transfer cannot

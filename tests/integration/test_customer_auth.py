@@ -42,6 +42,8 @@ async def _phone_sign_in(api, app_redis, phone: str) -> dict:
     code = await app_redis.get(RedisKeys.phone_registration_otp(phone))
     r = await api.post("/api/v1/auth/phone/verify-otp", json={"phone": phone, "code": code})
     assert r.status_code == 200, r.text
+    # The next sign-in on another device comes later than the resend cooldown.
+    await app_redis.delete(f"otp:send:wait:{phone}")
     return _tokens(r.json())
 
 
