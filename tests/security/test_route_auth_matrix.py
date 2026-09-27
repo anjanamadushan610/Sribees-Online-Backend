@@ -59,6 +59,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     # Version numbers only, so the app knows whether to re-read; a guest's
     # catalog has versions too. Carries no data about anyone.
     ("GET", "/api/v1/app/sync-state"),
+    # Page text the owner edits by query (About the developer); nothing
+    # about anyone, and guests see the page too.
+    ("GET", "/api/v1/app/content/{page}"),
     # --- storefront (guest browsing; a login only personalises) --------------
     ("GET", "/api/v1/categories"),
     ("GET", "/api/v1/categories/{category_id}"),

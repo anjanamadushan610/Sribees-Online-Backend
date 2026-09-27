@@ -5,6 +5,7 @@ SQLAlchemy ORM models for all database tables.
 """
 
 from app.models.admin import Admin, AdminRole, AdminSession
+from app.models.app_content import AppContent
 from app.models.app_settings import AppSetting
 from app.models.app_usage import AppInstall, AppUsageDay
 from app.models.assistant import AssistantProfile, AssistantReceipt, AssistantReminder
@@ -138,6 +139,7 @@ __all__ = [
     "LocationDistrict",
     # App settings
     "AppSetting",
+    "AppContent",
     "AppInstall",
     "AppUsageDay",
     # Stock transfers

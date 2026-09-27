@@ -120,6 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     import asyncio
     from contextlib import suppress
 
+    from app.services.app_content_service import run_content_watcher
     from app.services.assistant_reminder_worker import run_reminder_worker
     from app.services.campaign_service import run_campaign_worker
     from app.services.order_reward_worker import run_order_reward_worker
@@ -137,6 +138,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         asyncio.create_task(run_order_reward_worker()),
         asyncio.create_task(run_return_settlement_worker()),
         asyncio.create_task(run_campaign_worker()),
+        asyncio.create_task(run_content_watcher()),
     ]
     try:
         yield

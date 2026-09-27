@@ -13,6 +13,8 @@ server says when something changed, and the app re-reads only that:
         banners            the home carousel
         offers             coupons (their terms, not their usage counters)
         user:<user_id>     one customer's orders, notifications, wallet, points
+        content            app pages edited in the database by query (bumped
+                           by app_content_service's watcher, not by these hooks)
     GET /app/sync-state returns the versions that apply to the caller; the app
     compares them with what it last saw. That check is a few bytes, so the
     app's fallback timer (30 minutes) and every return to the app cost next
@@ -287,14 +289,15 @@ async def versions(branch_id: Optional[str], user_id: Optional[str]) -> dict[str
     which tells the app to re-read rather than trust a version it cannot get."""
     redis = _redis()
     keys = ["catalog:all", f"catalog:{branch_id}" if branch_id else None, "banners", "offers",
-            f"user:{user_id}" if user_id else None]
+            f"user:{user_id}" if user_id else None, "content"]
+    unknown = {"catalog": None, "banners": None, "offers": None, "user": None, "content": None}
     if redis is None:
-        return {"catalog": None, "banners": None, "offers": None, "user": None}
+        return unknown
     try:
         values = await redis.mget([_VERSION_KEY.format(k) for k in keys if k])
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"live_sync: versions unavailable: {exc}")
-        return {"catalog": None, "banners": None, "offers": None, "user": None}
+        return unknown
 
     it = iter(values)
     got = {k: (next(it) if k else None) for k in keys}
@@ -310,6 +313,7 @@ async def versions(branch_id: Optional[str], user_id: Optional[str]) -> dict[str
         "banners": v("banners"),
         "offers": v("offers"),
         "user": v(keys[4]) if keys[4] else None,
+        "content": v("content"),
     }
 
 

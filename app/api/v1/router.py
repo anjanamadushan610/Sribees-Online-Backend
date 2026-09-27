@@ -33,6 +33,7 @@ from app.api.v1 import (
     admin_support,
     admin_transfers,
     admin_users,
+    app_content,
     app_public,
     app_usage,
     auth,
@@ -445,6 +446,12 @@ router.include_router(
     sync.router,
     prefix="/app",
     tags=["App Sync"],
+)
+# Pages whose words live in the database, edited by query (/app/content/{page}).
+router.include_router(
+    app_content.router,
+    prefix="/app",
+    tags=["App Content"],
 )
 router.include_router(
     app_usage.admin_router,
