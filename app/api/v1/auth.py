@@ -49,6 +49,13 @@ def _client_ip(request: Request) -> str:
     return get_client_ip(request)
 
 
+async def sms_daily_limit(db: AsyncSession) -> int:
+    """The Super Admin's daily total for texts (SMS page)."""
+    from app.services.app_settings_service import AppSettingsService
+
+    return await AppSettingsService.get_sms_daily_limit(db)
+
+
 @router.post(
     "/request-otp",
     response_model=RequestOTPResponse,
@@ -61,6 +68,7 @@ def _client_ip(request: Request) -> str:
 async def request_otp(
     request: Request,
     current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> RequestOTPResponse:
     """Send a phone-verification OTP to the current user's number."""
@@ -77,6 +85,7 @@ async def request_otp(
         current_user.phone,
         client_ip=_client_ip(request),
         lang=_lang(request),
+        daily_limit=await sms_daily_limit(db),
     )
     return RequestOTPResponse.from_challenge(challenge)
 
@@ -131,6 +140,7 @@ async def verify_otp(
 async def request_otp_by_phone(
     data: RequestPhoneOTPRequest,
     request: Request,
+    db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> RequestOTPResponse:
     """Send an OTP to a phone number that may have no account yet."""
@@ -140,6 +150,7 @@ async def request_otp_by_phone(
         data.phone,
         client_ip=_client_ip(request),
         lang=_lang(request),
+        daily_limit=await sms_daily_limit(db),
     )
     return RequestOTPResponse.from_challenge(challenge)
 
@@ -358,6 +369,7 @@ async def revoke_session(
 async def request_account_deletion_otp(
     request: Request,
     current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> RequestOTPResponse:
     from fastapi import HTTPException
@@ -384,6 +396,7 @@ async def request_account_deletion_otp(
         phone,
         client_ip=_client_ip(request),
         lang=_lang(request),
+        daily_limit=await sms_daily_limit(db),
     )
     return RequestOTPResponse.from_challenge(challenge)
 

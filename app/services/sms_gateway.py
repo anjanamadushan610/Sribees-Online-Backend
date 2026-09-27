@@ -137,13 +137,13 @@ class UnconfiguredGateway:
 
     def __init__(self, name: str, missing: list[str]) -> None:
         self.name = name
-        self._missing = missing
+        self.missing = missing
 
     async def send(self, phone: str, text: str) -> None:
-        raise SmsSendError(f"SMS provider {self.name!r} is missing {', '.join(self._missing)}")
+        raise SmsSendError(f"SMS provider {self.name!r} is missing {', '.join(self.missing)}")
 
     async def balance(self) -> Optional[float]:
-        raise SmsSendError(f"SMS provider {self.name!r} is missing {', '.join(self._missing)}")
+        raise SmsSendError(f"SMS provider {self.name!r} is missing {', '.join(self.missing)}")
 
 
 def get_sms_gateway() -> SmsGateway:

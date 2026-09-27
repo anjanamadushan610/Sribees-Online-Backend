@@ -224,22 +224,9 @@ class Settings(BaseSettings):
     notifylk_api_key: str = Field(default="", description="Notify.lk API key")
     notifylk_sender_id: str = Field(default="NotifyDEMO", description="Approved Notify.lk sender name")
     notifylk_base_url: str = Field(default="https://app.notify.lk/api/v1")
-    # Every text costs money, and the request endpoint needs no login, so each
-    # of these is a limit on how much of the account one person can spend.
-    sms_daily_limit: int = Field(
-        default=300,
-        description="Texts this server may send per Sri Lankan day, all numbers together",
-    )
-    otp_resend_cooldown_seconds: int = Field(default=60, description="Wait before another code to one number")
-    otp_max_sends_per_phone_per_hour: int = Field(default=5)
-    otp_max_sends_per_phone_per_day: int = Field(default=10)
-    otp_max_sends_per_ip_per_hour: int = Field(
-        default=50,
-        description=(
-            "Generous on purpose: mobile carriers put many customers behind one "
-            "address. The per-number and daily limits are the tight ones."
-        ),
-    )
+    # The sending limits are NOT environment settings: the per-number and
+    # per-address rules are code (OTPService), identical on every server, and
+    # the daily total is the Super Admin's (SMS page, app_settings).
 
 
     # =========================================================================

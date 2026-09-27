@@ -55,12 +55,30 @@ def gateway(monkeypatch):
     fake = FakeGateway()
     monkeypatch.setattr("app.services.otp_service.get_sms_gateway", lambda: fake)
     monkeypatch.setattr(settings, "otp_test_phones", "")
-    monkeypatch.setattr(settings, "otp_resend_cooldown_seconds", 60)
-    monkeypatch.setattr(settings, "otp_max_sends_per_phone_per_hour", 5)
-    monkeypatch.setattr(settings, "otp_max_sends_per_phone_per_day", 10)
-    monkeypatch.setattr(settings, "otp_max_sends_per_ip_per_hour", 50)
-    monkeypatch.setattr(settings, "sms_daily_limit", 300)
+
+    async def _limit(_db):
+        return 100
+
+    # The endpoints read the Super Admin's daily total from the database;
+    # these tests run without one.
+    monkeypatch.setattr("app.api.v1.auth.sms_daily_limit", _limit)
     return fake
+
+
+LIMIT = 100
+
+
+def test_the_owners_rules():
+    """Pinned: the owner set these on 2026-09-27, the same for every server."""
+    assert OTPService.RESEND_COOLDOWN_SECONDS == 5 * 60
+    assert OTPService.MAX_SENDS_PER_IP_PER_HOUR == 10
+    assert OTPService.MAX_SENDS_PER_PHONE_PER_HOUR == 5
+    assert OTPService.MAX_SENDS_PER_PHONE_PER_DAY == 10
+    from app.services.app_settings_service import DEFAULT_SMS_DAILY_LIMIT
+
+    assert DEFAULT_SMS_DAILY_LIMIT == 100
+    for name in ("sms_daily_limit", "otp_resend_cooldown_seconds", "otp_max_sends_per_ip_per_hour"):
+        assert not hasattr(settings, name), f"{name} must not be an environment setting"
 
 
 async def _refused(coro) -> AppException:
@@ -70,81 +88,87 @@ async def _refused(coro) -> AppException:
 
 
 async def test_the_code_is_texted_and_the_app_is_told_how_to_draw_it(redis, gateway):
-    challenge = await OTPService.issue(redis, KEY, "0771234567", client_ip="1.2.3.4")
+    challenge = await OTPService.issue(redis, KEY, "0771234567", client_ip="1.2.3.4", daily_limit=LIMIT)
     code = await redis.get(KEY)
     assert gateway.sent == [(PHONE, gateway.sent[0][1])]
     assert code in gateway.sent[0][1] and "Sribees Online" in gateway.sent[0][1]
     assert gateway.sent[0][1].isascii(), "an English text is one SMS; Unicode costs two or three"
     assert challenge.code_length == len(code) == 6
-    assert challenge.resend_in_seconds == 60
+    assert challenge.resend_in_seconds == 300
     assert challenge.expires_in_seconds == 180
     assert challenge.destination == "+94 77 *** **67"
     assert "4567" not in challenge.destination
 
 
 async def test_a_resend_waits_for_the_cooldown(redis, gateway):
-    await OTPService.issue(redis, KEY, PHONE)
-    err = await _refused(OTPService.issue(redis, KEY, PHONE))
+    await OTPService.issue(redis, KEY, PHONE, daily_limit=LIMIT)
+    err = await _refused(OTPService.issue(redis, KEY, PHONE, daily_limit=LIMIT))
     assert err.status_code == 429
     assert err.detail["error"]["code"] == "OTP_RESEND_TOO_SOON"
-    assert 0 < err.detail["error"]["retry_after"] <= 60
+    assert 240 < err.detail["error"]["retry_after"] <= 300, "five minutes"
     assert len(gateway.sent) == 1
 
 
 async def test_one_number_cannot_be_text_bombed(redis, gateway, monkeypatch):
-    monkeypatch.setattr(settings, "otp_resend_cooldown_seconds", 0)
+    monkeypatch.setattr(OTPService, "RESEND_COOLDOWN_SECONDS", 0)
     for _ in range(5):
-        await OTPService.issue(redis, KEY, PHONE)
-    err = await _refused(OTPService.issue(redis, KEY, PHONE))
+        await OTPService.issue(redis, KEY, PHONE, daily_limit=LIMIT)
+    err = await _refused(OTPService.issue(redis, KEY, PHONE, daily_limit=LIMIT))
     assert err.status_code == 429 and err.detail["error"]["code"] == "OTP_TOO_MANY_REQUESTS"
     assert len(gateway.sent) == 5
 
 
-async def test_one_address_cannot_spray_many_numbers(redis, gateway, monkeypatch):
-    monkeypatch.setattr(settings, "otp_max_sends_per_ip_per_hour", 3)
-    for n in range(3):
-        await OTPService.issue(redis, f"k{n}", f"+9477000000{n}", client_ip="9.9.9.9")
-    err = await _refused(OTPService.issue(redis, "k9", "+94770000009", client_ip="9.9.9.9"))
+async def test_one_address_gets_ten_texts_an_hour(redis, gateway):
+    for n in range(10):
+        await OTPService.issue(redis, f"k{n}", f"+9477000010{n}", client_ip="9.9.9.9", daily_limit=LIMIT)
+    err = await _refused(OTPService.issue(redis, "k9", "+94770000099", client_ip="9.9.9.9", daily_limit=LIMIT))
     assert err.status_code == 429
     # Another address is unaffected.
-    await OTPService.issue(redis, "k8", "+94770000008", client_ip="8.8.8.8")
-    assert len(gateway.sent) == 4
+    await OTPService.issue(redis, "k8", "+94770000088", client_ip="8.8.8.8", daily_limit=LIMIT)
+    assert len(gateway.sent) == 11
 
 
-async def test_the_whole_server_stops_at_the_daily_limit(redis, gateway, monkeypatch):
-    monkeypatch.setattr(settings, "sms_daily_limit", 2)
-    await OTPService.issue(redis, "a", "+94770000001")
-    await OTPService.issue(redis, "b", "+94770000002")
-    err = await _refused(OTPService.issue(redis, "c", "+94770000003"))
+async def test_the_whole_server_stops_at_the_daily_limit(redis, gateway):
+    await OTPService.issue(redis, "a", "+94770000001", daily_limit=2)
+    await OTPService.issue(redis, "b", "+94770000002", daily_limit=2)
+    err = await _refused(OTPService.issue(redis, "c", "+94770000003", daily_limit=2))
     assert err.status_code == 503 and err.detail["error"]["code"] == "OTP_SMS_UNAVAILABLE"
     assert len(gateway.sent) == 2
     assert await OTPService.sent_today(redis) == 2, "a refused send is not counted"
     # The refused number is not left in a cooldown it never got a text for.
     assert await redis.get("otp:send:wait:+94770000003") is None
+    history = await OTPService.sent_by_day(redis, 7)
+    assert len(history) == 7 and history[0]["sent"] == 2
+
+
+async def test_a_daily_limit_of_zero_sends_nothing(redis, gateway):
+    err = await _refused(OTPService.issue(redis, KEY, PHONE, daily_limit=0))
+    assert err.status_code == 503
+    assert gateway.sent == []
 
 
 async def test_a_failed_send_leaves_nothing_behind(redis, gateway, monkeypatch):
     gateway.fail = True
-    err = await _refused(OTPService.issue(redis, KEY, PHONE))
+    err = await _refused(OTPService.issue(redis, KEY, PHONE, daily_limit=LIMIT))
     assert err.status_code == 503 and err.detail["error"]["code"] == "OTP_SMS_UNAVAILABLE"
     assert await redis.get(KEY) is None, "a code nobody received must not stay guessable"
     assert await OTPService.sent_today(redis) == 0
     gateway.fail = False
-    await OTPService.issue(redis, KEY, PHONE)  # no cooldown: they may retry at once
+    await OTPService.issue(redis, KEY, PHONE, daily_limit=LIMIT)  # no cooldown: they may retry at once
     assert len(gateway.sent) == 1
 
 
 async def test_listed_test_numbers_are_never_texted_or_limited(redis, gateway, monkeypatch):
     monkeypatch.setattr(settings, "otp_test_phones", "0700000000")
     for _ in range(8):
-        await OTPService.issue(redis, "t", "+94700000000")
+        await OTPService.issue(redis, "t", "+94700000000", daily_limit=LIMIT)
     assert gateway.sent == []
     assert await OTPService.sent_today(redis) == 0
 
 
 async def test_refusals_are_worded_in_the_apps_language(redis, gateway):
-    await OTPService.issue(redis, KEY, PHONE, lang="si")
-    err = await _refused(OTPService.issue(redis, KEY, PHONE, lang="si"))
+    await OTPService.issue(redis, KEY, PHONE, lang="si", daily_limit=LIMIT)
+    err = await _refused(OTPService.issue(redis, KEY, PHONE, lang="si", daily_limit=LIMIT))
     message = err.detail["error"]["message"]
     assert "තත්පර" in message and "seconds" not in message
 
@@ -159,7 +183,7 @@ async def test_the_request_endpoint_returns_what_the_code_screen_needs(client, g
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["codeLength"] == 6
-    assert body["resendInSeconds"] == 60
+    assert body["resendInSeconds"] == 300
     assert body["expiresInSeconds"] == 180
     assert body["destination"] == "+94 77 *** **67"
     assert body["channel"] == "sms"

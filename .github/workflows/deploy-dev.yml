@@ -22,7 +22,7 @@
 #   DEV_DEPLOY_PATH           — optional, defaults to /opt/sribees-online-dev
 #   DEV_ENV_FILE              — the whole .env for the dev stack
 #   DEV_SMS_PROVIDER, DEV_NOTIFYLK_USER_ID, DEV_NOTIFYLK_API_KEY,
-#   DEV_NOTIFYLK_SENDER_ID, DEV_SMS_DAILY_LIMIT
+#   DEV_NOTIFYLK_SENDER_ID
 #                             — optional; override those keys of DEV_ENV_FILE
 #   DEV_DOMAIN                — e.g. dev-api.sribees.com
 # =============================================================================
@@ -231,7 +231,6 @@ jobs:
           NOTIFYLK_USER_ID: ${{ secrets.DEV_NOTIFYLK_USER_ID }}
           NOTIFYLK_API_KEY: ${{ secrets.DEV_NOTIFYLK_API_KEY }}
           NOTIFYLK_SENDER_ID: ${{ secrets.DEV_NOTIFYLK_SENDER_ID }}
-          SMS_DAILY_LIMIT: ${{ secrets.DEV_SMS_DAILY_LIMIT }}
         run: |
           if [ -z "$DEV_ENV_FILE" ]; then
             echo "::error::secret DEV_ENV_FILE is empty"
@@ -240,7 +239,7 @@ jobs:
           # The SMS gateway keys live as their own secrets, so they can be set
           # or rotated without rebuilding DEV_ENV_FILE. Each set one replaces
           # the same key in it; nothing is echoed.
-          for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID SMS_DAILY_LIMIT; do
+          for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID; do
             value=$(printenv "$key" || true)
             if [ -n "$value" ]; then
               DEV_ENV_FILE=$(printf '%s\n' "$DEV_ENV_FILE" | grep -v "^${key}=" || true)

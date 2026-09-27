@@ -21,6 +21,10 @@ SPLASH_VIDEO_KEY = "splash_video_url"
 ORDER_TAX_RATE_PERCENT_KEY = "order_tax_rate_percent"
 # Rupees of order value (excluding delivery) per loyalty point.
 LOYALTY_SPEND_PER_POINT_KEY = "loyalty_spend_per_point"
+# Texts the server may send per Sri Lankan day, all numbers together. Set by
+# the Super Admin on the SMS page; 0 stops every text.
+SMS_DAILY_LIMIT_KEY = "sms_daily_limit"
+DEFAULT_SMS_DAILY_LIMIT = 100
 # --- Mobile remote config ---------------------------------------------------
 # The Play Store freezes the app: once a build is submitted, changing anything
 # in it means another review, which is days. These keys are how the running
@@ -52,6 +56,17 @@ def _to_float(value: Optional[str], fallback: float) -> float:
 
 class AppSettingsService:
     """Service for runtime application settings."""
+
+    @staticmethod
+    async def get_sms_daily_limit(db: AsyncSession) -> int:
+        setting = await AppSettingsService.get_by_key(db, SMS_DAILY_LIMIT_KEY)
+        if setting is None or not setting.is_active:
+            return DEFAULT_SMS_DAILY_LIMIT
+        try:
+            return max(0, int(setting.value))
+        except (TypeError, ValueError):
+            logger.error(f"app_settings.{SMS_DAILY_LIMIT_KEY} is not a number; using the default")
+            return DEFAULT_SMS_DAILY_LIMIT
 
     # ------------------------------------------------------------------
     # Generic key/value CRUD

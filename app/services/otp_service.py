@@ -131,6 +131,15 @@ class OTPService:
     # survives a resend, so asking for a fresh code does not buy fresh guesses.
     MAX_ATTEMPTS = 5
 
+    # Sending rules, the same on every server (the owner's, 2026-09-27). The
+    # daily total for the whole server is not here: the Super Admin sets it.
+    RESEND_COOLDOWN_SECONDS = 5 * 60
+    MAX_SENDS_PER_PHONE_PER_HOUR = 5
+    MAX_SENDS_PER_PHONE_PER_DAY = 10
+    MAX_SENDS_PER_IP_PER_HOUR = 10
+    # How long each day's count is kept, for the SMS page's history.
+    HISTORY_DAYS = 8
+
     @staticmethod
     def _attempts_key(key: str) -> str:
         return f"{key}:attempts"
@@ -202,6 +211,7 @@ class OTPService:
         *,
         client_ip: Optional[str] = None,
         lang: str = "en",
+        daily_limit: int,
     ) -> OtpChallenge:
         """
         Send a code to ``phone`` if the sending limits allow it.
@@ -209,14 +219,15 @@ class OTPService:
         The request endpoint needs no login and every text is paid for, so
         the limits are about money as much as about the recipient: a resend
         cooldown and hourly/daily caps per number (nobody gets text-bombed),
-        a generous per-address cap, and a daily ceiling for the whole server
-        that no amount of rotating numbers and addresses gets past.
+        a per-address cap, and a daily ceiling for the whole server
+        (``daily_limit``, the Super Admin's setting; 0 sends nothing) that no
+        amount of rotating numbers and addresses gets past.
         """
         from app.utils.identity import normalize_mobile
 
         phone = normalize_mobile(phone)
         destination = mask_phone(phone)
-        cooldown = max(0, settings.otp_resend_cooldown_seconds)
+        cooldown = max(0, OTPService.RESEND_COOLDOWN_SECONDS)
         challenge = OtpChallenge(
             expires_in_seconds=RedisTTL.PHONE_OTP,
             resend_in_seconds=cooldown,
@@ -236,11 +247,11 @@ class OTPService:
 
         day = OTPService._lk_day()
         limits = [
-            (f"otp:send:hour:{phone}", 3600, settings.otp_max_sends_per_phone_per_hour),
-            (f"otp:send:day:{phone}:{day}", 86400, settings.otp_max_sends_per_phone_per_day),
+            (f"otp:send:hour:{phone}", 3600, OTPService.MAX_SENDS_PER_PHONE_PER_HOUR),
+            (f"otp:send:day:{phone}:{day}", 86400, OTPService.MAX_SENDS_PER_PHONE_PER_DAY),
         ]
         if client_ip:
-            limits.append((f"otp:send:ip:{client_ip}", 3600, settings.otp_max_sends_per_ip_per_hour))
+            limits.append((f"otp:send:ip:{client_ip}", 3600, OTPService.MAX_SENDS_PER_IP_PER_HOUR))
         for counter, window, limit in limits:
             count, left = await OTPService._count(redis, counter, window)
             if limit > 0 and count > limit:
@@ -252,13 +263,13 @@ class OTPService:
                 )
 
         budget_key = f"sms:sent:{day}"
-        sent_today, _ = await OTPService._count(redis, budget_key, 86400 + 3600)
-        if settings.sms_daily_limit > 0 and sent_today > settings.sms_daily_limit:
+        sent_today, _ = await OTPService._count(redis, budget_key, OTPService.HISTORY_DAYS * 86400)
+        if sent_today > daily_limit:
             await redis.decr(budget_key)
             await redis.delete(cooldown_key)
             logger.error(
-                f"SMS daily limit reached ({settings.sms_daily_limit}); refusing codes until "
-                "tomorrow. Raise SMS_DAILY_LIMIT if this is real demand."
+                f"SMS daily limit reached ({daily_limit}); refusing codes until tomorrow. "
+                "The Super Admin can raise it on the SMS page."
             )
             raise OTPService._refuse(
                 "OTP_SMS_UNAVAILABLE",
@@ -287,6 +298,19 @@ class OTPService:
     async def sent_today(redis: Redis) -> int:
         value = await redis.get(f"sms:sent:{OTPService._lk_day()}")
         return int(value) if value else 0
+
+    @staticmethod
+    async def sent_by_day(redis: Redis, days: int = 7) -> list[dict]:
+        """Texts sent on each of the last ``days`` Sri Lankan days, newest first."""
+        from datetime import timedelta
+
+        today = datetime.now(timezone.utc).astimezone(_LK_TZ).date()
+        out = []
+        for back in range(days):
+            day = today - timedelta(days=back)
+            value = await redis.get(f"sms:sent:{day.strftime('%Y%m%d')}")
+            out.append({"date": day.isoformat(), "sent": int(value) if value else 0})
+        return out
 
     @staticmethod
     async def verify_otp(redis: Redis, key: str, code: str, *, phone: Optional[str] = None) -> bool:

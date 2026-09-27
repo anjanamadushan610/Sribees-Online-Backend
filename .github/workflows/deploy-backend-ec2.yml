@@ -132,18 +132,19 @@ jobs:
           SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
           # The SMS gateway for one-time codes (app/services/sms_gateway.py).
           # SMS_PROVIDER unset keeps whatever ENV_CONTENT says (default
-          # "console": codes only go to the log). Each is optional.
+          # "console": codes only go to the log). Each is optional. The
+          # sending limits are not here: they are code, and the daily total
+          # is set by the Super Admin on the SMS page.
           SMS_PROVIDER: ${{ secrets.SMS_PROVIDER }}
           NOTIFYLK_USER_ID: ${{ secrets.NOTIFYLK_USER_ID }}
           NOTIFYLK_API_KEY: ${{ secrets.NOTIFYLK_API_KEY }}
           NOTIFYLK_SENDER_ID: ${{ secrets.NOTIFYLK_SENDER_ID }}
-          SMS_DAILY_LIMIT: ${{ secrets.SMS_DAILY_LIMIT }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON,OTP_TEST_PHONES,SMOKE_ADMIN_EMAIL,SMOKE_ADMIN_PASSWORD,SMS_PROVIDER,NOTIFYLK_USER_ID,NOTIFYLK_API_KEY,NOTIFYLK_SENDER_ID,SMS_DAILY_LIMIT
+          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON,OTP_TEST_PHONES,SMOKE_ADMIN_EMAIL,SMOKE_ADMIN_PASSWORD,SMS_PROVIDER,NOTIFYLK_USER_ID,NOTIFYLK_API_KEY,NOTIFYLK_SENDER_ID
           # MUST stay false. script_stop makes the action test every command's
           # exit status itself and return on the first non-zero one. That check
           # sits outside bash, so it ignores `set +e` AND the rule that a
@@ -255,7 +256,7 @@ jobs:
               echo "SMOKE_ADMIN_PASSWORD=${SMOKE_ADMIN_PASSWORD}" >> .env
             fi
             # SMS gateway. Same pattern; a value is never echoed.
-            for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID SMS_DAILY_LIMIT; do
+            for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID; do
               value=$(printenv "$key" || true)
               if [ -n "$value" ]; then
                 grep -v "^${key}=" .env > .env.tmp || true
