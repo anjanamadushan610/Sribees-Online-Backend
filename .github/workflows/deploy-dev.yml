@@ -1,7 +1,7 @@
 # =============================================================================
 # SRIBEESonline — development CD (Contabo)
 #
-# Triggers on push to `development` ONLY. Production is a different workflow
+# Runs only when started by hand (workflow_dispatch) on `development`. Production is a different workflow
 # (deploy-backend-ec2.yml), a different host, a different database and a
 # different branch; nothing here can reach it.
 #
@@ -30,11 +30,9 @@
 name: Deploy Development (Contabo)
 
 on:
-  push:
-    branches: [development]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
+  # Manual only (owner, 2026-09-28): a push starts nothing, because every run
+  # on this private repo spends the free account's Actions minutes. Start it
+  # from the Actions tab or the REST API (workflow_dispatch).
   workflow_dispatch:
     inputs:
       image_ref:

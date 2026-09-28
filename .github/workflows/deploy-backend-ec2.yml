@@ -1,7 +1,8 @@
 # =============================================================================
 # SRIBEESonline — AWS EC2 Backend CI/CD Pipeline (Zero-Manual-Setup)
 #
-# Triggers on push to the 'main' branch of the standalone Backend repository.
+# Runs only when started by hand (workflow_dispatch) -- a push to main
+# deploys nothing.
 #
 # Images are published to the GitHub Container Registry (ghcr.io) using the
 # automatic GITHUB_TOKEN — no registry account or registry secret is required.
@@ -16,10 +17,9 @@
 name: Build & Deploy Backend (Zero-Manual-Setup)
 
 on:
-  push:
-    branches: [ main ]
-  # Allows a redeploy to be triggered from the Actions tab. Without this the
-  # only way to re-run a deploy is to invent a commit.
+  # Manual only (owner, 2026-09-28): a push starts nothing, because every run
+  # on this private repo spends the free account's Actions minutes. Start it
+  # from the Actions tab or the REST API (workflow_dispatch).
   workflow_dispatch:
 
 jobs:
