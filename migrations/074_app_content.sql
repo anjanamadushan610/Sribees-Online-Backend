@@ -2,7 +2,7 @@
 -- Migration 074: words the app shows that change without an app release.
 --
 -- The owner asked for an "About the developer" page in Profile (Sribees
--- Digitel Solutions, the software company of Sribees Lanka (Pvt) Ltd) whose
+-- Digital Solutions, the software company of Sribees Lanka (Pvt) Ltd) whose
 -- every word comes from the database in English, Sinhala and Tamil, so it can
 -- be changed with a query after the app is on the Play Store.
 --
@@ -22,7 +22,7 @@
 --
 --   -- the website link, all three languages
 --   UPDATE app_content
---      SET content = jsonb_set(content, '{cta,url}', to_jsonb('https://www.sribeesdigitel.com'::text))
+--      SET content = jsonb_set(content, '{cta,url}', to_jsonb('https://www.sribeesdigital.com'::text))
 --    WHERE page = 'developer';
 --
 --   -- drop a section (here the numbers strip) in every language
@@ -68,15 +68,15 @@ INSERT INTO app_content (page, lang, content) VALUES
     ('developer', 'en', $page${
   "menu": {
     "title": "About the developer",
-    "subtitle": "Built by Sribees Digitel Solutions"
+    "subtitle": "Built by Sribees Digital Solutions"
   },
   "title": "About the developer",
   "hero": {
-    "eyebrow": "A SRIBEES LANKA (PVT) LTD COMPANY",
-    "name": "Sribees Digitel Solutions",
+    "eyebrow": "SRIBEES LANKA (PVT) LTD COMPANY",
+    "name": "Sribees Digital Solutions",
     "tagline": "Software that works as hard as your business."
   },
-  "intro": "Sribees Digitel Solutions is the software company of Sribees Lanka (Pvt) Ltd. We design and build mobile apps, websites and AI systems — and we built the Sribees Online app you are using right now.",
+  "intro": "Sribees Digital Solutions is the software company of Sribees Lanka (Pvt) Ltd. We design and build mobile apps, websites and AI systems — and we built the Sribees Online app you are using right now.",
   "highlights": [
     {
       "value": "3",
@@ -133,22 +133,22 @@ INSERT INTO app_content (page, lang, content) VALUES
     "title": "Have an idea for your business?",
     "body": "Tell us what you need. We will help you turn it into an app, a website or an AI system.",
     "button": "Visit our website",
-    "url": "https://www.sribeesdigitel.com"
+    "url": "https://www.sribeesdigital.com"
   },
-  "footer": "© Sribees Digitel Solutions · part of Sribees Lanka (Pvt) Ltd"
+  "footer": "© Sribees Digital Solutions · part of Sribees Lanka (Pvt) Ltd"
 }$page$::jsonb),
     ('developer', 'si', $page${
   "menu": {
     "title": "සංවර්ධකයා ගැන",
-    "subtitle": "Sribees Digitel Solutions විසින් නිර්මාණය කළා"
+    "subtitle": "Sribees Digital Solutions විසින් නිර්මාණය කළා"
   },
   "title": "සංවර්ධකයා ගැන",
   "hero": {
     "eyebrow": "SRIBEES LANKA (PVT) LTD සමාගමේ කොටසක්",
-    "name": "Sribees Digitel Solutions",
+    "name": "Sribees Digital Solutions",
     "tagline": "ඔබේ අදහසට, අපේ මෘදුකාංග විසඳුම."
   },
-  "intro": "Sribees Digitel Solutions යනු Sribees Lanka (Pvt) Ltd හි මෘදුකාංග සමාගමයි. අපි ජංගම යෙදුම්, වෙබ් අඩවි සහ AI පද්ධති සැලසුම් කර නිර්මාණය කරනවා. ඔබ දැන් භාවිතා කරන Sribees Online යෙදුමත් අපේ නිර්මාණයක්.",
+  "intro": "Sribees Digital Solutions යනු Sribees Lanka (Pvt) Ltd හි මෘදුකාංග සමාගමයි. අපි ජංගම යෙදුම්, වෙබ් අඩවි සහ AI පද්ධති සැලසුම් කර නිර්මාණය කරනවා. ඔබ දැන් භාවිතා කරන Sribees Online යෙදුමත් අපේ නිර්මාණයක්.",
   "highlights": [
     {
       "value": "3",
@@ -205,22 +205,22 @@ INSERT INTO app_content (page, lang, content) VALUES
     "title": "ඔබේ ආයතනයට අදහසක් තිබේද?",
     "body": "ඔබට ඕනෑ දේ අපට කියන්න. එය යෙදුමක්, වෙබ් අඩවියක් හෝ AI පද්ධතියක් බවට පත් කරන්න අපි උදව් කරනවා.",
     "button": "අපේ වෙබ් අඩවියට යන්න",
-    "url": "https://www.sribeesdigitel.com"
+    "url": "https://www.sribeesdigital.com"
   },
-  "footer": "© Sribees Digitel Solutions · Sribees Lanka (Pvt) Ltd හි කොටසක්"
+  "footer": "© Sribees Digital Solutions · Sribees Lanka (Pvt) Ltd හි කොටසක්"
 }$page$::jsonb),
     ('developer', 'ta', $page${
   "menu": {
     "title": "டெவலப்பர் பற்றி",
-    "subtitle": "Sribees Digitel Solutions உருவாக்கியது"
+    "subtitle": "Sribees Digital Solutions உருவாக்கியது"
   },
   "title": "டெவலப்பர் பற்றி",
   "hero": {
     "eyebrow": "SRIBEES LANKA (PVT) LTD நிறுவனத்தின் ஒரு பகுதி",
-    "name": "Sribees Digitel Solutions",
+    "name": "Sribees Digital Solutions",
     "tagline": "உங்கள் யோசனைக்கு, எங்கள் மென்பொருள் தீர்வு."
   },
-  "intro": "Sribees Digitel Solutions என்பது Sribees Lanka (Pvt) Ltd இன் மென்பொருள் நிறுவனம். நாங்கள் மொபைல் செயலிகள், இணையதளங்கள் மற்றும் AI அமைப்புகளை வடிவமைத்து உருவாக்குகிறோம். நீங்கள் இப்போது பயன்படுத்தும் Sribees Online செயலியும் எங்கள் படைப்பே.",
+  "intro": "Sribees Digital Solutions என்பது Sribees Lanka (Pvt) Ltd இன் மென்பொருள் நிறுவனம். நாங்கள் மொபைல் செயலிகள், இணையதளங்கள் மற்றும் AI அமைப்புகளை வடிவமைத்து உருவாக்குகிறோம். நீங்கள் இப்போது பயன்படுத்தும் Sribees Online செயலியும் எங்கள் படைப்பே.",
   "highlights": [
     {
       "value": "3",
@@ -277,8 +277,8 @@ INSERT INTO app_content (page, lang, content) VALUES
     "title": "உங்கள் வணிகத்திற்கு ஒரு யோசனை உள்ளதா?",
     "body": "உங்களுக்குத் தேவையானதைச் சொல்லுங்கள். அதை ஒரு செயலி, இணையதளம் அல்லது AI அமைப்பாக மாற்ற நாங்கள் உதவுகிறோம்.",
     "button": "எங்கள் இணையதளத்தைப் பார்வையிடவும்",
-    "url": "https://www.sribeesdigitel.com"
+    "url": "https://www.sribeesdigital.com"
   },
-  "footer": "© Sribees Digitel Solutions · Sribees Lanka (Pvt) Ltd இன் ஒரு பகுதி"
+  "footer": "© Sribees Digital Solutions · Sribees Lanka (Pvt) Ltd இன் ஒரு பகுதி"
 }$page$::jsonb)
 ON CONFLICT (page, lang) DO NOTHING;

@@ -31,8 +31,8 @@ async def test_the_developer_page_is_seeded_in_three_languages(api, migrated):
         assert data["lang"] == lang
         content = data["content"]
         assert content["services_title"] == name_word
-        assert content["hero"]["name"] == "Sribees Digitel Solutions"
-        assert content["cta"]["url"] == "https://www.sribeesdigitel.com"
+        assert content["hero"]["name"] == "Sribees Digital Solutions"
+        assert content["cta"]["url"] == "https://www.sribeesdigital.com"
         assert content["menu"]["title"] and len(content["services"]) == 6
 
 
