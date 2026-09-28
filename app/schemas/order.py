@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -233,6 +234,18 @@ class ReturnRequest(BaseModel):
     # them. Support raising one by hand goes through the admin API, which has
     # no such requirement -- a phone call has no photographs.
     images: List[str] = Field(..., min_length=1, max_length=4)
+
+
+class ReorderLine(BaseModel):
+    """One line of a past order to put back in the cart, and how many."""
+    order_item_id: UUID
+    quantity: int = Field(..., ge=1, le=999)
+
+
+class ReorderRequest(BaseModel):
+    """The lines the customer kept on the reorder page. Lines left out are
+    not added; each quantity is capped at what is in stock today."""
+    items: List[ReorderLine] = Field(..., min_length=1, max_length=200)
 
 
 class UpdateOrderStatusRequest(BaseModel):

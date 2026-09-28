@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     HTTPException,
@@ -34,6 +35,7 @@ from app.schemas.order import (
     CreateOrderRequest,
     OrderQuoteResponse,
     QuoteOrderRequest,
+    ReorderRequest,
     ReturnRequest,
     UpdateOrderStatusRequest,
     UpdatePaymentStatusRequest,
@@ -1150,35 +1152,66 @@ async def download_invoice(
     )
 
 
+async def _own_order_uuid(db: AsyncSession, order_id: str, user_id) -> UUID:
+    """An order id or order number, resolved to the caller's order id."""
+    try:
+        return UUID(order_id)
+    except ValueError:
+        existing = await OrderService.get_by_order_number(db, order_id, user_id)
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Order not found"
+            )
+        return existing.order_id
+
+
+@router.get("/{order_id}/reorder", response_model=dict)
+async def reorder_preview(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    The reorder page: every line of a past order with today's price, how
+    many are in stock, and the ordered quantity capped at that. Nothing is
+    added to the cart here.
+    """
+    order_uuid = await _own_order_uuid(db, order_id, current_user.user_id)
+    try:
+        items = await OrderService.reorder_preview(db, order_uuid, current_user.user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    for item in items:
+        item["image"] = media_url(item["image"])
+    return {"success": True, "data": {"items": items}}
+
+
 @router.post("/{order_id}/reorder", response_model=dict)
 async def reorder(
     order_id: str,
+    body: Optional[ReorderRequest] = Body(None),
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     """
     Re-add a past order's items to the current user's cart at current prices.
 
-    Unavailable items (missing / inactive / out of stock) are skipped and
-    reported back. Accepts an order id or order number.
+    With a body, only the listed lines are added, in the listed quantities
+    (the reorder page); without one, the whole order. Unavailable items
+    (missing / inactive / out of stock) are skipped and reported back.
+    Accepts an order id or order number.
     """
     try:
-        # Resolve id or order number.
-        try:
-            order_uuid = UUID(order_id)
-        except ValueError:
-            existing = await OrderService.get_by_order_number(
-                db, order_id, current_user.user_id
-            )
-            if not existing:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Order not found"
-                )
-            order_uuid = existing.order_id
+        order_uuid = await _own_order_uuid(db, order_id, current_user.user_id)
+        selection = (
+            {line.order_item_id: line.quantity for line in body.items}
+            if body is not None
+            else None
+        )
 
         cart, unavailable = await OrderService.reorder(
-            db, order_uuid, current_user.user_id
+            db, order_uuid, current_user.user_id, selection
         )
 
         if unavailable:
