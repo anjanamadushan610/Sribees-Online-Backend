@@ -70,6 +70,25 @@ def test_photo_only_and_shortcuts_are_valid():
 
 
 @pytest.mark.parametrize(
+    ("data", "real_type"),
+    [
+        (b"\xff\xd8\xffimage", "image/jpeg"),
+        (b"\x89PNG\r\n\x1a\nimage", "image/png"),
+        (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "image/webp"),
+    ],
+)
+def test_photo_type_comes_from_its_bytes(data, real_type):
+    """A WebP the phone re-encoded as JPEG still arrives labelled image/webp."""
+    import base64
+
+    for label in ("image/jpeg", "image/png", "image/webp"):
+        request = ChatMessageRequest(
+            image_base64=base64.b64encode(data).decode(), image_mime_type=label
+        )
+        assert request.image_mime_type == real_type
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "not JSON",
