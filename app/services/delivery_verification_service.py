@@ -48,6 +48,29 @@ def is_code_eligible(order: Order) -> bool:
     return order.payment_method != PaymentMethodEnum.COD.value
 
 
+# Past these the code has nothing left to do: the parcel is with the customer,
+# on its way back, or the order is gone.
+_CODE_DONE_STATUSES = frozenset(
+    {"delivered", "cancelled", "refunded", "return_requested", "return_approved", "rto_initiated"}
+)
+
+
+def show_code_to_customer(order: Order) -> bool:
+    """Whether the app shows the customer their handover code.
+
+    From the moment a prepaid order is paid until the rider takes the code
+    (owner, 2026-09-28): they paid in advance, so the code is theirs to keep
+    ready -- not only once a rider is already at the door.
+    """
+    return (
+        is_code_eligible(order)
+        and bool(order.delivery_verification_code)
+        and order.delivery_verification_status == "pending"
+        and order.payment_status == "paid"
+        and order.status not in _CODE_DONE_STATUSES
+    )
+
+
 class DeliveryVerificationService:
     """Generate the handover code and record the outcome SribeesExpress reports."""
 

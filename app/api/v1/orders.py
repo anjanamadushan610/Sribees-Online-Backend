@@ -50,6 +50,7 @@ from app.services import (
 )
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
+from app.services.delivery_verification_service import show_code_to_customer
 from app.services.invoice_service import InvoiceService
 from app.services.loyalty_service import LoyaltyService
 from app.services.order_reward_service import OrderRewardService
@@ -298,6 +299,8 @@ def format_order(
         # Delivery handover verification code (non-COD orders only)
         "delivery_verification_code": order.delivery_verification_code,
         "delivery_verification_status": order.delivery_verification_status,
+        # Whether to put that code in front of the customer; decided here.
+        "show_delivery_code": show_code_to_customer(order),
         # Courier tracking
         "courier_tracking_status": order.courier_tracking_status,
         "courier_waybill_number": order.courier_waybill_number,
@@ -465,6 +468,7 @@ def format_order_summary(order) -> dict:
             else None
         ),
         "delivery_verification_status": order.delivery_verification_status,
+        "show_delivery_code": show_code_to_customer(order),
         "courier_tracking_status": order.courier_tracking_status,
         "items": [
             {
