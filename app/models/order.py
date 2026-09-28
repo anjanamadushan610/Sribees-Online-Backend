@@ -37,7 +37,14 @@ class OrderStatus(str, enum.Enum):
     drives the status. PROCESSING is the legacy pre-workflow equivalent of
     PACKING, still accepted for orders placed before this shipped.
     DELIVERY_FAILED / RTO_INITIATED are the last-mile exception path.
+
+    AWAITING_PAYMENT is an online-payment order (card, bank) the gateway has
+    not yet confirmed. It is not placed: the branch cannot act on it, the
+    "order placed" notice is not sent, and its stock is only held. It becomes
+    CONFIRMED when the money arrives, or CANCELLED when the payment window
+    closes unpaid (app/payments/service.py).
     """
+    AWAITING_PAYMENT = "awaiting_payment"
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"

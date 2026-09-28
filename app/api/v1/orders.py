@@ -30,7 +30,9 @@ from app.core.dependencies import (
     require_super_admin,
 )
 from app.core.media import media_url
+from app.core.request_language import current_language
 from app.models.order import OrderStatus
+from app.payments import service as online_payments
 from app.schemas.order import (
     CreateOrderRequest,
     OrderQuoteResponse,
@@ -283,6 +285,10 @@ def format_order(
         **OrderRewardService.order_cashback_state(order),
         "total_amount": float(order.total_amount),
         "status": order.status,
+        # What the app shows for the status and the payment, in the caller's
+        # language -- so a status it has never heard of still reads right.
+        "status_label": online_payments.status_label(order, current_language()),
+        "payment": online_payments.payment_view(order, current_language()),
         "payment_status": order.payment_status,
         "payment_method": order.payment_method,
         "payment_id": order.payment_id,
@@ -436,6 +442,8 @@ def format_order_summary(order) -> dict:
         "order_id": str(order.order_id),
         "order_number": order.order_number,
         "status": order.status,
+        "status_label": online_payments.status_label(order, current_language()),
+        "payment": online_payments.payment_view(order, current_language()),
         "payment_status": order.payment_status,
         "total_amount": float(order.total_amount),
         "cashback_earned": float(order.cashback_earned or 0),
@@ -507,7 +515,16 @@ async def create_order(
         )
         return {
             "success": True,
-            "data": format_order(order, payment_redirect_url=payment_redirect_url),
+            "data": {
+                **format_order(order, payment_redirect_url=payment_redirect_url),
+                # Where to send the customer to pay, and how to come back. The
+                # app follows this; it knows no gateway.
+                "payment_action": (
+                    online_payments.action_for(order, payment_redirect_url)
+                    if payment_redirect_url
+                    else None
+                ),
+            },
             "message": message
         }
     except CouponValidationError as e:

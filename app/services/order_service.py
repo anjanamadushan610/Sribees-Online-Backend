@@ -14,7 +14,6 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.config.settings import settings
 from app.models.order import (
     Order,
     OrderItem,
@@ -25,9 +24,11 @@ from app.models.order import (
 from app.models.product import BranchInventory, Product
 from app.models.user import Address, User
 from app.models.wallet import WalletTransactionType
+from app.payments import catalog as payment_catalog
+from app.payments import service as online_payments
+from app.payments.gateways.base import GatewayError
 from app.schemas.order import (
     GATEWAY_PAYMENT_METHODS,
-    MARX_PAYMENT_METHOD_MAP,
     CreateOrderRequest,
     OrderStatusEnum,
     PaymentMethodEnum,
@@ -52,7 +53,6 @@ from app.services.courier_service import (
 )
 from app.services.delivery_verification_service import DeliveryVerificationService
 from app.services.loyalty_service import LoyaltyService
-from app.services.marx_ipg_service import MarxIPGError, MarxIPGService
 from app.services.notification_service import NotificationService
 from app.services.order_reward_service import OrderRewardService
 from app.services.pricing_service import (
@@ -465,43 +465,36 @@ class OrderService:
         cashback_earned = breakdown.cashback_earned
         order_number = OrderService.generate_order_number()
 
-        # Marx IPG gateway orders: create the order on Marx's side BEFORE
-        # touching our own database -- if it fails, nothing here needs
-        # undoing. If the wallet balance alone already covers the total there
-        # is nothing to charge the gateway for; fall through and treat it
-        # exactly like a fully-covered WALLET order.
-        is_gateway = data.payment_method in GATEWAY_PAYMENT_METHODS
+        # The method, and for an online one its gateway, come from the payment
+        # catalog (app/payments) -- never from the client. A method that is
+        # switched off is refused here too, not only hidden from the list.
+        method = payment_catalog.get_method(data.payment_method)
+        if method is None or not method.enabled():
+            raise ValueError("This payment method is not available right now.")
+
+        # Online orders: open the gateway's checkout BEFORE touching our own
+        # database -- if it fails, nothing here needs undoing. If the wallet
+        # alone covers the total there is nothing to charge the gateway for;
+        # fall through and treat it exactly like a fully-covered WALLET order.
+        is_gateway = method.is_online
         payment_redirect_url = None
         gateway_tr_id = None
+        checkout = None
 
         if is_gateway and breakdown.total > 0:
             user = await db.get(User, user_id)
-            marx_method = MARX_PAYMENT_METHOD_MAP[data.payment_method]
-            # Marx requires a real customerMail. Phone-only accounts (this
-            # app's primary signup path) are asked for one right after OTP
-            # verification (see CompleteProfileScreen), so this should only
-            # fire for an account that predates that screen -- surface a
-            # clear, actionable error rather than inventing an address no
-            # one reads, which a payment processor should never be handed.
-            if not user or not user.email:
-                raise ValueError(
-                    "Please add your email in Profile before paying by card or bank transfer."
-                )
             try:
-                gw = await MarxIPGService.create_order(
-                    merchant_rid=order_number,
+                checkout = await online_payments.open_checkout(
+                    method=method,
+                    reference=order_number,
                     amount=breakdown.total,
-                    return_url=settings.marx_ipg_return_url,
-                    customer_mail=user.email,
-                    customer_mobile=user.phone if user else None,
-                    order_summary=f"SRIBEESonline order {order_number}",
-                    customer_reference=(user.full_name if user else None) or order_number,
-                    marx_payment_method=marx_method,
+                    payer=online_payments.payer_for(user),
+                    order_number=order_number,
                 )
-            except MarxIPGError as exc:
+            except GatewayError as exc:
                 raise ValueError(f"Could not start payment: {exc}") from exc
-            payment_redirect_url = gw.get("pay_url")
-            gateway_tr_id = str(gw["tr_id"]) if gw.get("tr_id") is not None else None
+            payment_redirect_url = checkout.redirect_url
+            gateway_tr_id = checkout.gateway_ref
         elif is_gateway:
             is_gateway = False
 
@@ -537,7 +530,10 @@ class OrderService:
             payment_method=data.payment_method,
             coupon_code=coupon_row.code if coupon_row else data.coupon_code,
             notes=data.notes,
-            status=OrderStatus.PENDING.value,
+            # An online order is not placed until the gateway says it is paid.
+            status=(
+                OrderStatus.AWAITING_PAYMENT.value if is_gateway else OrderStatus.PENDING.value
+            ),
             payment_status=payment_status_value,
             gateway_tr_id=gateway_tr_id,
             courier_quote_id=confirmed_quote.quote_id,
@@ -552,12 +548,22 @@ class OrderService:
         history = OrderStatusHistory(
             order_id=order.order_id,
             old_status=None,
-            new_status=OrderStatus.PENDING.value,
+            new_status=order.status,
             changed_by="Customer",
-            notes="Order placed by customer",
+            notes="Waiting for payment" if is_gateway else "Order placed by customer",
             created_at=datetime.now(ZoneInfo("Asia/Colombo")),
         )
         db.add(history)
+        if is_gateway:
+            online_payments.stage_attempt(
+                db,
+                order=order,
+                attempt_no=1,
+                method=method,
+                reference=order_number,
+                checkout=checkout,
+                amount=breakdown.total,
+            )
 
         # Redeem the coupon atomically within this transaction. The conditional
         # UPDATE guards used_count < usage_limit under a row lock, so two orders
@@ -726,7 +732,10 @@ class OrderService:
         )
 
         # Notify the user their order was placed. Best-effort: a notification
-        # failure must never roll back a successfully committed order.
+        # failure must never roll back a successfully committed order. An
+        # online order is told when its payment lands (update_payment_status).
+        if is_gateway:
+            return order, payment_redirect_url
         try:
             await NotificationService.notify_order_placed(
                 db,
@@ -1083,55 +1092,12 @@ class OrderService:
     @staticmethod
     async def reconcile_pending_gateway_payments(db: AsyncSession) -> dict:
         """
-        Sweep gateway orders stuck in PENDING and resolve them against Marx's
-        own record of what happened (doc section 7's own recommendation).
-
-        Only considers orders older than a 10-minute grace period so this
-        never races a shopper still on the hosted pay page. Shared by
-        ``scripts/reconcile_marx_payments.py`` and the admin-triggered
-        endpoint, so both drive the exact same logic.
+        Settle online payments nobody came back for, and close unpaid orders
+        whose payment window has passed. The admin button, the script and the
+        background worker all run this one sweep (app/payments/service.py).
         """
-        cutoff = datetime.utcnow() - timedelta(minutes=10)
-        result = await db.execute(
-            select(Order).where(
-                Order.payment_method.in_(GATEWAY_PAYMENT_METHODS),
-                Order.payment_status == PaymentStatus.PENDING.value,
-                Order.gateway_tr_id.isnot(None),
-                Order.created_at < cutoff,
-            )
-        )
-        orders = result.scalars().all()
+        return await online_payments.sweep(db)
 
-        resolved = {"checked": len(orders), "paid": 0, "failed": 0, "still_pending": 0}
-        for order in orders:
-            try:
-                summary = await MarxIPGService.get_order_summary(tr_id=order.gateway_tr_id)
-            except MarxIPGError as exc:
-                logger.warning(f"Reconciliation: could not fetch summary for {order.order_number}: {exc}")
-                resolved["still_pending"] += 1
-                continue
-
-            order.gateway_status = summary["summary_result"]
-            order.gateway_response_code = summary.get("gateway_code")
-            order.gateway_raw_response = summary["raw"]
-            order.gateway_confirmed_at = datetime.utcnow()
-
-            if summary["summary_result"] == "SUCCESS" and summary.get("order_status") in ("SUCCESS", "CAPTURED"):
-                await db.commit()
-                await OrderService.update_payment_status(
-                    db, order, PaymentStatusEnum.PAID, payment_id=order.gateway_tr_id
-                )
-                resolved["paid"] += 1
-            elif summary["summary_result"] == "FAILURE":
-                order.payment_status = PaymentStatus.FAILED.value
-                await db.commit()
-                resolved["failed"] += 1
-            else:
-                await db.commit()
-                resolved["still_pending"] += 1
-
-        logger.info(f"Marx reconciliation sweep: {resolved}")
-        return resolved
 
     @staticmethod
     async def _reorder_lines(db: AsyncSession, order: Order) -> list:
@@ -1687,11 +1653,24 @@ class OrderService:
 
         # If payment successful, confirm order and run the "just got paid"
         # side effects (deferred cashback, delivery code, courier booking).
-        just_confirmed = (
-            payment_status == PaymentStatusEnum.PAID and order.status == OrderStatus.PENDING.value
+        was_awaiting = order.status == OrderStatus.AWAITING_PAYMENT.value
+        just_confirmed = payment_status == PaymentStatusEnum.PAID and order.status in (
+            OrderStatus.PENDING.value,
+            OrderStatus.AWAITING_PAYMENT.value,
         )
         if just_confirmed:
             order.status = OrderStatus.CONFIRMED.value
+            if was_awaiting:
+                db.add(
+                    OrderStatusHistory(
+                        order_id=order.order_id,
+                        old_status=OrderStatus.AWAITING_PAYMENT.value,
+                        new_status=OrderStatus.CONFIRMED.value,
+                        changed_by="Payment",
+                        notes="Paid online; order placed",
+                        created_at=datetime.now(ZoneInfo("Asia/Colombo")),
+                    )
+                )
 
         await db.commit()
         await db.refresh(order)
@@ -1699,6 +1678,19 @@ class OrderService:
         if just_confirmed:
             await OrderService._on_payment_confirmed(db, order)
             await db.refresh(order)
+
+        # The order became real just now, so this is when it was "placed".
+        if just_confirmed and was_awaiting:
+            try:
+                await NotificationService.notify_order_placed(
+                    db,
+                    user_id=order.user_id,
+                    order_number=order.order_number,
+                    order_id=order.order_id,
+                    status=order.status,
+                )
+            except Exception as e:
+                logger.warning(f"{order.order_number} paid but the placed notice failed: {e}")
 
         logger.info(f"Order {order.order_number} payment status updated to {payment_status.value}")
 
@@ -1981,6 +1973,7 @@ class OrderService:
     # come back through the RTO / return flow, not through a cancellation.
     _ON_THE_SHELF = frozenset(
         {
+            OrderStatus.AWAITING_PAYMENT.value,
             OrderStatus.PENDING.value,
             OrderStatus.CONFIRMED.value,
             OrderStatus.PROCESSING.value,

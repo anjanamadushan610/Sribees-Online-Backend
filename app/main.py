@@ -120,6 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     import asyncio
     from contextlib import suppress
 
+    from app.payments.worker import run_payment_worker
     from app.services.app_content_service import run_content_watcher
     from app.services.assistant_reminder_worker import run_reminder_worker
     from app.services.campaign_service import run_campaign_worker
@@ -139,6 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         asyncio.create_task(run_return_settlement_worker()),
         asyncio.create_task(run_campaign_worker()),
         asyncio.create_task(run_content_watcher()),
+        asyncio.create_task(run_payment_worker()),
     ]
     try:
         yield
@@ -189,6 +191,11 @@ from app.services import live_sync
 live_sync.install()
 live_sync.enabled = settings.app_env.strip().lower() != "testing"
 app.add_middleware(live_sync.LiveSyncMiddleware)
+
+# The caller's language, for text built inside responses (app/payments).
+from app.core.request_language import RequestLanguageMiddleware
+
+app.add_middleware(RequestLanguageMiddleware)
 
 
 # Request logging middleware

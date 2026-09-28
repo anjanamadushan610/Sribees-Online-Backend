@@ -283,6 +283,32 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # Online payments (app/payments) -- any gateway
+    # =========================================================================
+    payment_hold_minutes: int = Field(
+        default=60,
+        ge=10,
+        description=(
+            "How long an unpaid card / bank-transfer order holds its stock, coupon and "
+            "wallet money. The customer can pay (or pay again) until then; after it the "
+            "order is cancelled and everything held is released."
+        ),
+    )
+    payment_attempt_grace_minutes: int = Field(
+        default=20,
+        ge=5,
+        description=(
+            "A try started near the end of the hold still gets this long to finish "
+            "before the order is cancelled -- nobody is cut off mid-3DS."
+        ),
+    )
+    payment_max_attempts: int = Field(
+        default=5,
+        ge=1,
+        description="Tries per order. Stops a script cycling the gateway on one order.",
+    )
+
+    # =========================================================================
     # Courier Integration -- SribeesExpress
     # (see fastapi_backend/docs/SRIBEESEXPRESS_ECOMMERCE_API.md)
     # =========================================================================

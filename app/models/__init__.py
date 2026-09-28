@@ -39,6 +39,7 @@ from app.models.notification import (
 )
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
+from app.models.payment import PaymentAttempt, PaymentAttemptStatus
 from app.models.product import (
     BranchInventory,
     Product,
@@ -77,6 +78,9 @@ __all__ = [
     "Banner",
     "BannerEvent",
     "BannerEventType",
+    # Online payment tries
+    "PaymentAttempt",
+    "PaymentAttemptStatus",
     # Referrals
     "Partner",
     "ReferralCommission",

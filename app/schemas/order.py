@@ -50,6 +50,7 @@ def to_courier_payment_method(payment_method: Optional[str]) -> str:
     return "cod" if normalized == PaymentMethodEnum.COD.value else "prepaid"
 
 class OrderStatusEnum(str, Enum):
+    AWAITING_PAYMENT = "awaiting_payment"
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"

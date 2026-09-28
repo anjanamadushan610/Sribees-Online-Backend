@@ -38,6 +38,7 @@ LEGACY_ALIASES: dict[str, str] = {"processing": "packing"}
 
 # Natural lifecycle order — kept in sync with app/schemas/order.py OrderStatusEnum.
 ALL_STATUSES: tuple[str, ...] = (
+    "awaiting_payment",
     "pending",
     "confirmed",
     "processing",
@@ -60,6 +61,11 @@ ALL_STATUSES: tuple[str, ...] = (
 # next step, "secondary" is the alternate/exception path. Labels are the single
 # source of truth — the admin UI renders exactly these.
 _ACTIONS: dict[str, list[dict[str, str]]] = {
+    # Not paid yet, so nothing to confirm or pack: the payment decides. Only a
+    # cancellation (a customer who rang in, say), which returns the held stock.
+    "awaiting_payment": [
+        {"status": "cancelled", "label": "Cancel Order", "kind": "danger"},
+    ],
     "pending": [
         {"status": "confirmed", "label": "Confirm Order", "kind": "primary"},
         {"status": "cancelled", "label": "Cancel Order", "kind": "danger"},
