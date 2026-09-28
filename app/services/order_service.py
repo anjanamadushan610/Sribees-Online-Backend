@@ -14,6 +14,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.request_language import current_language
 from app.models.order import (
     Order,
     OrderItem,
@@ -26,6 +27,7 @@ from app.models.user import Address, User
 from app.models.wallet import WalletTransactionType
 from app.payments import catalog as payment_catalog
 from app.payments import service as online_payments
+from app.payments import texts as payment_texts
 from app.payments.gateways.base import GatewayError
 from app.schemas.order import (
     GATEWAY_PAYMENT_METHODS,
@@ -492,7 +494,12 @@ class OrderService:
                     order_number=order_number,
                 )
             except GatewayError as exc:
-                raise ValueError(f"Could not start payment: {exc}") from exc
+                # Marx's own error text is for us, not the customer: it names
+                # fields and internal ids. Logged whole, answered plainly.
+                logger.error(f"Could not start payment for {order_number} ({method.code}): {exc}")
+                raise ValueError(
+                    payment_texts.text("error.gateway", current_language())
+                ) from exc
             payment_redirect_url = checkout.redirect_url
             gateway_tr_id = checkout.gateway_ref
         elif is_gateway:

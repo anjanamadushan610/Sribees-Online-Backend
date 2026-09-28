@@ -33,9 +33,9 @@ async def test_settle_reads_the_answer_for_cards_and_bank_payments(monkeypatch, 
 
 @pytest.mark.parametrize(
     ("phone", "sent"),
-    [("+94771234567", "94771234567"), ("0771234567", "94771234567"), ("12", None), (None, None)],
+    [("+94771234567", "+94771234567"), ("0771234567", "+94771234567"), ("12", None), (None, None)],
 )
-async def test_the_mobile_goes_as_the_guide_writes_it(monkeypatch, phone, sent):
+async def test_the_mobile_goes_in_the_form_production_marx_accepts(monkeypatch, phone, sent):
     seen = {}
 
     async def create(**kwargs):
@@ -49,3 +49,30 @@ async def test_the_mobile_goes_as_the_guide_writes_it(monkeypatch, phone, sent):
     )
     assert seen["customer_mobile"] == sent
     assert seen["marx_payment_method"] == "PAY_BY_BANK_ACCOUNT"
+
+
+@pytest.mark.parametrize(("word", "outcome"), [("PENDING", Outcome.PENDING), ("UNKNOWN", Outcome.PENDING),
+                                               ("FAILURE", Outcome.FAILED)])
+async def test_a_not_yet_or_declined_refusal_is_an_answer(monkeypatch, word, outcome):
+    """Marx says "not paid yet" with status 1 and message PENDING. That is an
+    answer to record, not an outage to log every minute."""
+    from app.services.marx_ipg_service import MarxIPGError
+
+    async def summary(*, tr_id):
+        raise MarxIPGError(f"reported failure: {word}", gateway_code=word)
+
+    monkeypatch.setattr(MarxIPGService, "get_order_summary", staticmethod(summary))
+    answer = await MarxGateway().status(reference="FC-1", gateway_ref="5057")
+    assert answer.outcome == outcome
+
+
+async def test_an_outage_is_still_an_error(monkeypatch):
+    from app.payments.gateways.base import GatewayError
+    from app.services.marx_ipg_service import MarxIPGError
+
+    async def summary(*, tr_id):
+        raise MarxIPGError("unreachable")
+
+    monkeypatch.setattr(MarxIPGService, "get_order_summary", staticmethod(summary))
+    with pytest.raises(GatewayError):
+        await MarxGateway().status(reference="FC-1", gateway_ref="5057")

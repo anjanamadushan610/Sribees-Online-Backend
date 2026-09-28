@@ -570,8 +570,19 @@ async def sweep(db: AsyncSession, now: Optional[datetime] = None) -> dict:
         )
         if latest is not None and _aware(latest) > now - grace:
             continue  # a try is still in flight
+        # Every server process runs this sweep. Whoever locks the row first
+        # cancels it; the others skip it rather than wait and cancel twice.
+        locked = await db.scalar(
+            select(Order.order_id)
+            .where(Order.order_id == order_id, Order.status == OrderStatus.AWAITING_PAYMENT.value)
+            .with_for_update(skip_locked=True)
+        )
+        if locked is None:
+            await db.rollback()
+            continue
         order = await OrderService.get_by_id(db, order_id)
         if order is None or order.status != OrderStatus.AWAITING_PAYMENT.value:
+            await db.rollback()
             continue
         if order.payment_status == PaymentStatus.PAID.value:
             continue

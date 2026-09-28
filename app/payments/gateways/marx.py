@@ -32,14 +32,29 @@ _PAID_STATES = ("CAPTURED", "SUCCESS")
 
 
 def _mobile(phone: Optional[str]) -> Optional[str]:
-    """customerMobile as the doc writes it (5.1): 94771234567, digits only.
-    Optional, so a number we cannot read is left out rather than sent wrong."""
+    """customerMobile as +94771234567.
+
+    The guide's own sample is 94771234567, but production Marx refuses that
+    with ``invalid_pattern`` (2026-09-28: every card and bank order failed
+    until this went back); +94... is what it has always accepted. Optional,
+    so a number we cannot read is left out rather than sent wrong."""
     if not phone:
         return None
     try:
-        return normalize_mobile(phone).lstrip("+")
+        return normalize_mobile(phone)
     except ValueError:
         return None
+
+
+def _refusal(exc: MarxIPGError) -> Optional[GatewayAnswer]:
+    """Marx answers "not paid yet" and "declined" with top-level status 1 and
+    the summary word as the message. Those are answers, not outages."""
+    word = (exc.gateway_code or "").upper()
+    if word in ("PENDING", "UNKNOWN"):
+        return GatewayAnswer(outcome=Outcome.PENDING, code=word)
+    if word == "FAILURE":
+        return GatewayAnswer(outcome=Outcome.FAILED, code=word)
+    return None
 
 
 def _outcome(summary_result: Optional[str], order_status: Optional[str], paid_states: tuple) -> Outcome:
@@ -102,6 +117,9 @@ class MarxGateway(PaymentGateway):
         try:
             result = await MarxIPGService.initiate_payment(tr_id=gateway_ref, merchant_rid=reference)
         except MarxIPGError as exc:
+            answer = _refusal(exc)
+            if answer is not None:
+                return answer
             raise GatewayError(str(exc)) from exc
         return GatewayAnswer(
             outcome=_outcome(result.get("summary_result"), result.get("order_status"), _PAID_STATES),
@@ -113,6 +131,9 @@ class MarxGateway(PaymentGateway):
         try:
             result = await MarxIPGService.get_order_summary(tr_id=gateway_ref)
         except MarxIPGError as exc:
+            answer = _refusal(exc)
+            if answer is not None:
+                return answer
             raise GatewayError(str(exc)) from exc
         return GatewayAnswer(
             outcome=_outcome(result.get("summary_result"), result.get("order_status"), _PAID_STATES),
