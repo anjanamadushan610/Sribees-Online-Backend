@@ -121,11 +121,24 @@ class ChatMessageRequest(BaseModel):
                 data = base64.b64decode(self.image_base64, validate=True)
             except (ValueError, binascii.Error) as exc:
                 raise ValueError("Invalid photo encoding") from exc
-            signatures = {
-                "image/jpeg": data.startswith(b"\xff\xd8\xff"),
-                "image/png": data.startswith(b"\x89PNG\r\n\x1a\n"),
-                "image/webp": data.startswith(b"RIFF") and data[8:12] == b"WEBP",
-            }
-            if len(data) > 4_000_000 or not signatures[self.image_mime_type]:
-                raise ValueError("Photo must match its MIME type and be at most 4 MB")
+            if len(data) > 4_000_000:
+                raise ValueError("Photo must be at most 4 MB")
+            # The bytes decide the type, not the label. Android's image_picker
+            # re-encodes a resized WebP as JPEG (PNG when it has transparency)
+            # but keeps the ".webp" name, so the app labels JPEG bytes
+            # "image/webp". Rejecting that mismatch meant no WebP could be sent.
+            detected = _sniff_image_type(data)
+            if detected is None:
+                raise ValueError("Photo must be a JPEG, PNG or WebP image")
+            self.image_mime_type = detected
         return self
+
+
+def _sniff_image_type(data: bytes) -> Optional[str]:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None

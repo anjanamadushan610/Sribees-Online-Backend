@@ -1134,33 +1134,18 @@ class OrderService:
         return resolved
 
     @staticmethod
-    async def reorder(
-        db: AsyncSession,
-        order_id: UUID,
-        user_id: UUID,
-    ) -> Tuple[dict, list]:
+    async def _reorder_lines(db: AsyncSession, order: Order) -> list:
+        """Each line of a past order with today's product, price and stock.
+
+        A line whose product is gone or inactive has stock 0. The preview and
+        the add read from here, so the page never shows a price or a limit
+        the cart then disagrees with.
         """
-        Re-add a past order's items to the user's cart at CURRENT prices.
-
-        Products that are missing, inactive or out of stock are skipped; the
-        requested quantity is capped at available stock. Returns the updated
-        cart and the list of skipped (unavailable) product names.
-
-        Raises ValueError if the order is invalid or nothing could be re-added.
-        """
-        order = await OrderService.get_by_id(db, order_id, user_id)
-        if not order:
-            raise ValueError("Order not found")
-        if not order.items:
-            raise ValueError("This order has no items to reorder")
-
-        added_any = False
-        unavailable: list = []
-
+        lines = []
         for item in order.items:
             product = await db.get(Product, item.product_id)
             if not product or not product.is_active:
-                unavailable.append(item.product_name)
+                lines.append((item, None, float(item.unit_price), 0))
                 continue
 
             available_stock = product.stock_quantity if product.stock_quantity is not None else 0
@@ -1181,15 +1166,82 @@ class OrderService:
                     elif product.discount_price is not None:
                         price = float(product.discount_price)
 
-            if available_stock <= 0:
+            lines.append((item, product, price, max(available_stock or 0, 0)))
+        return lines
+
+    @staticmethod
+    async def reorder_preview(
+        db: AsyncSession,
+        order_id: UUID,
+        user_id: UUID,
+    ) -> list:
+        """A past order's lines as the reorder page draws them: today's price,
+        how many can be had, and the ordered quantity capped at that."""
+        order = await OrderService.get_by_id(db, order_id, user_id)
+        if not order:
+            raise ValueError("Order not found")
+
+        preview = []
+        for item, product, price, stock in await OrderService._reorder_lines(db, order):
+            preview.append({
+                "order_item_id": str(item.order_item_id),
+                "product_id": str(item.product_id),
+                "variant_id": str(item.variant_id) if item.variant_id else None,
+                "name": (product.name if product else None) or item.product_name,
+                "image": item.product_image,
+                "ordered_quantity": item.quantity,
+                "quantity": min(item.quantity, stock),
+                "unit_price": price,
+                "available_stock": stock,
+                "available": stock > 0,
+            })
+        return preview
+
+    @staticmethod
+    async def reorder(
+        db: AsyncSession,
+        order_id: UUID,
+        user_id: UUID,
+        selection: Optional[dict] = None,
+    ) -> Tuple[dict, list]:
+        """
+        Re-add a past order's items to the user's cart at CURRENT prices.
+
+        ``selection`` maps order_item_id -> quantity: only those lines are
+        added, in those quantities (the reorder page). Without it every line
+        is added at its ordered quantity (the app before that page).
+
+        Products that are missing, inactive or out of stock are skipped; the
+        quantity is capped at available stock. Returns the updated cart and
+        the list of skipped (unavailable) product names.
+
+        Raises ValueError if the order is invalid or nothing could be re-added.
+        """
+        order = await OrderService.get_by_id(db, order_id, user_id)
+        if not order:
+            raise ValueError("Order not found")
+        if not order.items:
+            raise ValueError("This order has no items to reorder")
+        if selection is not None:
+            known = {item.order_item_id for item in order.items}
+            if any(line_id not in known for line_id in selection):
+                raise ValueError("That item is not part of this order")
+
+        added_any = False
+        unavailable: list = []
+
+        for item, product, price, stock in await OrderService._reorder_lines(db, order):
+            if selection is not None and item.order_item_id not in selection:
+                continue
+            if product is None or stock <= 0:
                 unavailable.append(item.product_name)
                 continue
 
-            quantity = min(item.quantity, available_stock)
+            wanted = item.quantity if selection is None else selection[item.order_item_id]
             await CartService.add_item(
                 user_id=str(user_id),
                 product_id=str(item.product_id),
-                quantity=quantity,
+                quantity=min(wanted, stock),
                 price=price,
                 name=product.name or item.product_name,
                 image=item.product_image,

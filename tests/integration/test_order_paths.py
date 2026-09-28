@@ -107,6 +107,42 @@ async def test_reordering_a_past_order(api, db, app_redis, world, make_customer,
     assert r.status_code in (400, 404), "someone else's order is not theirs to reorder"
 
 
+async def test_reorder_page_adds_only_what_the_customer_kept(api, db, app_redis, world, make_customer,
+                                                            make_product, place_order):
+    c = await make_customer()
+    tea, rice = await make_product(stock=10), await make_product(stock=10)
+    r = await api.post("/api/v1/cart/items", headers=c.headers,
+                       json={"product_id": str(tea), "quantity": 3, "price": "1.00", "name": "ZZ item"})
+    assert r.status_code == 200, r.text
+    order = await place_order(c, rice, 2)  # one order, two lines: tea x3, rice x2
+    await api.delete("/api/v1/cart", headers=c.headers)
+
+    await _set_branch_stock(db, world, tea, 2, price="55.00")
+    r = await api.get(f"/api/v1/orders/{order['order_number']}/reorder", headers=c.headers)
+    assert r.status_code == 200, r.text
+    lines = {line["product_id"]: line for line in r.json()["data"]["items"]}
+    assert set(lines) == {str(tea), str(rice)}
+    assert lines[str(tea)]["ordered_quantity"] == 3
+    assert lines[str(tea)]["quantity"] == 2, "the page starts at what can be had"
+    assert lines[str(tea)]["unit_price"] == 55.0, "today's price, not last time's"
+    assert lines[str(tea)]["available"] is True
+    assert await _cart_qty(api, c, tea) == 0, "looking at the page adds nothing"
+
+    # They removed rice and asked for 5 tea; only 2 exist.
+    body = {"items": [{"order_item_id": lines[str(tea)]["order_item_id"], "quantity": 5}]}
+    r = await api.post(f"/api/v1/orders/{order['order_id']}/reorder", json=body, headers=c.headers)
+    assert r.status_code == 200, r.text
+    assert await _cart_qty(api, c, tea) == 2
+    assert await _cart_qty(api, c, rice) == 0, "a removed line stays out"
+
+    other = await place_order(await make_customer(), rice)
+    stray = {"items": [{"order_item_id": str(uuid.uuid4()), "quantity": 1}]}
+    r = await api.post(f"/api/v1/orders/{order['order_id']}/reorder", json=stray, headers=c.headers)
+    assert r.status_code == 400, "a line from no order of theirs is refused"
+    r = await api.get(f"/api/v1/orders/{other['order_id']}/reorder", headers=c.headers)
+    assert r.status_code == 404, "someone else's order is not theirs to see"
+
+
 async def test_card_payments_marx_never_confirmed_are_settled(api, db, world, make_customer, make_product,
                                                               place_order, make_admin, monkeypatch):
     from app.models.order import Order
