@@ -52,8 +52,9 @@ methods_router = APIRouter(tags=["Payment Methods"])
 async def list_payment_methods(
     current_user=Depends(get_current_user),
 ):
-    """The methods checkout offers right now, in the caller's language."""
-    return {"success": True, "data": {"methods": payment_catalog.offered(current_language())}}
+    """The methods checkout offers right now. Names are English in every
+    app language (owner's choice)."""
+    return {"success": True, "data": {"methods": payment_catalog.offered()}}
 
 
 # ============================================================================

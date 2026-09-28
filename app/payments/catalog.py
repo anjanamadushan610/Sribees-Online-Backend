@@ -2,8 +2,9 @@
 Every way a customer can pay, defined once, on the server.
 
 The app draws checkout from ``GET /payment-methods`` and knows nothing else:
-the name and the line under it come from here in the customer's language, the
-icon is one of a few generic shapes (``cash``, ``wallet``, ``card``, ``bank``,
+the name and the line under it come from here -- in English whatever the
+app's language, as the owner wants (2026-09-28) -- the icon is one of a few
+generic shapes (``cash``, ``wallet``, ``card``, ``bank``,
 ``other``), and ``kind`` says how the money moves:
 
   offline  paid at the door (COD)
@@ -20,7 +21,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.config.settings import settings
-from app.utils.i18n import DEFAULT_LANGUAGE
 
 
 @dataclass(frozen=True)
@@ -28,8 +28,8 @@ class MethodSpec:
     code: str
     kind: str
     icon: str
-    names: dict
-    descriptions: dict
+    name: str
+    description: str
     legacy_type: str               # the "type" apps before this release read
     gateway: Optional[str] = None  # online only: which gateway carries it
     option: Optional[str] = None   # online only: the gateway's own name for it
@@ -43,23 +43,13 @@ class MethodSpec:
             return _GATEWAY_SWITCHES.get(self.gateway, lambda: False)()
         return True
 
-    def name(self, lang: str) -> str:
-        return self.names.get(lang) or self.names[DEFAULT_LANGUAGE]
-
-    def description(self, lang: str) -> str:
-        return self.descriptions.get(lang) or self.descriptions[DEFAULT_LANGUAGE]
-
 
 # A gateway is offered only while it is switched on.
 _GATEWAY_SWITCHES = {
     "marx": lambda: settings.marx_gateway_methods_enabled,
 }
 
-_CARD = {
-    "en": "Pay securely by debit or credit card",
-    "si": "ඩෙබිට් හෝ ක්‍රෙඩිට් කාඩ්පතෙන් ආරක්ෂිතව ගෙවන්න",
-    "ta": "டெபிட் அல்லது கிரெடிட் கார்டு மூலம் பாதுகாப்பாக செலுத்துங்கள்",
-}
+_CARD = "Pay securely by debit or credit card"
 
 METHODS: tuple[MethodSpec, ...] = (
     MethodSpec(
@@ -67,28 +57,16 @@ METHODS: tuple[MethodSpec, ...] = (
         kind="offline",
         icon="cash",
         legacy_type="OFFLINE",
-        names={
-            "en": "Cash on Delivery",
-            "si": "භාණ්ඩ ලැබුණු විට මුදල් ගෙවීම",
-            "ta": "டெலிவரியின் போது பணம்",
-        },
-        descriptions={
-            "en": "Pay the rider in cash when your order arrives",
-            "si": "ඇණවුම ලැබෙන විට රයිඩර්ට මුදලින් ගෙවන්න",
-            "ta": "ஆர்டர் வரும்போது ரைடரிடம் பணமாக செலுத்துங்கள்",
-        },
+        name="Cash on Delivery",
+        description="Pay the rider in cash when your order arrives",
     ),
     MethodSpec(
         code="WALLET",
         kind="wallet",
         icon="wallet",
         legacy_type="WALLET",
-        names={"en": "SRIBEES Wallet", "si": "SRIBEES පසුම්බිය", "ta": "SRIBEES வாலட்"},
-        descriptions={
-            "en": "Pay from your wallet balance",
-            "si": "ඔබේ පසුම්බියේ ශේෂයෙන් ගෙවන්න",
-            "ta": "உங்கள் வாலட் இருப்பிலிருந்து செலுத்துங்கள்",
-        },
+        name="SRIBEES Wallet",
+        description="Pay from your wallet balance",
     ),
     MethodSpec(
         code="MARX_OTHER",
@@ -97,8 +75,8 @@ METHODS: tuple[MethodSpec, ...] = (
         legacy_type="GATEWAY",
         gateway="marx",
         option="OTHER",
-        names={"en": "Visa / Mastercard / UnionPay"},
-        descriptions=_CARD,
+        name="Visa / Mastercard / UnionPay",
+        description=_CARD,
     ),
     MethodSpec(
         code="MARX_AMEX",
@@ -107,8 +85,8 @@ METHODS: tuple[MethodSpec, ...] = (
         legacy_type="GATEWAY",
         gateway="marx",
         option="AMEX",
-        names={"en": "Amex / Diners / Discover"},
-        descriptions=_CARD,
+        name="Amex / Diners / Discover",
+        description=_CARD,
     ),
     MethodSpec(
         code="MARX_BANK",
@@ -117,12 +95,8 @@ METHODS: tuple[MethodSpec, ...] = (
         legacy_type="GATEWAY",
         gateway="marx",
         option="PAY_BY_BANK_ACCOUNT",
-        names={"en": "Bank Transfer", "si": "බැංකු මාරුව", "ta": "வங்கி பரிமாற்றம்"},
-        descriptions={
-            "en": "Pay straight from your bank account",
-            "si": "ඔබේ බැංකු ගිණුමෙන් කෙලින්ම ගෙවන්න",
-            "ta": "உங்கள் வங்கிக் கணக்கிலிருந்து நேரடியாக செலுத்துங்கள்",
-        },
+        name="Bank Transfer",
+        description="Pay straight from your bank account",
     ),
 )
 
@@ -138,8 +112,8 @@ def is_online(code: Optional[str]) -> bool:
     return method is not None and method.is_online
 
 
-def offered(lang: str) -> list[dict]:
-    """``GET /payment-methods``: what checkout shows, in *lang*.
+def offered() -> list[dict]:
+    """``GET /payment-methods``: what checkout shows.
 
     The ``id``/``type``/``is_active`` fields are what apps before this release
     read; they stay so a customer who has not updated keeps a working checkout.
@@ -148,8 +122,8 @@ def offered(lang: str) -> list[dict]:
         {
             "id": m.code.lower(),
             "code": m.code,
-            "name": m.name(lang),
-            "description": m.description(lang),
+            "name": m.name,
+            "description": m.description,
             "icon": m.icon,
             "kind": m.kind,
             "type": m.legacy_type,

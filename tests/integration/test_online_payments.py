@@ -250,14 +250,15 @@ async def test_money_that_arrives_late_or_twice_goes_back_to_the_wallet(
     assert [float(a) for a in refunds] == [float(order["total_amount"])]
 
 
-async def test_methods_come_from_the_server_in_the_customers_language(
+async def test_methods_come_from_the_server_in_english(
         api, app_redis, world, make_customer, make_product, fake_courier, marx, monkeypatch):
     from app.config.settings import settings
 
     customer = await make_customer()
     r = await api.get("/api/v1/payment-methods", headers={**customer.headers, "Accept-Language": "si"})
     methods = {m["code"]: m for m in r.json()["data"]["methods"]}
-    assert methods["MARX_BANK"]["name"] == "බැංකු මාරුව"
+    assert methods["MARX_BANK"]["name"] == "Bank Transfer", "English whatever the app's language"
+    assert methods["MARX_BANK"]["description"] == "Pay straight from your bank account"
     assert methods["MARX_BANK"]["icon"] == "bank" and methods["MARX_BANK"]["kind"] == "online"
     assert methods["COD"]["kind"] == "offline" and methods["COD"]["type"] == "OFFLINE", "old apps still read type"
 

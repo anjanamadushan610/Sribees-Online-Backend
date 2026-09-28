@@ -145,7 +145,7 @@ def payment_view(order: Order, lang: str, now: Optional[datetime] = None) -> dic
     view = {
         "method": {
             "code": order.payment_method,
-            "name": method.name(lang) if method else (order.payment_method or ""),
+            "name": method.name if method else (order.payment_method or ""),
             "icon": method.icon if method else "other",
         },
         "state": "paid",
