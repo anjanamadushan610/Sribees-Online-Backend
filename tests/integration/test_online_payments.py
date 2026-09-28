@@ -97,6 +97,14 @@ async def test_an_online_order_is_placed_only_when_the_money_arrives(
     assert body["data"]["payment"]["state"] == "paid"
     assert await _placed_notices(db, customer) == 1, "placed, once, now that it is paid"
 
+    # Paid in advance: the handover code is theirs to keep ready from now on.
+    assert order["show_delivery_code"] is False, "not while unpaid"
+    assert body["data"]["show_delivery_code"] is True
+    assert body["data"]["delivery_verification_code"]
+    r = await api.get("/api/v1/orders", headers=customer.headers)
+    listed = next(o for o in r.json()["data"]["orders"] if o["order_id"] == order["order_id"])
+    assert listed["show_delivery_code"] is True and listed["delivery_verification_code"]
+
 
 async def test_a_declined_payment_can_be_paid_again_from_the_order(
         api, db, app_redis, world, make_customer, make_product, fake_courier, marx):
@@ -120,15 +128,19 @@ async def test_a_declined_payment_can_be_paid_again_from_the_order(
     assert shown["payment"]["state"] == "failed" and shown["payment"]["can_pay"] is True
     assert shown["payment"]["tone"] == "error"
 
-    # Again, by bank transfer this time.
-    marx.outcome = "SUCCESS"
+    # Not by a method that is switched off...
     r = await api.post(f"/api/v1/payments/orders/{order['order_id']}/pay", json={"method": "MARX_BANK"},
                        headers=customer.headers)
+    assert r.status_code == 400, "bank transfer is off"
+
+    # ...but again by card.
+    marx.outcome = "SUCCESS"
+    r = await api.post(f"/api/v1/payments/orders/{order['order_id']}/pay", headers=customer.headers)
     assert r.status_code == 200, r.text
     retry = r.json()["data"]["payment_action"]
     second_tr = retry["url"].rsplit("/", 1)[1]
     assert marx.orders[second_tr]["merchantRID"] == f"{order['order_number']}-2"
-    assert marx.orders[second_tr]["paymentMethod"] == "PAY_BY_BANK_ACCOUNT"
+    assert marx.orders[second_tr]["paymentMethod"] == "OTHER"
 
     # The declined try's return can't be replayed onto the new one.
     r = await api.post(f"/api/v1/payments/orders/{order['order_id']}/complete",
@@ -140,7 +152,7 @@ async def test_a_declined_payment_can_be_paid_again_from_the_order(
                        json={"return_url": _came_back(retry, second_tr, f"{order['order_number']}-2")},
                        headers=customer.headers)
     assert r.status_code == 200 and r.json()["data"]["status"] == "confirmed"
-    assert r.json()["data"]["payment_method"] == "MARX_BANK"
+    assert r.json()["data"]["payment_method"] == "MARX_OTHER"
 
     r = await api.post(f"/api/v1/payments/orders/{order['order_id']}/pay", headers=customer.headers)
     assert r.status_code == 400, "a paid order is not paid again"
@@ -257,10 +269,14 @@ async def test_methods_come_from_the_server_in_english(
     customer = await make_customer()
     r = await api.get("/api/v1/payment-methods", headers={**customer.headers, "Accept-Language": "si"})
     methods = {m["code"]: m for m in r.json()["data"]["methods"]}
-    assert methods["MARX_BANK"]["name"] == "Bank Transfer", "English whatever the app's language"
-    assert methods["MARX_BANK"]["description"] == "Pay straight from your bank account"
-    assert methods["MARX_BANK"]["icon"] == "bank" and methods["MARX_BANK"]["kind"] == "online"
+    card = methods["MARX_OTHER"]
+    assert card["name"] == "Visa / Mastercard / UnionPay", "English whatever the app's language"
+    assert card["icon"] == "card" and card["kind"] == "online"
+    assert "MARX_AMEX" not in methods and "MARX_BANK" not in methods, "off: Marx does not carry them for us"
     assert methods["COD"]["kind"] == "offline" and methods["COD"]["type"] == "OFFLINE", "old apps still read type"
+
+    r = await _place(api, app_redis, world, customer, await make_product(), method="MARX_BANK")
+    assert r.status_code == 400, "a switched-off method is refused even if sent"
 
     monkeypatch.setattr(settings, "marx_gateway_methods_enabled", False)
     r = await api.get("/api/v1/payment-methods", headers=customer.headers)

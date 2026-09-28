@@ -33,12 +33,17 @@ class MethodSpec:
     legacy_type: str               # the "type" apps before this release read
     gateway: Optional[str] = None  # online only: which gateway carries it
     option: Optional[str] = None   # online only: the gateway's own name for it
+    # False keeps a method on the books (old orders still name it) but neither
+    # offered nor accepted -- for one the gateway does not actually carry.
+    offered: bool = True
 
     @property
     def is_online(self) -> bool:
         return self.kind == "online"
 
     def enabled(self) -> bool:
+        if not self.offered:
+            return False
         if self.gateway is not None:
             return _GATEWAY_SWITCHES.get(self.gateway, lambda: False)()
         return True
@@ -87,6 +92,9 @@ METHODS: tuple[MethodSpec, ...] = (
         option="AMEX",
         name="Amex / Diners / Discover",
         description=_CARD,
+        # Off (owner, 2026-09-28): only Marx's Visa / Mastercard / UnionPay
+        # works on our account. Turn back on when Marx enables it.
+        offered=False,
     ),
     MethodSpec(
         code="MARX_BANK",
@@ -97,6 +105,8 @@ METHODS: tuple[MethodSpec, ...] = (
         option="PAY_BY_BANK_ACCOUNT",
         name="Bank Transfer",
         description="Pay straight from your bank account",
+        # Off (owner, 2026-09-28): not working on our Marx account yet.
+        offered=False,
     ),
 )
 
