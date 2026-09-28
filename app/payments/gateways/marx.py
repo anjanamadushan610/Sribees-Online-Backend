@@ -22,6 +22,24 @@ from app.payments.gateways.base import (
     PaymentGateway,
 )
 from app.services.marx_ipg_service import MarxIPGError, MarxIPGService
+from app.utils.identity import normalize_mobile
+
+# A settled payment: "CAPTURED" is what a card capture reports (doc 5.4); the
+# order summary says "SUCCESS" (doc 5.5), and a bank-account payment
+# (PAY_BY_BANK_ACCOUNT) has no card to capture. Either means the money is in,
+# and only together with summaryResult SUCCESS.
+_PAID_STATES = ("CAPTURED", "SUCCESS")
+
+
+def _mobile(phone: Optional[str]) -> Optional[str]:
+    """customerMobile as the doc writes it (5.1): 94771234567, digits only.
+    Optional, so a number we cannot read is left out rather than sent wrong."""
+    if not phone:
+        return None
+    try:
+        return normalize_mobile(phone).lstrip("+")
+    except ValueError:
+        return None
 
 
 def _outcome(summary_result: Optional[str], order_status: Optional[str], paid_states: tuple) -> Outcome:
@@ -62,7 +80,7 @@ class MarxGateway(PaymentGateway):
                 amount=amount,
                 return_url=self.return_url,
                 customer_mail=payer.email,
-                customer_mobile=payer.phone,
+                customer_mobile=_mobile(payer.phone),
                 order_summary=description,
                 customer_reference=payer.name or reference,
                 marx_payment_method=option,
@@ -86,7 +104,7 @@ class MarxGateway(PaymentGateway):
         except MarxIPGError as exc:
             raise GatewayError(str(exc)) from exc
         return GatewayAnswer(
-            outcome=_outcome(result.get("summary_result"), result.get("order_status"), ("CAPTURED",)),
+            outcome=_outcome(result.get("summary_result"), result.get("order_status"), _PAID_STATES),
             code=result.get("gateway_code") or result.get("summary_result"),
             raw=result.get("raw") or {},
         )
@@ -97,9 +115,7 @@ class MarxGateway(PaymentGateway):
         except MarxIPGError as exc:
             raise GatewayError(str(exc)) from exc
         return GatewayAnswer(
-            outcome=_outcome(
-                result.get("summary_result"), result.get("order_status"), ("SUCCESS", "CAPTURED")
-            ),
+            outcome=_outcome(result.get("summary_result"), result.get("order_status"), _PAID_STATES),
             code=result.get("gateway_code") or result.get("summary_result"),
             raw=result.get("raw") or {},
         )
