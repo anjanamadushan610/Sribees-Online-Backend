@@ -1182,16 +1182,21 @@ async def approve_order_return(
     pickup) or a reverse pickup (a rider will collect the goods).
     """
     order = await _load_scoped_order(db, order_id, scope)
+    admin_name = getattr(_decider, "full_name", None) or getattr(_decider, "email", "Admin")
     try:
         await OrderService.approve_return(
-            db, order, resolution=body.resolution.value, note=body.note
+            db,
+            order,
+            resolution=body.resolution.value,
+            note=body.note,
+            changed_by=f"Admin ({admin_name})",
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     branch_name = await _branch_name(db, order.branch_id)
     logger.info(
-        f"[admin] Return approved ({body.resolution.value}) for order {order.order_number}"
+        f"[admin] Return approved ({body.resolution.value}) for order {order.order_number} by {admin_name}"
     )
     return {
         "success": True,
@@ -1210,13 +1215,19 @@ async def reject_order_return(
 ):
     """Reject a pending return (Branch Manager / Super Admin): revert to DELIVERED."""
     order = await _load_scoped_order(db, order_id, scope)
+    admin_name = getattr(_decider, "full_name", None) or getattr(_decider, "email", "Admin")
     try:
-        await OrderService.reject_return(db, order, note=body.note)
+        await OrderService.reject_return(
+            db,
+            order,
+            note=body.note,
+            changed_by=f"Admin ({admin_name})",
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     branch_name = await _branch_name(db, order.branch_id)
-    logger.info(f"[admin] Return rejected for order {order.order_number}")
+    logger.info(f"[admin] Return rejected for order {order.order_number} by {admin_name}")
     return {
         "success": True,
         "data": _format_order_detail(order, branch_name),

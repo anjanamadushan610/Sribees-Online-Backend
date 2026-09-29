@@ -24,6 +24,7 @@ class _FakeSession:
 
     def __init__(self) -> None:
         self.commits = 0
+        self.added = []
 
     async def commit(self) -> None:
         self.commits += 1
@@ -31,8 +32,8 @@ class _FakeSession:
     async def refresh(self, _obj, attribute_names=None) -> None:
         return None
 
-    def add(self, _obj) -> None:
-        return None
+    def add(self, obj) -> None:
+        self.added.append(obj)
 
 
 def _order(*, delivered_at=None, status=OrderStatus.DELIVERED.value, **extra):
@@ -105,6 +106,10 @@ async def test_a_return_inside_the_window_is_accepted():
     assert order.status == OrderStatus.RETURN_REQUESTED.value
     assert order.return_reason == "Item not as described"
     assert db.commits == 1
+    assert len(db.added) == 1
+    assert db.added[0].old_status == OrderStatus.DELIVERED.value
+    assert db.added[0].new_status == OrderStatus.RETURN_REQUESTED.value
+    assert db.added[0].changed_by == "Customer"
 
 
 @pytest.mark.asyncio
@@ -150,10 +155,13 @@ def test_approve_return_accepts_the_arguments_the_router_actually_sends():
     params = inspect.signature(OrderService.approve_return).parameters
     assert "resolution" in params
     assert "note" in params
+    assert "changed_by" in params
 
 
 def test_reject_return_accepts_the_note_the_router_actually_sends():
-    assert "note" in inspect.signature(OrderService.reject_return).parameters
+    params = inspect.signature(OrderService.reject_return).parameters
+    assert "note" in params
+    assert "changed_by" in params
 
 
 @pytest.mark.asyncio
@@ -161,7 +169,7 @@ async def test_a_returnless_refund_pays_out_immediately(monkeypatch):
     """Nothing is being collected, so there is nothing to wait for."""
     credited = {}
 
-    async def _fake_credit(db, order):
+    async def _fake_credit(db, order, *args, **kwargs):
         credited["called"] = True
         order.refunded_at = datetime.now(timezone.utc)
         order.status = OrderStatus.REFUNDED.value
@@ -182,7 +190,7 @@ async def test_a_reverse_pickup_does_not_pay_out_until_the_goods_are_back(monkey
     ever checked that anything came back."""
     calls = {"credited": False, "booked": False}
 
-    async def _fake_credit(db, order):  # pragma: no cover - asserted not called
+    async def _fake_credit(db, order, *args, **kwargs):  # pragma: no cover - asserted not called
         calls["credited"] = True
 
     async def _fake_book(db, order):
@@ -192,8 +200,9 @@ async def test_a_reverse_pickup_does_not_pay_out_until_the_goods_are_back(monkey
     monkeypatch.setattr(OrderService, "_book_reverse_pickup", _fake_book)
     monkeypatch.setattr(OrderService, "_compute_return_refund", lambda order: Decimal("4500.00"))
     order = _order(status=OrderStatus.RETURN_REQUESTED.value)
+    db = _FakeSession()
 
-    await OrderService.approve_return(_FakeSession(), order, resolution="reverse_pickup")
+    await OrderService.approve_return(db, order, resolution="reverse_pickup", changed_by="Admin (Manager)")
 
     assert order.status == OrderStatus.RETURN_APPROVED.value
     assert calls["booked"] is True
@@ -202,11 +211,14 @@ async def test_a_reverse_pickup_does_not_pay_out_until_the_goods_are_back(monkey
     # cannot move what the customer was promised.
     assert order.refund_amount == Decimal("4500.00")
     assert order.refunded_at is None
+    assert len(db.added) == 1
+    assert db.added[0].new_status == OrderStatus.RETURN_APPROVED.value
+    assert "Admin (Manager)" in db.added[0].changed_by
 
 
 @pytest.mark.asyncio
 async def test_the_goods_arriving_back_is_what_releases_the_refund(monkeypatch):
-    async def _fake_credit(db, order):
+    async def _fake_credit(db, order, *args, **kwargs):
         order.refunded_at = datetime.now(timezone.utc)
         order.status = OrderStatus.REFUNDED.value
 
@@ -254,3 +266,17 @@ async def test_approving_something_that_is_not_an_open_claim_is_refused():
     order = _order(status=OrderStatus.DELIVERED.value)
     with pytest.raises(ValueError, match="no pending return request"):
         await OrderService.approve_return(_FakeSession(), order)
+
+
+@pytest.mark.asyncio
+async def test_reject_return_reverts_to_delivered_and_logs_history():
+    order = _order(status=OrderStatus.RETURN_REQUESTED.value)
+    db = _FakeSession()
+    await OrderService.reject_return(db, order, note="Customer damaged seal", changed_by="Admin (John)")
+
+    assert order.status == OrderStatus.DELIVERED.value
+    assert order.return_resolution_note == "Customer damaged seal"
+    assert len(db.added) == 1
+    assert db.added[0].old_status == OrderStatus.RETURN_REQUESTED.value
+    assert db.added[0].new_status == OrderStatus.DELIVERED.value
+    assert "Admin (John)" in db.added[0].changed_by
