@@ -1355,6 +1355,7 @@ def _esc_out(e: OrderEscalation) -> dict:
     return {
         "escalation_id": str(e.escalation_id),
         "order_id": str(e.order_id),
+        "raised_by_admin_id": str(e.raised_by_admin_id) if e.raised_by_admin_id else None,
         "category": e.category,
         "message": e.message,
         "status": e.status,
