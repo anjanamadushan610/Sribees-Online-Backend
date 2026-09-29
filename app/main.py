@@ -16,6 +16,7 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.redis import RedisIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
+from app.api.legal import router as legal_router
 from app.api.share_links import router as share_links_router
 from app.api.v1.router import router as v1_router
 from app.config.database import close_db, init_db
@@ -320,6 +321,9 @@ app.include_router(v1_router, prefix="/api")
 
 # Product share links + Android App Links proof (site root, see share_links.py)
 app.include_router(share_links_router)
+
+# Privacy policy (site root, see legal.py) — the store-listing URL
+app.include_router(legal_router)
 
 
 # ============================================================================
