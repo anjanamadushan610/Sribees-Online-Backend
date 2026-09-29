@@ -32,6 +32,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/api"),
     ("GET", "/.well-known/assetlinks.json"),
     ("GET", "/p/{product_id}"),
+    # Store-listing legal pages: Play requires them reachable without sign-in.
+    ("GET", "/privacy"),
+    ("GET", "/account-deletion"),
     # --- sign-in / sign-up ---------------------------------------------------
     # Customers: phone OTP, Google or Apple only; no email/password (2026-09-25).
     ("POST", "/api/v1/auth/phone/request-otp"),
