@@ -142,7 +142,7 @@ reflected by a new effective date at the top of this page.</p>
 
 <h2>Contact us</h2>
 <p>Questions about this policy or your data can be sent to
-<a href="mailto:sribeespos@gmail.com">sribeespos@gmail.com</a>, or raised as
+<a href="mailto:support@sribeesonline.com">support@sribeesonline.com</a>, or raised as
 a support ticket in the app.</p>
 
 </body>
@@ -189,7 +189,7 @@ confirm it's really you before anything is removed.</li>
 </ol>
 
 <h2>Option 2 - By email (no app or sign-in needed)</h2>
-<p>Email <a href="mailto:sribeespos@gmail.com">sribeespos@gmail.com</a> from
+<p>Email <a href="mailto:support@sribeesonline.com">support@sribeesonline.com</a> from
 any address, with:</p>
 <ul>
 <li>the phone number registered on the account, and</li>
@@ -215,7 +215,7 @@ purpose.</p>
 </div>
 
 <p>See the full <a href="/privacy">Privacy Policy</a> for more detail on
-what we collect and why. Questions: <a href="mailto:sribeespos@gmail.com">sribeespos@gmail.com</a>.</p>
+what we collect and why. Questions: <a href="mailto:support@sribeesonline.com">support@sribeesonline.com</a>.</p>
 
 </body>
 </html>
