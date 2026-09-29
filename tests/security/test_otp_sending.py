@@ -5,11 +5,11 @@ that the provider's credentials never leak.
 
 These pin the sending limits (per number, per address, per day for the whole
 server), what the app is told (so it never has to assume a length or a
-countdown), and the Notify.lk client's request shape.
+countdown), and the Text.lk client's request shape.
 """
 from __future__ import annotations
 
-from urllib.parse import parse_qs
+import json
 
 import fakeredis.aioredis
 import httpx
@@ -19,7 +19,7 @@ from app.config.settings import settings
 from app.core.exceptions import AppException
 from app.services import sms_gateway
 from app.services.otp_service import OTPService
-from app.services.sms_gateway import NotifyLkGateway, SmsSendError, mask_phone
+from app.services.sms_gateway import SmsSendError, TextLkGateway, mask_phone
 
 pytestmark = pytest.mark.security
 
@@ -211,7 +211,7 @@ async def test_a_wrong_code_gets_a_coded_answer(client, gateway):
 
 
 # ---------------------------------------------------------------------------
-# The Notify.lk client
+# The Text.lk client
 # ---------------------------------------------------------------------------
 
 
@@ -229,36 +229,49 @@ def _mock_http(monkeypatch, handler):
     return seen
 
 
-def _gateway() -> NotifyLkGateway:
-    return NotifyLkGateway("uid-1", "secret-key-1", "SriBees", "https://app.notify.lk/api/v1")
+def _gateway() -> TextLkGateway:
+    return TextLkGateway("secret-token-1", "SriBees", "https://app.text.lk/api/v3")
 
 
-async def test_notifylk_sends_credentials_in_the_body_never_the_url(monkeypatch):
-    seen = _mock_http(monkeypatch, lambda req: httpx.Response(200, json={"status": "success", "data": "Sent"}))
+async def test_textlk_sends_the_token_in_the_header_never_the_url_or_body(monkeypatch):
+    seen = _mock_http(
+        monkeypatch,
+        lambda req: httpx.Response(200, json={"status": "success", "message": "Your message was successfully delivered"}),
+    )
     await _gateway().send("+94771234567", "123456 is your code")
     (req,) = seen
     assert req.method == "POST"
-    assert str(req.url) == "https://app.notify.lk/api/v1/send"
-    assert "secret-key-1" not in str(req.url)
-    form = parse_qs(req.content.decode())
-    assert form["to"] == ["94771234567"]
-    assert form["sender_id"] == ["SriBees"]
-    assert form["api_key"] == ["secret-key-1"]
-    assert "type" not in form
+    assert str(req.url) == "https://app.text.lk/api/v3/sms/send"
+    assert req.headers["Authorization"] == "Bearer secret-token-1"
+    assert "secret-token-1" not in str(req.url)
+    body = json.loads(req.content)
+    assert "secret-token-1" not in req.content.decode()
+    assert body == {
+        "recipient": "94771234567",
+        "sender_id": "SriBees",
+        "type": "plain",
+        "message": "123456 is your code",
+    }
 
 
-async def test_notifylk_refusals_raise_without_the_key(monkeypatch):
+async def test_textlk_sinhala_goes_as_unicode(monkeypatch):
+    seen = _mock_http(monkeypatch, lambda req: httpx.Response(200, json={"status": True}))
+    await _gateway().send("+94771234567", "123456 ඔබේ කේතය")
+    assert json.loads(seen[0].content)["type"] == "unicode"
+
+
+async def test_textlk_error_with_http_200_is_still_a_refusal(monkeypatch):
     _mock_http(
         monkeypatch,
-        lambda req: httpx.Response(200, json={"status": "error", "errors": "Insufficient balance"}),
+        lambda req: httpx.Response(200, json={"status": "error", "message": "Insufficient balance"}),
     )
     with pytest.raises(SmsSendError) as exc:
         await _gateway().send("+94771234567", "x")
     assert "Insufficient balance" in str(exc.value)
-    assert "secret-key-1" not in str(exc.value)
+    assert "secret-token-1" not in str(exc.value)
 
 
-async def test_notifylk_network_failure_is_a_send_error(monkeypatch):
+async def test_textlk_network_failure_is_a_send_error(monkeypatch):
     def boom(req):
         raise httpx.ConnectTimeout("slow", request=req)
 
@@ -267,22 +280,32 @@ async def test_notifylk_network_failure_is_a_send_error(monkeypatch):
         await _gateway().send("+94771234567", "x")
 
 
-async def test_notifylk_balance(monkeypatch):
-    _mock_http(
+async def test_textlk_balance(monkeypatch):
+    seen = _mock_http(
         monkeypatch,
-        lambda req: httpx.Response(200, json={"status": "success", "data": {"active": True, "acc_balance": 42.5}}),
+        lambda req: httpx.Response(
+            200, json={"status": "success", "data": {"remaining_balance": "1,250", "expired_on": "1st Jan 27"}}
+        ),
     )
-    assert await _gateway().balance() == 42.5
+    assert await _gateway().balance() == 1250.0
+    assert str(seen[0].url) == "https://app.text.lk/api/v3/balance"
+    assert seen[0].method == "GET"
 
 
 async def test_a_chosen_provider_without_credentials_fails_closed(monkeypatch):
-    monkeypatch.setattr(settings, "sms_provider", "notifylk")
-    monkeypatch.setattr(settings, "notifylk_user_id", "")
-    monkeypatch.setattr(settings, "notifylk_api_key", "")
+    monkeypatch.setattr(settings, "sms_provider", "textlk")
+    monkeypatch.setattr(settings, "textlk_api_token", "")
     gw = sms_gateway.get_sms_gateway()
     with pytest.raises(SmsSendError) as exc:
         await gw.send("+94771234567", "x")
-    assert "NOTIFYLK_API_KEY" in str(exc.value)
+    assert "TEXTLK_API_TOKEN" in str(exc.value)
+
+
+def test_textlk_is_selected_when_configured(monkeypatch):
+    monkeypatch.setattr(settings, "sms_provider", "textlk")
+    monkeypatch.setattr(settings, "textlk_api_token", "t")
+    monkeypatch.setattr(settings, "textlk_sender_id", "SriBees")
+    assert isinstance(sms_gateway.get_sms_gateway(), TextLkGateway)
 
 
 def test_the_default_provider_spends_nothing(monkeypatch):

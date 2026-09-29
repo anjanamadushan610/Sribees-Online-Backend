@@ -219,11 +219,10 @@ class Settings(BaseSettings):
     # =========================================================================
     # Which company carries the texts (app/services/sms_gateway.py). "console"
     # only logs them, so no environment spends credit until it is switched on.
-    sms_provider: str = Field(default="console", description="console | notifylk")
-    notifylk_user_id: str = Field(default="", description="Notify.lk user ID")
-    notifylk_api_key: str = Field(default="", description="Notify.lk API key")
-    notifylk_sender_id: str = Field(default="NotifyDEMO", description="Approved Notify.lk sender name")
-    notifylk_base_url: str = Field(default="https://app.notify.lk/api/v1")
+    sms_provider: str = Field(default="console", description="console | textlk")
+    textlk_api_token: str = Field(default="", description="Text.lk API v3 token")
+    textlk_sender_id: str = Field(default="TextLKDemo", description="Approved Text.lk sender ID")
+    textlk_base_url: str = Field(default="https://app.text.lk/api/v3")
     # The sending limits are NOT environment settings: the per-number and
     # per-address rules are code (OTPService), identical on every server, and
     # the daily total is the Super Admin's (SMS page, app_settings).

@@ -56,7 +56,7 @@ async def _overview(db: AsyncSession, redis: Redis) -> dict:
         "is_live": gateway.name != "console" and not isinstance(gateway, UnconfiguredGateway),
         # Names of missing settings, never values.
         "missing": gateway.missing if isinstance(gateway, UnconfiguredGateway) else [],
-        "sender_id": settings.notifylk_sender_id if gateway.name == "notifylk" else None,
+        "sender_id": settings.textlk_sender_id if gateway.name == "textlk" else None,
         "balance": balance,
         "balance_error": balance_error,
         "daily_limit": daily_limit,
