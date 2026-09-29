@@ -21,8 +21,7 @@
 #   SSH_PORT                  — optional, defaults to 22
 #   DEV_DEPLOY_PATH           — optional, defaults to /opt/sribees-online-dev
 #   DEV_ENV_FILE              — the whole .env for the dev stack
-#   DEV_SMS_PROVIDER, DEV_NOTIFYLK_USER_ID, DEV_NOTIFYLK_API_KEY,
-#   DEV_NOTIFYLK_SENDER_ID
+#   DEV_SMS_PROVIDER, DEV_TEXTLK_API_TOKEN, DEV_TEXTLK_SENDER_ID
 #                             — optional; override those keys of DEV_ENV_FILE
 #   DEV_DOMAIN                — e.g. dev-api.sribees.com
 # =============================================================================
@@ -226,9 +225,8 @@ jobs:
         env:
           DEV_ENV_FILE: ${{ secrets.DEV_ENV_FILE }}
           SMS_PROVIDER: ${{ secrets.DEV_SMS_PROVIDER }}
-          NOTIFYLK_USER_ID: ${{ secrets.DEV_NOTIFYLK_USER_ID }}
-          NOTIFYLK_API_KEY: ${{ secrets.DEV_NOTIFYLK_API_KEY }}
-          NOTIFYLK_SENDER_ID: ${{ secrets.DEV_NOTIFYLK_SENDER_ID }}
+          TEXTLK_API_TOKEN: ${{ secrets.DEV_TEXTLK_API_TOKEN }}
+          TEXTLK_SENDER_ID: ${{ secrets.DEV_TEXTLK_SENDER_ID }}
           # Sign-in client IDs: the same apps sign in against dev and prod.
           GOOGLE_CLIENT_IDS: ${{ secrets.GOOGLE_CLIENT_IDS }}
           APPLE_SERVICES_ID: ${{ secrets.APPLE_SERVICES_ID }}
@@ -240,7 +238,7 @@ jobs:
           # The SMS gateway keys live as their own secrets, so they can be set
           # or rotated without rebuilding DEV_ENV_FILE. Each set one replaces
           # the same key in it; nothing is echoed.
-          for key in SMS_PROVIDER NOTIFYLK_USER_ID NOTIFYLK_API_KEY NOTIFYLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID; do
+          for key in SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID; do
             value=$(printenv "$key" || true)
             if [ -n "$value" ]; then
               DEV_ENV_FILE=$(printf '%s\n' "$DEV_ENV_FILE" | grep -v "^${key}=" || true)

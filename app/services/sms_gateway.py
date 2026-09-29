@@ -10,11 +10,11 @@ Providers:
 
 - ``console``  -- writes the message to the server log. The default, so a
   laptop, CI and any server without credentials never spends real credit.
-- ``notifylk`` -- Notify.lk (https://developer.notify.lk/api-endpoints/).
+- ``textlk``   -- Text.lk API v3 (https://text.lk/docs/sms-api-endpoints/).
 
-Credentials travel in a POST body, never a query string: URLs end up in HTTP
-client logs and proxy logs, bodies do not. Nothing here ever logs a
-credential, and the OTP itself is only logged by the console provider.
+The API token travels in the Authorization header, never a URL: URLs end up
+in HTTP client and proxy logs. Nothing here ever logs a credential, and the
+OTP itself is only logged by the console provider.
 """
 from __future__ import annotations
 
@@ -73,19 +73,18 @@ class ConsoleSmsGateway:
         return None
 
 
-class NotifyLkGateway:
-    """Notify.lk HTTP API v1."""
+class TextLkGateway:
+    """Text.lk HTTP API v3 (Bearer token)."""
 
-    name = "notifylk"
+    name = "textlk"
 
-    def __init__(self, user_id: str, api_key: str, sender_id: str, base_url: str) -> None:
-        self._user_id = user_id
-        self._api_key = api_key
+    def __init__(self, api_token: str, sender_id: str, base_url: str) -> None:
+        self._api_token = api_token
         self._sender_id = sender_id
         self._base_url = base_url.rstrip("/")
 
-    def _auth(self) -> dict:
-        return {"user_id": self._user_id, "api_key": self._api_key}
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"}
 
     @staticmethod
     def _body(response: httpx.Response) -> dict:
@@ -94,42 +93,42 @@ class NotifyLkGateway:
         except ValueError:
             body = None
         if not isinstance(body, dict):
-            raise SmsSendError(f"Notify.lk answered HTTP {response.status_code} without JSON")
-        if response.status_code != 200 or body.get("status") != "success":
-            # Their error payloads carry a reason, never our credentials.
-            reason = body.get("errors") or body.get("message") or body.get("data")
-            raise SmsSendError(f"Notify.lk refused (HTTP {response.status_code}): {str(reason)[:200]}")
+            raise SmsSendError(f"Text.lk answered HTTP {response.status_code} without JSON")
+        # Text.lk answers some failures with HTTP 200 and status "error", and
+        # documents success as `true` while sending "success": check the body.
+        if response.status_code != 200 or body.get("status") not in (True, "success"):
+            reason = body.get("message") or body.get("errors") or body.get("data")
+            raise SmsSendError(f"Text.lk refused (HTTP {response.status_code}): {str(reason)[:200]}")
         return body
 
     async def send(self, phone: str, text: str) -> None:
-        data = {
-            **self._auth(),
+        payload = {
+            "recipient": to_msisdn(phone),
             "sender_id": self._sender_id,
-            "to": to_msisdn(phone),
+            "type": "plain" if text.isascii() else "unicode",
             "message": text,
         }
-        if not text.isascii():
-            data["type"] = "unicode"
         try:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                response = await client.post(f"{self._base_url}/send", data=data)
+                response = await client.post(
+                    f"{self._base_url}/sms/send", json=payload, headers=self._headers()
+                )
         except httpx.HTTPError as exc:
-            raise SmsSendError(f"Notify.lk unreachable: {type(exc).__name__}") from exc
+            raise SmsSendError(f"Text.lk unreachable: {type(exc).__name__}") from exc
         self._body(response)
 
     async def balance(self) -> Optional[float]:
         try:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                # Their status call is GET-only, so the credentials ride in the
-                # query string here. It is called by a Super Admin on demand,
-                # never per customer, and httpx's own URL logging is silenced
-                # below.
-                response = await client.get(f"{self._base_url}/status", params=self._auth())
+                response = await client.get(f"{self._base_url}/balance", headers=self._headers())
         except httpx.HTTPError as exc:
-            raise SmsSendError(f"Notify.lk unreachable: {type(exc).__name__}") from exc
+            raise SmsSendError(f"Text.lk unreachable: {type(exc).__name__}") from exc
         data = self._body(response).get("data") or {}
-        value = data.get("acc_balance")
-        return float(value) if value is not None else None
+        value = data.get("remaining_balance", data.get("remaining_unit"))
+        try:
+            return float(str(value).replace(",", "")) if value is not None else None
+        except ValueError:
+            return None
 
 
 class UnconfiguredGateway:
@@ -149,29 +148,27 @@ class UnconfiguredGateway:
 def get_sms_gateway() -> SmsGateway:
     """The provider this server is configured for, read fresh each call."""
     provider = (settings.sms_provider or "console").strip().lower()
-    if provider == "notifylk":
+    if provider == "textlk":
         missing = [
             name
             for name, value in (
-                ("NOTIFYLK_USER_ID", settings.notifylk_user_id),
-                ("NOTIFYLK_API_KEY", settings.notifylk_api_key),
-                ("NOTIFYLK_SENDER_ID", settings.notifylk_sender_id),
+                ("TEXTLK_API_TOKEN", settings.textlk_api_token),
+                ("TEXTLK_SENDER_ID", settings.textlk_sender_id),
             )
             if not (value or "").strip()
         ]
         if missing:
             return UnconfiguredGateway(provider, missing)
-        return NotifyLkGateway(
-            user_id=settings.notifylk_user_id.strip(),
-            api_key=settings.notifylk_api_key.strip(),
-            sender_id=settings.notifylk_sender_id.strip(),
-            base_url=settings.notifylk_base_url,
+        return TextLkGateway(
+            api_token=settings.textlk_api_token.strip(),
+            sender_id=settings.textlk_sender_id.strip(),
+            base_url=settings.textlk_base_url,
         )
     if provider != "console":
         logger.error(f"Unknown SMS_PROVIDER {provider!r}; texts go to the log instead")
     return ConsoleSmsGateway()
 
 
-# httpx logs every request URL at INFO. The balance call above carries
-# credentials in its URL, so keep httpx's own logger to warnings and worse.
+# httpx logs every request URL at INFO; keep it quiet so a provider that
+# puts a credential in a URL can never leak it into the server log.
 logging.getLogger("httpx").setLevel(logging.WARNING)
