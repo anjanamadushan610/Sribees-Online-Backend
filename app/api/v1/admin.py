@@ -8,11 +8,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.database import get_db
+from app.core.media import media_url
 from app.core.dependencies import (
     BranchScope,
     get_current_admin,
@@ -704,6 +705,9 @@ async def get_customer_orders(
     user_id: str,
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
+    status: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     _perm = Depends(require_permission("customers", "read")),
     scope: BranchScope = Depends(inject_branch_filter),
@@ -717,44 +721,152 @@ async def get_customer_orders(
         if not scope.is_unscoped:
             base_filter.append(Order.branch_id == scope.branch_id)
 
-        # Get orders count
+        # Calculate lifetime analytics for this customer (branch scoped)
+        analytics_query = await db.execute(
+            select(
+                func.count(Order.order_id).label("total_orders"),
+                func.count(case((Order.status.in_(["delivered", "completed"]), 1))).label("delivered_count"),
+                func.count(case((Order.status == "cancelled", 1))).label("cancelled_count"),
+                func.count(
+                    case((
+                        Order.status.in_([
+                            "return_requested",
+                            "return_approved",
+                            "refunded",
+                            "rto_delivered",
+                            "rto_initiated",
+                            "delivery_failed",
+                        ]),
+                        1,
+                    ))
+                ).label("returned_count"),
+            ).where(*base_filter)
+        )
+        stats_row = analytics_query.first()
+        total_ord = stats_row[0] if stats_row else 0
+        deliv_cnt = stats_row[1] if stats_row else 0
+        canc_cnt = stats_row[2] if stats_row else 0
+        ret_cnt = stats_row[3] if stats_row else 0
+        ret_rate = round((ret_cnt / total_ord) * 100, 1) if total_ord > 0 else 0.0
+
+        analytics_data = {
+            "total_orders": total_ord,
+            "delivered_count": deliv_cnt,
+            "cancelled_count": canc_cnt,
+            "returned_count": ret_cnt,
+            "return_rate": ret_rate,
+            "is_high_return_risk": ret_rate >= 30.0 and ret_cnt > 0,
+        }
+
+        # Build query filters for table listing
+        query_filter = list(base_filter)
+        if status:
+            status_clean = status.lower().strip()
+            if status_clean == "delivered":
+                query_filter.append(Order.status.in_(["delivered", "completed"]))
+            elif status_clean == "cancelled":
+                query_filter.append(Order.status == "cancelled")
+            elif status_clean in ("returned", "return"):
+                query_filter.append(
+                    Order.status.in_([
+                        "return_requested",
+                        "return_approved",
+                        "refunded",
+                        "rto_delivered",
+                        "rto_initiated",
+                        "delivery_failed",
+                    ])
+                )
+            elif status_clean != "all":
+                query_filter.append(Order.status == status_clean)
+
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+                query_filter.append(Order.created_at >= start_dt)
+            except Exception:
+                pass
+
+        if end_date:
+            try:
+                end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                query_filter.append(Order.created_at <= end_dt)
+            except Exception:
+                pass
+
+        # Get filtered orders count
         count_result = await db.execute(
-            select(func.count(Order.order_id)).where(*base_filter)
+            select(func.count(Order.order_id)).where(*query_filter)
         )
         total = count_result.scalar() or 0
 
-        # Get orders
+        # Get orders with items eagerly loaded for product thumbnail preview
         offset = (page - 1) * limit
         orders_result = await db.execute(
             select(Order)
-            .where(*base_filter)
+            .options(
+                selectinload(Order.items).selectinload(OrderItem.product).selectinload(Product.images)
+            )
+            .where(*query_filter)
             .order_by(Order.created_at.desc())
             .limit(limit)
             .offset(offset)
         )
         orders = orders_result.scalars().all()
 
+        formatted_orders = []
+        for o in orders:
+            items_list = list(o.items or [])
+            first_item = items_list[0] if items_list else None
+            extra_count = max(0, len(items_list) - 1)
+
+            prod_name = None
+            prod_img = None
+            prod_qty = 1
+            if first_item:
+                prod_name = (
+                    first_item.product_name
+                    or (first_item.product.name if first_item.product else None)
+                    or "Item"
+                )
+                raw_img = first_item.product_image
+                if not raw_img and first_item.product and first_item.product.images:
+                    primary = next(
+                        (img.image_url for img in first_item.product.images if getattr(img, "is_primary", False)),
+                        None,
+                    )
+                    raw_img = primary or first_item.product.images[0].image_url
+                prod_img = media_url(raw_img) if raw_img else None
+                prod_qty = first_item.quantity or 1
+
+            formatted_orders.append({
+                "order_id": str(o.order_id),
+                "order_number": o.order_number,
+                "total_amount": float(o.total_amount),
+                "status": o.status,
+                "payment_status": o.payment_status,
+                "created_at": o.created_at.isoformat() if o.created_at else None,
+                "items_preview": {
+                    "product_name": prod_name or "Order Items",
+                    "product_image": prod_img,
+                    "quantity": prod_qty,
+                    "total_items_count": len(items_list),
+                    "extra_items_count": extra_count,
+                } if items_list else None,
+            })
+
         return {
             "success": True,
             "data": {
-                "orders": [
-                    {
-                        "order_id": str(o.order_id),
-                        "order_number": o.order_number,
-                        "total_amount": float(o.total_amount),
-                        "status": o.status,
-                        "payment_status": o.payment_status,
-                        "created_at": o.created_at.isoformat() if o.created_at else None
-                    }
-                    for o in orders
-                ],
+                "orders": formatted_orders,
+                "analytics": analytics_data,
                 "pagination": {
                     "total": total,
                     "page": page,
                     "limit": limit,
-                    "pages": (total + limit - 1) // limit
-                }
-            }
+                    "pages": (total + limit - 1) // limit if limit > 0 else 1,
+                },
+            },
         }
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
