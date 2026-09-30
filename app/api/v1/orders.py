@@ -173,7 +173,88 @@ def build_status_timeline(order) -> list:
             return history_map.get("delivered") or ts("delivered_at")
         return None
 
-    # Terminal states: keep all milestones that were reached before cancellation/refund.
+    # Return lifecycle: delivered → return_requested → return_approved → rto_initiated → rto_delivered → refunded
+    # An order that reached return states has already completed the full forward delivery workflow.
+    if order.status in ("return_requested", "return_approved", "rto_initiated", "rto_delivered") or (
+        order.status == "refunded" and (getattr(order, "return_requested_at", None) or getattr(order, "delivered_at", None) or history_map.get("delivered"))
+    ):
+        timeline = []
+        # 1. Preserve all 9 fulfilled forward workflow steps
+        for status_key, step_label in _STATUS_FLOW:
+            step_ts = _get_step_timestamp(status_key) or history_map.get(status_key)
+            timeline.append({
+                "status": status_key,
+                "label": step_label,
+                "timestamp": step_ts or ts("created_at"),
+                "completed": True,
+                "current": False,
+            })
+
+        # 2. Append Return Requested milestone
+        req_ts = ts("return_requested_at") or history_map.get("return_requested") or ts("updated_at")
+        is_req_current = order.status == "return_requested"
+        timeline.append({
+            "status": "return_requested",
+            "label": "Return Requested",
+            "timestamp": req_ts,
+            "completed": True,
+            "current": is_req_current,
+        })
+
+        # 3. Append Return Approved milestone if reached
+        if (
+            order.status in ("return_approved", "rto_initiated", "rto_delivered")
+            or getattr(order, "return_approved_at", None)
+            or history_map.get("return_approved")
+            or order.status == "refunded"
+        ):
+            appr_ts = ts("return_approved_at") or history_map.get("return_approved") or req_ts
+            is_appr_current = order.status == "return_approved"
+            timeline.append({
+                "status": "return_approved",
+                "label": "Return Approved",
+                "timestamp": appr_ts,
+                "completed": True,
+                "current": is_appr_current,
+            })
+
+        # 4. Append Courier Reverse Pickup (RTO) milestones if present
+        if history_map.get("rto_initiated") or order.status in ("rto_initiated", "rto_delivered"):
+            rto_init_ts = history_map.get("rto_initiated") or ts("updated_at")
+            is_rto_init_current = order.status == "rto_initiated"
+            timeline.append({
+                "status": "rto_initiated",
+                "label": "Return Pickup Initiated",
+                "timestamp": rto_init_ts,
+                "completed": True,
+                "current": is_rto_init_current,
+            })
+
+        if history_map.get("rto_delivered") or order.status == "rto_delivered":
+            rto_del_ts = history_map.get("rto_delivered") or ts("updated_at")
+            is_rto_del_current = order.status == "rto_delivered"
+            timeline.append({
+                "status": "rto_delivered",
+                "label": "Returned to Branch",
+                "timestamp": rto_del_ts,
+                "completed": True,
+                "current": is_rto_del_current,
+            })
+
+        # 5. Append Refunded milestone if reached
+        if order.status == "refunded":
+            ref_ts = ts("refunded_at") or history_map.get("refunded") or ts("updated_at")
+            timeline.append({
+                "status": "refunded",
+                "label": "Refund Completed",
+                "timestamp": ref_ts,
+                "completed": True,
+                "current": True,
+            })
+
+        return timeline
+
+    # Pre-delivery terminal states (cancelled, or refunded before delivery):
     if order.status in ("cancelled", "refunded"):
         label = "Cancelled" if order.status == "cancelled" else "Refunded"
         cancelled_ts = (
@@ -204,37 +285,6 @@ def build_status_timeline(order) -> list:
             "current": True,
         })
         return timeline
-
-    # Return flow: delivered → return requested/approved.
-    if order.status in ("return_requested", "return_approved"):
-        label = (
-            "Return Requested"
-            if order.status == "return_requested"
-            else "Return Approved"
-        )
-        return [
-            {
-                "status": "pending",
-                "label": "Order Placed",
-                "timestamp": history_map.get("pending") or ts("created_at"),
-                "completed": True,
-                "current": False,
-            },
-            {
-                "status": "delivered",
-                "label": "Delivered",
-                "timestamp": history_map.get("delivered") or ts("delivered_at"),
-                "completed": True,
-                "current": False,
-            },
-            {
-                "status": order.status,
-                "label": label,
-                "timestamp": ts("return_requested_at") or ts("updated_at"),
-                "completed": True,
-                "current": True,
-            },
-        ]
 
     flow_keys = [s for s, _ in _STATUS_FLOW]
     effective = _effective_status(order.status)
