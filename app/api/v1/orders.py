@@ -845,6 +845,19 @@ async def get_order(
                 detail="Order not found"
             )
 
+        # Auto-refresh courier tracking if actively handled by courier
+        if order.courier_shipment_id and order.status in (
+            OrderStatus.READY_FOR_PICKUP.value,
+            OrderStatus.HANDED_TO_COURIER.value,
+            OrderStatus.SHIPPED.value,
+            OrderStatus.OUT_FOR_DELIVERY.value,
+        ):
+            try:
+                if await courier_sync_service.refresh_order_tracking(db, order) is not None:
+                    order = await OrderService.get_by_id(db, order.order_id, current_user.user_id) or order
+            except Exception as sync_err:
+                logger.warning(f"Auto courier sync failed for order {order.order_number}: {sync_err}")
+
         # Only a delivered order can show write-review actions at all, so
         # only bother looking up existing reviews for one.
         reviewed_product_ids = set()

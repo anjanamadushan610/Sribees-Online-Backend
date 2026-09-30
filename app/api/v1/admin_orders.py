@@ -782,6 +782,20 @@ async def get_order(
     fulfilment contacts, escalation tickets — B4 — and the SribeesExpress
     shipment)."""
     order = await _load_scoped_order(db, order_id, scope)
+
+    # Auto-refresh courier tracking if parcel is actively handled by courier
+    if order.courier_shipment_id and order.status in (
+        OrderStatusEnum.READY_FOR_PICKUP.value,
+        OrderStatusEnum.HANDED_TO_COURIER.value,
+        OrderStatusEnum.SHIPPED.value,
+        OrderStatusEnum.OUT_FOR_DELIVERY.value,
+    ):
+        try:
+            if await courier_sync_service.refresh_order_tracking(db, order) is not None:
+                order = await _load_scoped_order(db, order_id, scope)
+        except Exception as sync_err:
+            logger.warning(f"Auto courier sync failed for admin order {order.order_number}: {sync_err}")
+
     branch_name = await _branch_name(db, order.branch_id)
     data = _format_order_detail(order, branch_name)
     data["fulfilment_contacts"] = await _fulfilment_contacts(db, order)
