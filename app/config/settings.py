@@ -106,6 +106,16 @@ class Settings(BaseSettings):
             "30-minute quote lifetime; checkout always asks for a fresh one."
         ),
     )
+    courier_postal_city_sync_hours: int = Field(
+        default=6,
+        ge=0,
+        le=168,
+        description=(
+            "How often the SribeesExpress postal city list is pulled into the directory "
+            "(app/services/courier_coverage_worker.py). 0 turns the loop off; saving a "
+            "courier key still syncs at once."
+        ),
+    )
     order_tax_rate: float = Field(
         default=0.0,
         ge=0.0,
