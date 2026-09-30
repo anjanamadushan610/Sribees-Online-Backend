@@ -348,7 +348,7 @@ def render_all(key: str, params: Optional[dict] = None, per_lang_params=None) ->
 
 def literal_all(title: str, message: str) -> Dict[str, Tuple[str, str]]:
     """The same text for every language — for copy that arrives already written."""
-    return {lang: (title, message) for lang in LANGUAGES}
+    return dict.fromkeys(LANGUAGES, (title, message))
 
 
 def localized_all(title: Dict[str, str], message: Dict[str, str]) -> Dict[str, Tuple[str, str]]:
