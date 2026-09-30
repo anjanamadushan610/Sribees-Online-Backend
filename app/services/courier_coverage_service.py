@@ -127,8 +127,8 @@ async def sync(db: AsyncSession) -> CoverageSyncResult:
     Fetch ``GET /ecommerce/postal-cities`` and reconcile ``post_office_directory``.
 
     Raises ``CourierUnavailableError`` / ``CourierError`` /
-    ``CourierNotConfiguredError`` — this is an operator-triggered action, so a
-    failure is surfaced rather than swallowed into a partial sync.
+    ``CourierNotConfiguredError`` — never a partial sync. The admin button
+    surfaces them; courier_coverage_worker logs them and tries again later.
     """
     # Any configured account will do: the postal city list describes where
     # SribeesExpress delivers, which is the same answer for every merchant.

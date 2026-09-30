@@ -6,8 +6,9 @@ them belong on a checkout path:
 
 * **Postal cities.** ``POST /postal-cities/sync`` fills the postal city
   directory from SribeesExpress, with the id every delivery quote is keyed on
-  (``docs/SRIBEESEXPRESS_ECOMMERCE_API.md`` section 5). Run it before the first
-  live order, and whenever SribeesExpress opens another district.
+  (``docs/SRIBEESEXPRESS_ECOMMERCE_API.md`` section 5). It also runs by itself
+  (courier_coverage_worker): after startup, every few hours, and right after
+  any courier key, base URL or environment is saved. The button is for "now".
 * **Outlets.** A branch that books under the shared account key must be
   registered as an outlet of that account, or its parcels are priced from, and
   collected at, the account's head office (section 12). A branch with its own
@@ -53,6 +54,7 @@ from app.schemas.courier import (
 )
 from app.services import (
     courier_coverage_service,
+    courier_coverage_worker,
     courier_credentials,
     courier_location_service,
     courier_sync_service,
@@ -429,6 +431,7 @@ async def set_account_courier_key(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    courier_coverage_worker.sync_soon("courier settings changed")
     return await _credentials_payload(db)
 
 
@@ -446,6 +449,7 @@ async def set_courier_base_url(
         await courier_credentials.set_base_url(db, body.environment, body.base_url, actor=actor)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    courier_coverage_worker.sync_soon("courier settings changed")
     return await _credentials_payload(db)
 
 
@@ -478,6 +482,7 @@ async def set_courier_environment(
         )
     actor = getattr(current_admin, "email", "unknown")
     await courier_credentials.set_account_environment(db, body.environment, actor=actor)
+    courier_coverage_worker.sync_soon("courier settings changed")
     return await _credentials_payload(db)
 
 
@@ -504,6 +509,7 @@ async def set_branch_courier_key(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    courier_coverage_worker.sync_soon("courier settings changed")
     return await _credentials_payload(db)
 
 
@@ -528,6 +534,7 @@ async def set_branch_courier_environment(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    courier_coverage_worker.sync_soon("courier settings changed")
     return await _credentials_payload(db)
 
 

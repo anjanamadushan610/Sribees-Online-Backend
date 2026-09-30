@@ -18,6 +18,12 @@ from app.services.product_service import ProductService
 
 
 class _FakeSession:
+    def __init__(self) -> None:
+        self.added: list = []
+
+    def add(self, obj) -> None:
+        self.added.append(obj)
+
     async def commit(self) -> None:
         pass
 

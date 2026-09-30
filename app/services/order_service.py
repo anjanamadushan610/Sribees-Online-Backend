@@ -2324,7 +2324,7 @@ class OrderService:
             order_id=order.order_id,
             old_status=old_status,
             new_status=OrderStatus.RETURN_REQUESTED.value,
-            changed_by=changed_by,
+            changed_by="Customer",
             notes=note_text,
             created_at=now,
         )
