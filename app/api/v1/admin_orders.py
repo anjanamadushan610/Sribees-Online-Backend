@@ -450,8 +450,14 @@ async def list_orders(
         conds.append(
             or_(
                 Order.order_number.ilike(pattern),
+                Order.courier_waybill_number.ilike(pattern),
+                Order.return_waybill_number.ilike(pattern),
                 User.full_name.ilike(pattern),
                 User.email.ilike(pattern),
+                User.phone.ilike(pattern),
+                User.alternate_phone.ilike(pattern),
+                Order.contact_phone.ilike(pattern),
+                Order.alternate_phone.ilike(pattern),
             )
         )
     if from_date:
@@ -565,8 +571,14 @@ async def export_orders_csv(
         query = query.outerjoin(User, Order.user_id == User.user_id).where(
             or_(
                 Order.order_number.ilike(term),
+                Order.courier_waybill_number.ilike(term),
+                Order.return_waybill_number.ilike(term),
                 User.full_name.ilike(term),
                 User.email.ilike(term),
+                User.phone.ilike(term),
+                User.alternate_phone.ilike(term),
+                Order.contact_phone.ilike(term),
+                Order.alternate_phone.ilike(term),
             )
         )
     if from_date:
@@ -673,8 +685,14 @@ async def export_orders_pdf(
         query = query.outerjoin(User, Order.user_id == User.user_id).where(
             or_(
                 Order.order_number.ilike(term),
+                Order.courier_waybill_number.ilike(term),
+                Order.return_waybill_number.ilike(term),
                 User.full_name.ilike(term),
                 User.email.ilike(term),
+                User.phone.ilike(term),
+                User.alternate_phone.ilike(term),
+                Order.contact_phone.ilike(term),
+                Order.alternate_phone.ilike(term),
             )
         )
     if from_date:
