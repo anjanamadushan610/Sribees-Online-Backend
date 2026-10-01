@@ -1520,7 +1520,7 @@ async def update_order_escalation(
     body: EscalationUpdate,
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
-    admin=Depends(require_roles("super_admin", "branch_manager", "customer_support")),
+    admin=Depends(require_roles("super_admin", "branch_manager")),
 ):
     """Acknowledge or resolve a ticket — Branch Manager (own branch) / Super Admin."""
     await _load_scoped_order(db, order_id, scope)
