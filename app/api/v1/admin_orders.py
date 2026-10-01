@@ -1370,6 +1370,7 @@ def _esc_out(e: OrderEscalation) -> dict:
         "escalation_id": str(e.escalation_id),
         "order_id": str(e.order_id),
         "raised_by_admin_id": str(e.raised_by_admin_id) if e.raised_by_admin_id else None,
+        "raised_by_role": e.raised_by_role,
         "category": e.category,
         "message": e.message,
         "status": e.status,
@@ -1416,11 +1417,15 @@ async def raise_order_escalation(
     """Raise an internal support -> branch ticket (Support / BM / SA)."""
     order = await _load_scoped_order(db, order_id, scope)
     who = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
+    role_val = getattr(admin, "role", None)
+    role_str = role_val.value if hasattr(role_val, "value") else (str(role_val) if role_val else None)
+
     esc = OrderEscalation(
         order_id=order.order_id,
         branch_id=order.branch_id,
         raised_by_admin_id=getattr(admin, "admin_id", None),
         raised_by_name=who,
+        raised_by_role=role_str,
         category=body.category.value,
         message=body.message.strip(),
         status=EscalationStatus.OPEN.value,
@@ -1428,7 +1433,7 @@ async def raise_order_escalation(
     db.add(esc)
     await db.commit()
     await db.refresh(esc)
-    logger.info(f"[admin] Escalation raised on order {order.order_number} by {who}: {body.category.value}")
+    logger.info(f"[admin] Escalation raised on order {order.order_number} by {who} ({role_str}): {body.category.value}")
     return {"success": True, "data": _esc_out(esc), "message": "Escalation raised"}
 
 
@@ -1439,7 +1444,7 @@ async def update_order_escalation(
     body: EscalationUpdate,
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
-    admin=Depends(require_roles("super_admin", "branch_manager")),
+    admin=Depends(require_roles("super_admin", "branch_manager", "customer_support")),
 ):
     """Acknowledge or resolve a ticket — Branch Manager (own branch) / Super Admin."""
     await _load_scoped_order(db, order_id, scope)

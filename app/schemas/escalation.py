@@ -21,6 +21,8 @@ class EscalationUpdate(BaseModel):
 class EscalationOut(BaseModel):
     escalation_id: str
     order_id: str
+    raised_by_admin_id: Optional[str] = None
+    raised_by_role: Optional[str] = None
     category: str
     message: str
     status: str

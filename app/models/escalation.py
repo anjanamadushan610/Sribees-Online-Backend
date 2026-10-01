@@ -50,6 +50,7 @@ class OrderEscalation(Base):
         nullable=True,
     )
     raised_by_name = Column(String(255), nullable=False)
+    raised_by_role = Column(String(50), nullable=True)
 
     category = Column(String(30), nullable=False, default=EscalationCategory.OTHER.value)
     message = Column(Text, nullable=False)
