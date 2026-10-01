@@ -1768,6 +1768,7 @@ class OrderService:
             OrderStatus.RTO_INITIATED.value,
             OrderStatus.RETURN_REQUESTED.value,
             OrderStatus.RETURN_APPROVED.value,
+            OrderStatus.RETURN_REJECTED.value,
             OrderStatus.REFUNDED.value,
             OrderStatus.CANCELLED.value,
         )
