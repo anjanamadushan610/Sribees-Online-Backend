@@ -45,7 +45,27 @@ def _money(value) -> str:
         return "Rs. 0.00"
 
 
-def _pretty_status(status: str) -> str:
+def _pretty_status(order_or_status) -> str:
+    if isinstance(order_or_status, str):
+        status = order_or_status
+        return (status or "").replace("_", " ").title()
+    order = order_or_status
+    status = getattr(order, "status", "") or ""
+    if status == "return_rejected":
+        return "Return Rejected"
+    elif status == "return_requested":
+        return "Return Requested"
+    elif status in ("return_approved", "refunded"):
+        # Check if partial
+        items = getattr(order, "items", []) or []
+        ret_items = getattr(order, "return_items", None)
+        if ret_items and isinstance(ret_items, list) and len(ret_items) > 0 and items:
+            total_items_qty = sum(getattr(it, "quantity", 1) for it in items)
+            ret_qty = sum(int(r.get("quantity", 0) or 0) for r in ret_items if isinstance(r, dict))
+            if 0 < ret_qty < total_items_qty:
+                prefix = "Refunded" if status == "refunded" else "Return Approved"
+                return f"{prefix} (Partial)"
+        return "Refunded" if status == "refunded" else "Return Approved"
     return (status or "").replace("_", " ").title()
 
 
@@ -131,7 +151,7 @@ class InvoiceService:
                 [
                     Paragraph(order.order_number, body),
                     Paragraph(created_str, body),
-                    Paragraph(_pretty_status(order.status), body),
+                    Paragraph(_pretty_status(order), body),
                 ],
             ],
             colWidths=[58 * mm, 58 * mm, 58 * mm],
@@ -195,11 +215,42 @@ class InvoiceService:
             Paragraph("Unit Price", head_right),
             Paragraph("Total", head_right),
         ]]
+
+        # Parse return items map if order was approved/refunded or in return review
+        returned_qty_map = {}
+        raw_ret_items = getattr(order, "return_items", None)
+        is_return_active = getattr(order, "status", "") in ("return_approved", "refunded")
+        if raw_ret_items and isinstance(raw_ret_items, list):
+            for r in raw_ret_items:
+                if isinstance(r, dict):
+                    i_id = str(r.get("order_item_id") or r.get("item_id") or r.get("id") or "")
+                    q = int(r.get("quantity") or 0)
+                    if i_id and q > 0:
+                        returned_qty_map[i_id] = q
+        elif is_return_active and raw_ret_items is None:
+            # Full return of all items
+            for it in (order.items or []):
+                returned_qty_map[str(getattr(it, "id", ""))] = getattr(it, "quantity", 1)
+
         for it in (order.items or []):
+            it_id_str = str(getattr(it, "id", ""))
+            ret_qty = returned_qty_map.get(it_id_str, 0)
+
+            prod_title = it.product_name or "—"
+            qty_text = str(it.quantity)
+
+            if is_return_active and ret_qty > 0:
+                if ret_qty >= it.quantity:
+                    prod_title += "<br/><font size='7.5' color='#C62828'><b>[Item Returned]</b></font>"
+                    qty_text = f"{it.quantity}<br/><font size='7' color='#C62828'>(-{ret_qty})</font>"
+                else:
+                    prod_title += f"<br/><font size='7.5' color='#C62828'><b>[Returned: {ret_qty} of {it.quantity}]</b></font>"
+                    qty_text = f"{it.quantity}<br/><font size='7' color='#C62828'>(-{ret_qty})</font>"
+
             rows.append([
-                Paragraph(it.product_name or "—", cell),
+                Paragraph(prod_title, cell),
                 Paragraph(it.product_sku or "—", cell),
-                Paragraph(str(it.quantity), cell_right),
+                Paragraph(qty_text, cell_right),
                 Paragraph(_money(it.unit_price), cell_right),
                 Paragraph(_money(it.subtotal), cell_right),
             ])
@@ -246,9 +297,20 @@ class InvoiceService:
         if float(getattr(order, "wallet_deduction", 0) or 0) > 0:
             totals_data.append(total_row("Wallet Applied", f"- {_money(order.wallet_deduction)}",
                                          color=brand))
-        totals_data.append(total_row("Total", _money(order.total_amount), bold=True, color=brand))
 
-        totals = Table(totals_data, colWidths=[42 * mm, 32 * mm])
+        refund_amt = float(getattr(order, "refund_amount", 0) or 0)
+        orig_total = float(order.total_amount or 0)
+
+        if is_return_active and refund_amt > 0:
+            totals_data.append(total_row("Original Total", _money(orig_total)))
+            totals_data.append(total_row("Less: Refunded Amount", f"- {_money(refund_amt)}",
+                                         color=colors.HexColor("#C62828")))
+            net_total = max(0.0, orig_total - refund_amt)
+            totals_data.append(total_row("Net Order Total", _money(net_total), bold=True, color=brand))
+        else:
+            totals_data.append(total_row("Total", _money(orig_total), bold=True, color=brand))
+
+        totals = Table(totals_data, colWidths=[52 * mm, 32 * mm])
         totals.setStyle(TableStyle([
             ("TOPPADDING", (0, 0), (-1, -1), 3),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
@@ -258,7 +320,95 @@ class InvoiceService:
         totals_wrap = Table([[totals]], colWidths=[174 * mm])
         totals_wrap.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "RIGHT")]))
         elements.append(totals_wrap)
-        elements.append(Spacer(1, 10 * mm))
+        elements.append(Spacer(1, 6 * mm))
+
+        # ---- Return / Refund / Rejection Notice Box ---------------------
+        order_status = getattr(order, "status", "")
+        if order_status in ("return_approved", "refunded"):
+            res = getattr(order, "return_resolution", "refund") or "refund"
+            res_note = getattr(order, "return_resolution_note", "") or ""
+            note_content = [
+                Paragraph(f"<b>RETURN RESOLUTION: {res.upper()}</b>", ParagraphStyle(
+                    "RetNoticeTitle", parent=body, textColor=colors.HexColor("#1B5E20"), fontName="Helvetica-Bold", fontSize=9.5
+                )),
+                Spacer(1, 1.5 * mm),
+                Paragraph(
+                    f"This order has processed return resolution ({res}). Refund amount: <b>{_money(refund_amt)}</b>.",
+                    ParagraphStyle("RetNoticeBody", parent=body, textColor=colors.HexColor("#2E7D32"), fontSize=8.5)
+                ),
+            ]
+            if res_note:
+                note_content.append(Spacer(1, 1 * mm))
+                note_content.append(Paragraph(
+                    f"<b>Decision Note:</b> {res_note}",
+                    ParagraphStyle("RetNoticeNote", parent=body, textColor=colors.HexColor("#1B5E20"), fontSize=8.5)
+                ))
+            notice_box = Table([[note_content]], colWidths=[174 * mm])
+            notice_box.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#E8F5E9")),
+                ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#81C784")),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(notice_box)
+            elements.append(Spacer(1, 5 * mm))
+
+        elif order_status == "return_rejected":
+            rej_reason = getattr(order, "return_reason", "") or "Customer Return"
+            rej_note = getattr(order, "return_resolution_note", "") or "Claim did not meet return policy criteria."
+            rej_content = [
+                Paragraph("<b>RETURN CLAIM REJECTED</b>", ParagraphStyle(
+                    "RejNoticeTitle", parent=body, textColor=colors.HexColor("#B71C1C"), fontName="Helvetica-Bold", fontSize=9.5
+                )),
+                Spacer(1, 1.5 * mm),
+                Paragraph(
+                    f"Return reason requested: <b>{rej_reason.replace('_', ' ').title()}</b>. The claim was reviewed and declined by admin.",
+                    ParagraphStyle("RejNoticeBody", parent=body, textColor=colors.HexColor("#C62828"), fontSize=8.5)
+                ),
+                Spacer(1, 1 * mm),
+                Paragraph(
+                    f"<b>Admin Decision Note:</b> {rej_note}",
+                    ParagraphStyle("RejNoticeNote", parent=body, textColor=colors.HexColor("#B71C1C"), fontSize=8.5)
+                ),
+            ]
+            rej_box = Table([[rej_content]], colWidths=[174 * mm])
+            rej_box.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFEBEE")),
+                ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#E57373")),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(rej_box)
+            elements.append(Spacer(1, 5 * mm))
+
+        elif order_status == "return_requested":
+            ret_reason = getattr(order, "return_reason", "") or "Return Requested"
+            req_content = [
+                Paragraph("<b>RETURN CLAIM PENDING REVIEW</b>", ParagraphStyle(
+                    "ReqNoticeTitle", parent=body, textColor=colors.HexColor("#E65100"), fontName="Helvetica-Bold", fontSize=9.5
+                )),
+                Spacer(1, 1.5 * mm),
+                Paragraph(
+                    f"Customer submitted a return request (Reason: <b>{ret_reason.replace('_', ' ').title()}</b>). "
+                    "This claim is currently pending administrative verification.",
+                    ParagraphStyle("ReqNoticeBody", parent=body, textColor=colors.HexColor("#EF6C00"), fontSize=8.5)
+                ),
+            ]
+            req_box = Table([[req_content]], colWidths=[174 * mm])
+            req_box.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF8E1")),
+                ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#FFE082")),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(req_box)
+            elements.append(Spacer(1, 5 * mm))
 
         # ---- Footer -----------------------------------------------------
         elements.append(Table([[""]], colWidths=[174 * mm], style=TableStyle([
