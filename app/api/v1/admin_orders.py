@@ -1313,7 +1313,7 @@ async def approve_order_return(
 @router.post("/{order_id}/return/reject", response_model=dict)
 async def reject_order_return(
     order_id: UUID,
-    body: RejectReturnRequest = RejectReturnRequest(),
+    body: RejectReturnRequest,
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
     _decider = _RETURN_DECIDER,

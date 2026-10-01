@@ -425,8 +425,6 @@ def format_order(
         ),
         # The reverse pickup, once a Branch Manager has approved one. The app
         # renders these as a second tracker under the delivered order.
-        "return_reason": getattr(order, "return_reason", None),
-        "return_comments": getattr(order, "return_comments", None),
         "return_resolution": getattr(order, "return_resolution", None),
         "return_resolution_note": getattr(order, "return_resolution_note", None),
         "return_rejected_at": (
