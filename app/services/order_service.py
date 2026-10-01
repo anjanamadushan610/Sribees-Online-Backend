@@ -2647,28 +2647,32 @@ class OrderService:
         note: Optional[str] = None,
         changed_by: str = "Admin",
     ) -> Order:
-        """Reject a pending return: revert the order back to DELIVERED.
+        """Reject a pending return: transition the order to RETURN_REJECTED.
 
-        ``note`` is the manager's reason, kept on the claim so a customer who
-        rings support gets the same answer twice. Same signature fix as
-        :meth:`approve_return` — the router has been passing it all along.
+        ``note`` is mandatory: the manager's reason, kept on the claim and surfaced
+        to the customer in the app and timeline so they understand why the claim
+        could not be approved.
         """
         if order.status != OrderStatus.RETURN_REQUESTED.value:
             raise ValueError("This order has no pending return request.")
 
+        if not note or not note.strip():
+            raise ValueError("A reason/decision note is required when rejecting a return claim.")
+
         old_status = order.status
-        order.status = OrderStatus.DELIVERED.value
-        if note:
-            order.return_resolution_note = note
+        clean_note = note.strip()
+        order.status = OrderStatus.RETURN_REJECTED.value
+        order.return_resolution_note = clean_note
 
         now = datetime.now(timezone.utc)
-        history_note = "Return rejected by admin"
-        if note:
-            history_note += f": {note}"
+        if hasattr(order, "return_rejected_at"):
+            order.return_rejected_at = now
+
+        history_note = f"Return rejected by admin: {clean_note}"
         history = OrderStatusHistory(
             order_id=order.order_id,
             old_status=old_status,
-            new_status=OrderStatus.DELIVERED.value,
+            new_status=OrderStatus.RETURN_REJECTED.value,
             changed_by=changed_by,
             notes=history_note,
             created_at=now,
@@ -2678,6 +2682,7 @@ class OrderService:
         await db.commit()
         await db.refresh(order)
         logger.info(f"Return rejected for order {order.order_number}")
+        await OrderService._notify_return_status(db, order, OrderStatus.RETURN_REJECTED.value)
         return order
 
     @staticmethod

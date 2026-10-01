@@ -61,6 +61,7 @@ class OrderStatus(str, enum.Enum):
     # Post-delivery returns flow (Module 5.5)
     RETURN_REQUESTED = "return_requested"
     RETURN_APPROVED = "return_approved"
+    RETURN_REJECTED = "return_rejected"
     REFUNDED = "refunded"
 
 
@@ -249,6 +250,7 @@ class Order(Base):
     # RETURNS_ARCHITECTURE.md §7 — that, not approval, is when the customer's
     # wallet is credited.
     return_approved_at = Column(DateTime(timezone=True), nullable=True)
+    return_rejected_at = Column(DateTime(timezone=True), nullable=True)
     return_collected_at = Column(DateTime(timezone=True), nullable=True)
     return_received_at = Column(DateTime(timezone=True), nullable=True)
     refunded_at = Column(DateTime(timezone=True), nullable=True)

@@ -173,10 +173,14 @@ def build_status_timeline(order) -> list:
             return history_map.get("delivered") or ts("delivered_at")
         return None
 
-    # Return lifecycle: delivered → return_requested → return_approved → rto_initiated → rto_delivered → refunded
+    # Return lifecycle: delivered → return_requested → return_approved / return_rejected → rto_initiated → rto_delivered → refunded
     # An order that reached return states has already completed the full forward delivery workflow.
-    if order.status in ("return_requested", "return_approved", "rto_initiated", "rto_delivered") or (
-        order.status == "refunded" and (getattr(order, "return_requested_at", None) or getattr(order, "delivered_at", None) or history_map.get("delivered"))
+    if (
+        order.status in ("return_requested", "return_approved", "return_rejected", "rto_initiated", "rto_delivered")
+        or (order.status == "refunded" and (getattr(order, "return_requested_at", None) or getattr(order, "delivered_at", None) or history_map.get("delivered")))
+        or history_map.get("return_requested")
+        or getattr(order, "return_requested_at", None)
+        or getattr(order, "return_rejected_at", None)
     ):
         timeline = []
         # 1. Preserve all 9 fulfilled forward workflow steps
@@ -201,7 +205,23 @@ def build_status_timeline(order) -> list:
             "current": is_req_current,
         })
 
-        # 3. Append Return Approved milestone if reached
+        # 3. Append Return Rejected milestone if rejected
+        if (
+            order.status == "return_rejected"
+            or getattr(order, "return_rejected_at", None)
+            or history_map.get("return_rejected")
+        ):
+            rej_ts = ts("return_rejected_at") or history_map.get("return_rejected") or ts("updated_at")
+            is_rej_current = order.status == "return_rejected"
+            timeline.append({
+                "status": "return_rejected",
+                "label": "Return Rejected",
+                "timestamp": rej_ts,
+                "completed": True,
+                "current": is_rej_current,
+            })
+
+        # 4. Append Return Approved milestone if reached
         if (
             order.status in ("return_approved", "rto_initiated", "rto_delivered")
             or getattr(order, "return_approved_at", None)
@@ -405,6 +425,15 @@ def format_order(
         ),
         # The reverse pickup, once a Branch Manager has approved one. The app
         # renders these as a second tracker under the delivered order.
+        "return_reason": getattr(order, "return_reason", None),
+        "return_comments": getattr(order, "return_comments", None),
+        "return_resolution": getattr(order, "return_resolution", None),
+        "return_resolution_note": getattr(order, "return_resolution_note", None),
+        "return_rejected_at": (
+            order.return_rejected_at.isoformat()
+            if getattr(order, "return_rejected_at", None)
+            else None
+        ),
         "return_waybill_number": order.return_waybill_number,
         "return_tracking_status": order.return_tracking_status,
         "return_collected_at": (

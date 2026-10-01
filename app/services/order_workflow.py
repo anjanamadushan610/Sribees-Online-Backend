@@ -54,6 +54,7 @@ ALL_STATUSES: tuple[str, ...] = (
     "cancelled",
     "return_requested",
     "return_approved",
+    "return_rejected",
     "refunded",
 )
 
@@ -110,6 +111,7 @@ _ACTIONS: dict[str, list[dict[str, str]]] = {
     "cancelled": [],
     "return_requested": [],
     "return_approved": [],
+    "return_rejected": [],
     "refunded": [],
 }
 

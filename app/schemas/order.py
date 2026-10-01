@@ -66,6 +66,7 @@ class OrderStatusEnum(str, Enum):
     CANCELLED = "cancelled"
     RETURN_REQUESTED = "return_requested"
     RETURN_APPROVED = "return_approved"
+    RETURN_REJECTED = "return_rejected"
     REFUNDED = "refunded"
 
 
@@ -285,7 +286,7 @@ class ResolveReturnRequest(BaseModel):
 
 
 class RejectReturnRequest(BaseModel):
-    note: Optional[str] = Field(None, max_length=1000)
+    note: str = Field(..., min_length=3, max_length=1000, description="Decision note explaining rejection reason")
 
 
 class ReturnNoteRequest(BaseModel):

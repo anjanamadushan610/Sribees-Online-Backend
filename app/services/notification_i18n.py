@@ -111,6 +111,11 @@ _ORDER_STATUS: Dict[str, Dict[str, str]] = {
         "si": "ඇණවුම #{order_number} සඳහා ඔබේ ආපසු දීම අනුමත කළා.",
         "ta": "ஆர்டர் #{order_number} க்கான உங்கள் திருப்பி அளிப்பு அங்கீகரிக்கப்பட்டது.",
     },
+    "return_rejected": {
+        "en": "Your return request for order #{order_number} could not be approved.",
+        "si": "ඇණවුම #{order_number} සඳහා ඔබේ ආපසු දීමේ ඉල්ලීම ප්‍රතික්ෂේප විය.",
+        "ta": "ஆர்டர் #{order_number} க்கான உங்கள் திருப்பி அளிக்கும் கோரிக்கை நிராகரிக்கப்பட்டது.",
+    },
     "refunded": {
         "en": "Your refund for order #{order_number} has been processed.",
         "si": "ඇණවුම #{order_number} සඳහා ඔබේ මුදල් ආපසු ගෙවා අවසන්.",

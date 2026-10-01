@@ -269,14 +269,31 @@ async def test_approving_something_that_is_not_an_open_claim_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_reject_return_reverts_to_delivered_and_logs_history():
+async def test_reject_return_transitions_to_return_rejected_and_logs_history():
     order = _order(status=OrderStatus.RETURN_REQUESTED.value)
     db = _FakeSession()
     await OrderService.reject_return(db, order, note="Customer damaged seal", changed_by="Admin (John)")
 
-    assert order.status == OrderStatus.DELIVERED.value
+    assert order.status == OrderStatus.RETURN_REJECTED.value
     assert order.return_resolution_note == "Customer damaged seal"
     assert len(db.added) == 1
     assert db.added[0].old_status == OrderStatus.RETURN_REQUESTED.value
-    assert db.added[0].new_status == OrderStatus.DELIVERED.value
+    assert db.added[0].new_status == OrderStatus.RETURN_REJECTED.value
     assert "Admin (John)" in db.added[0].changed_by
+
+
+@pytest.mark.asyncio
+async def test_reject_return_requires_decision_note():
+    order = _order(status=OrderStatus.RETURN_REQUESTED.value)
+    db = _FakeSession()
+    with pytest.raises(ValueError, match="decision note is required"):
+        await OrderService.reject_return(db, order, note="   ")
+
+
+@pytest.mark.asyncio
+async def test_request_return_refused_after_rejection():
+    order = _order(status=OrderStatus.RETURN_REJECTED.value)
+    db = _FakeSession()
+    with pytest.raises(ValueError, match="Only delivered orders can be returned"):
+        await OrderService.request_return(db, order, reason="Broken")
+
