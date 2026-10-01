@@ -83,6 +83,7 @@ def _format_order_row(order: Order, customer: Optional[User], branch_name: Optio
         "user_id": str(order.user_id),
         "customer_name": (customer.full_name if customer else None),
         "customer_email": (customer.email if customer else None),
+        "customer_phone": (customer.phone or order.contact_phone) if customer else order.contact_phone,
         "branch_id": str(order.branch_id) if order.branch_id else None,
         "branch_name": branch_name,
         "status": order.status,
@@ -90,6 +91,10 @@ def _format_order_row(order: Order, customer: Optional[User], branch_name: Optio
         "total_amount": float(order.total_amount or 0),
         "item_count": len(order.items) if order.items is not None else 0,
         "created_at": order.created_at.isoformat() if order.created_at else None,
+        "delivered_at": order.delivered_at.isoformat() if order.delivered_at else None,
+        "return_requested_at": order.return_requested_at.isoformat() if order.return_requested_at else None,
+        "return_reason": order.return_reason,
+        "return_images": [media_url(p) for p in (order.return_images or [])],
         # Enough courier state to spot a parcel that needs a human without
         # opening every order. A failed booking is otherwise invisible from
         # the list: the order sits at Packed looking perfectly normal while
@@ -747,6 +752,74 @@ async def export_orders_pdf(
     )
 
 
+def _esc_out(e: OrderEscalation) -> dict:
+    return {
+        "escalation_id": str(e.escalation_id),
+        "order_id": str(e.order_id),
+        "raised_by_admin_id": str(e.raised_by_admin_id) if e.raised_by_admin_id else None,
+        "raised_by_role": e.raised_by_role,
+        "category": e.category,
+        "message": e.message,
+        "status": e.status,
+        "resolution_note": e.resolution_note,
+        "raised_by_name": e.raised_by_name,
+        "handled_by_name": e.handled_by_name,
+        "created_at": e.created_at.isoformat() if e.created_at else None,
+        "acknowledged_at": e.acknowledged_at.isoformat() if e.acknowledged_at else None,
+        "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
+    }
+
+
+@router.get("/escalations/queue", response_model=dict)
+async def list_escalation_queue(
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status: open, acknowledged, resolved, or all"),
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """Network-wide or branch-scoped queue of escalation tickets for support/BM dashboard."""
+    query = (
+        select(OrderEscalation, Order.order_number, Branch.name.label("branch_name"))
+        .join(Order, OrderEscalation.order_id == Order.order_id)
+        .outerjoin(Branch, OrderEscalation.branch_id == Branch.branch_id)
+    )
+    if scope.branch_id is not None:
+        query = query.where(OrderEscalation.branch_id == scope.branch_id)
+
+    if status_filter and status_filter != "all":
+        query = query.where(OrderEscalation.status == status_filter)
+    else:
+        # By default, return unresolved tickets (open or acknowledged)
+        query = query.where(OrderEscalation.status.in_([EscalationStatus.OPEN.value, EscalationStatus.ACKNOWLEDGED.value]))
+
+    query = query.order_by(OrderEscalation.created_at.desc()).limit(limit)
+    rows = (await db.execute(query)).all()
+
+    # Open count query for badges
+    count_query = select(func.count(OrderEscalation.escalation_id)).where(
+        OrderEscalation.status == EscalationStatus.OPEN.value
+    )
+    if scope.branch_id is not None:
+        count_query = count_query.where(OrderEscalation.branch_id == scope.branch_id)
+    open_count = (await db.execute(count_query)).scalar() or 0
+
+    items = []
+    for esc, order_number, branch_name in rows:
+        out = _esc_out(esc)
+        out["order_number"] = order_number
+        out["branch_name"] = branch_name
+        items.append(out)
+
+    return {
+        "success": True,
+        "data": {
+            "items": items,
+            "total": len(items),
+            "open_count": open_count,
+        }
+    }
+
+
 def _hours_since_delivery(order: Order) -> Optional[float]:
     """Hours between delivery and now, to one decimal — or None if undelivered.
 
@@ -1383,22 +1456,7 @@ async def add_return_note(
 # Internal escalation tickets (B4 Module B)
 # ============================================================================
 
-def _esc_out(e: OrderEscalation) -> dict:
-    return {
-        "escalation_id": str(e.escalation_id),
-        "order_id": str(e.order_id),
-        "raised_by_admin_id": str(e.raised_by_admin_id) if e.raised_by_admin_id else None,
-        "raised_by_role": e.raised_by_role,
-        "category": e.category,
-        "message": e.message,
-        "status": e.status,
-        "resolution_note": e.resolution_note,
-        "raised_by_name": e.raised_by_name,
-        "handled_by_name": e.handled_by_name,
-        "created_at": e.created_at.isoformat() if e.created_at else None,
-        "acknowledged_at": e.acknowledged_at.isoformat() if e.acknowledged_at else None,
-        "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
-    }
+
 
 
 async def _list_escalations(db: AsyncSession, order_id: UUID) -> list[dict]:
