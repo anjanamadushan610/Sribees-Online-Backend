@@ -796,8 +796,9 @@ async def list_escalation_queue(
             query = query.where(OrderEscalation.raised_by_role == "customer_support")
         elif for_role == "branch_manager":
             query = query.where(OrderEscalation.raised_by_role == "branch_manager")
-        if status_filter and status_filter != "all":
-            query = query.where(OrderEscalation.status == status_filter)
+        if status_filter:
+            if status_filter != "all":
+                query = query.where(OrderEscalation.status == status_filter)
     elif box == "inbox":
         if for_role == "customer_support":
             role_filter = or_(
@@ -809,14 +810,16 @@ async def list_escalation_queue(
             query = query.where(role_filter)
         elif for_role == "branch_manager":
             query = query.where(OrderEscalation.raised_by_role != "branch_manager")
-        if status_filter and status_filter != "all":
-            query = query.where(OrderEscalation.status == status_filter)
+        if status_filter:
+            if status_filter != "all":
+                query = query.where(OrderEscalation.status == status_filter)
         else:
             query = query.where(OrderEscalation.status.in_([EscalationStatus.OPEN.value, EscalationStatus.ACKNOWLEDGED.value]))
     else:
         # Default behavior when box is not specified
-        if status_filter and status_filter != "all":
-            query = query.where(OrderEscalation.status == status_filter)
+        if status_filter:
+            if status_filter != "all":
+                query = query.where(OrderEscalation.status == status_filter)
         else:
             query = query.where(OrderEscalation.status.in_([EscalationStatus.OPEN.value, EscalationStatus.ACKNOWLEDGED.value]))
         if for_role == "customer_support":
