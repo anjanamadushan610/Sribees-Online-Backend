@@ -774,11 +774,12 @@ def _esc_out(e: OrderEscalation) -> dict:
 async def list_escalation_queue(
     status_filter: Optional[str] = Query(None, alias="status", description="Filter by status: open, acknowledged, resolved, or all"),
     for_role: Optional[str] = Query(None, description="Perspective filter: e.g. customer_support, branch_manager"),
+    box: Optional[str] = Query(None, description="Perspective box: inbox, outbox, or resolved"),
     limit: int = Query(50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
 ):
-    """Network-wide or branch-scoped queue of escalation tickets for support/BM dashboard."""
+    """Network-wide or branch-scoped queue of escalation tickets with box & role filtering."""
     query = (
         select(OrderEscalation, Order.order_number, Branch.name.label("branch_name"))
         .join(Order, OrderEscalation.order_id == Order.order_id)
@@ -787,24 +788,45 @@ async def list_escalation_queue(
     if scope.branch_id is not None:
         query = query.where(OrderEscalation.branch_id == scope.branch_id)
 
-    if status_filter and status_filter != "all":
-        query = query.where(OrderEscalation.status == status_filter)
+    # Box filtering:
+    if box == "resolved":
+        query = query.where(OrderEscalation.status == EscalationStatus.RESOLVED.value)
+    elif box == "outbox":
+        if for_role == "customer_support":
+            query = query.where(OrderEscalation.raised_by_role == "customer_support")
+        elif for_role == "branch_manager":
+            query = query.where(OrderEscalation.raised_by_role == "branch_manager")
+        if status_filter and status_filter != "all":
+            query = query.where(OrderEscalation.status == status_filter)
+    elif box == "inbox":
+        if for_role == "customer_support":
+            role_filter = or_(
+                OrderEscalation.raised_by_role != "customer_support",
+                OrderEscalation.raised_by_role.is_(None),
+                OrderEscalation.resolution_note.isnot(None),
+                OrderEscalation.status.in_([EscalationStatus.ACKNOWLEDGED.value, EscalationStatus.RESOLVED.value]),
+            )
+            query = query.where(role_filter)
+        elif for_role == "branch_manager":
+            query = query.where(OrderEscalation.raised_by_role != "branch_manager")
+        if status_filter and status_filter != "all":
+            query = query.where(OrderEscalation.status == status_filter)
+        else:
+            query = query.where(OrderEscalation.status.in_([EscalationStatus.OPEN.value, EscalationStatus.ACKNOWLEDGED.value]))
     else:
-        # By default, return unresolved tickets (open or acknowledged)
-        query = query.where(OrderEscalation.status.in_([EscalationStatus.OPEN.value, EscalationStatus.ACKNOWLEDGED.value]))
-
-    # For Customer Support perspective:
-    # 1. Incoming tickets raised by Branch Manager or Super Admin (raised_by_role != 'customer_support')
-    # 2. Tickets raised by Customer Support where Branch Manager responded/acted (resolution_note is not None or status != 'open')
-    # Outbox tickets (raised by support, still open with no BM action) are excluded.
-    if for_role == "customer_support":
-        role_filter = or_(
-            OrderEscalation.raised_by_role != "customer_support",
-            OrderEscalation.raised_by_role.is_(None),
-            OrderEscalation.resolution_note.isnot(None),
-            OrderEscalation.status.in_([EscalationStatus.ACKNOWLEDGED.value, EscalationStatus.RESOLVED.value]),
-        )
-        query = query.where(role_filter)
+        # Default behavior when box is not specified
+        if status_filter and status_filter != "all":
+            query = query.where(OrderEscalation.status == status_filter)
+        else:
+            query = query.where(OrderEscalation.status.in_([EscalationStatus.OPEN.value, EscalationStatus.ACKNOWLEDGED.value]))
+        if for_role == "customer_support":
+            role_filter = or_(
+                OrderEscalation.raised_by_role != "customer_support",
+                OrderEscalation.raised_by_role.is_(None),
+                OrderEscalation.resolution_note.isnot(None),
+                OrderEscalation.status.in_([EscalationStatus.ACKNOWLEDGED.value, EscalationStatus.RESOLVED.value]),
+            )
+            query = query.where(role_filter)
 
     query = query.order_by(OrderEscalation.created_at.desc()).limit(limit)
     rows = (await db.execute(query)).all()
