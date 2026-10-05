@@ -570,3 +570,34 @@ class Address(Base):
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class UserPhoneChangeHistory(Base):
+    """Audit log and rate limiting tracking for customer primary phone number updates."""
+
+    __tablename__ = "user_phone_change_history"
+
+    id: UUID = Column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    user_id: UUID = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    old_phone: Optional[str] = Column(String(20), nullable=True)
+    new_phone: str = Column(String(20), nullable=False)
+    ip_address: Optional[str] = Column(String(45), nullable=True)
+    changed_at: datetime = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+
+    # Relationship
+    user = relationship("User", backref="phone_changes")
+

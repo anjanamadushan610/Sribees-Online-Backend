@@ -442,8 +442,11 @@ class AuthService:
             if existing.scalar_one_or_none() is not None:
                 raise EmailAlreadyExistsError()
             user.email = data.email
-        if data.phone is not None:
-            user.phone = data.phone
+        if data.phone is not None and data.phone != user.phone:
+            raise ValidationError(
+                message="Primary phone number must be updated using the phone verification flow.",
+                errors={"phone": "Requires OTP verification"},
+            )
         if data.nic is not None and data.nic != user.nic:
             # Write-once. The NIC is what this business recognises a person
             # by, so letting an account rewrite it at will would let one
@@ -595,6 +598,192 @@ class AuthService:
             success=True,
             message="Session revoked successfully",
         )
+
+    # ========================================================================
+    # Primary Phone Number Change & Verification (with Quota Enforcement)
+    # ========================================================================
+
+    @staticmethod
+    async def get_phone_change_status(user_id: UUID, db: AsyncSession) -> dict:
+        """Calculate remaining daily (2) and monthly (4) primary phone change quotas."""
+        from datetime import timezone
+        from sqlalchemy import func
+        from app.models.user import UserPhoneChangeHistory
+
+        now = datetime.now(timezone.utc)
+        since_day = now - timedelta(hours=24)
+        since_month = now - timedelta(days=30)
+
+        daily_res = await db.execute(
+            select(func.count(UserPhoneChangeHistory.id)).where(
+                UserPhoneChangeHistory.user_id == user_id,
+                UserPhoneChangeHistory.changed_at >= since_day,
+            )
+        )
+        daily_count = daily_res.scalar() or 0
+
+        monthly_res = await db.execute(
+            select(func.count(UserPhoneChangeHistory.id)).where(
+                UserPhoneChangeHistory.user_id == user_id,
+                UserPhoneChangeHistory.changed_at >= since_month,
+            )
+        )
+        monthly_count = monthly_res.scalar() or 0
+
+        daily_limit = 2
+        monthly_limit = 4
+        daily_remaining = max(0, daily_limit - daily_count)
+        monthly_remaining = max(0, monthly_limit - monthly_count)
+
+        return {
+            "daily_remaining": daily_remaining,
+            "monthly_remaining": monthly_remaining,
+            "daily_limit": daily_limit,
+            "monthly_limit": monthly_limit,
+            "can_change": daily_remaining > 0 and monthly_remaining > 0,
+        }
+
+    @staticmethod
+    async def request_phone_change(
+        current_user: User,
+        new_phone_raw: str,
+        client_ip: str,
+        lang: str,
+        db: AsyncSession,
+        redis,
+    ):
+        """Validate quotas and uniqueness, then send OTP for primary phone change."""
+        from app.config.redis import RedisKeys
+        from app.services.app_settings_service import AppSettingsService
+        from app.services.otp_service import OTPService
+        from app.utils.identity import normalize_mobile
+
+        try:
+            new_phone = normalize_mobile(new_phone_raw)
+        except ValueError as e:
+            raise ValidationError(message=str(e), errors={"new_phone": str(e)})
+
+        if current_user.phone and new_phone == current_user.phone:
+            raise ValidationError(
+                message="This is already your current phone number",
+                errors={"new_phone": "Same as current"},
+            )
+
+        # Collision check
+        existing = await db.execute(
+            select(User).where(User.phone == new_phone, User.user_id != current_user.user_id)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise DuplicateError(
+                field="phone",
+                message="This phone number is already registered to another account",
+            )
+
+        # Quota check (applies if user already has a phone; initial setup for Google OAuth users is allowed)
+        if current_user.phone:
+            quota = await AuthService.get_phone_change_status(current_user.user_id, db)
+            if not quota["can_change"]:
+                if quota["daily_remaining"] <= 0:
+                    raise ValidationError(
+                        message="Daily phone change limit reached (2/2). Please try again tomorrow.",
+                        errors={"daily": "Limit reached"},
+                    )
+                raise ValidationError(
+                    message="Monthly phone change limit reached (4/4). Please try again next month.",
+                    errors={"monthly": "Limit reached"},
+                )
+
+        daily_sms_limit = await AppSettingsService.get_sms_daily_limit(db)
+        key = RedisKeys.phone_change_otp(str(current_user.user_id))
+        challenge = await OTPService.issue(
+            redis,
+            key,
+            new_phone,
+            client_ip=client_ip,
+            lang=lang,
+            daily_limit=daily_sms_limit,
+        )
+
+        # Cache target phone for this challenge (valid for 3 minutes)
+        if redis:
+            await redis.set(
+                f"otp:phone_change:{current_user.user_id}:target_phone",
+                new_phone,
+                ex=RedisTTL.PHONE_OTP,
+            )
+
+        return challenge
+
+    @staticmethod
+    async def verify_phone_change(
+        current_user: User,
+        new_phone_raw: str,
+        otp: str,
+        client_ip: str,
+        db: AsyncSession,
+        redis,
+    ):
+        """Verify OTP and update the user's primary phone number with audit logging."""
+        from app.config.redis import RedisKeys
+        from app.models.user import UserPhoneChangeHistory
+        from app.schemas.auth import ProfileResponse, UserResponse
+        from app.services.otp_service import OTPService, invalid_code_error
+        from app.utils.identity import normalize_mobile
+
+        try:
+            new_phone = normalize_mobile(new_phone_raw)
+        except ValueError as e:
+            raise ValidationError(message=str(e), errors={"new_phone": str(e)})
+
+        if redis:
+            target_phone = await redis.get(f"otp:phone_change:{current_user.user_id}:target_phone")
+            if target_phone and target_phone != new_phone:
+                raise ValidationError(
+                    message="Phone number does not match the verification request",
+                    errors={"new_phone": "Mismatch with requested number"},
+                )
+
+        key = RedisKeys.phone_change_otp(str(current_user.user_id))
+        ok = await OTPService.verify_otp(redis, key, otp, phone=new_phone)
+        if not ok:
+            raise invalid_code_error(lang="en")
+
+        # Concurrency safety re-check
+        existing = await db.execute(
+            select(User).where(User.phone == new_phone, User.user_id != current_user.user_id)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise DuplicateError(
+                field="phone",
+                message="This phone number is already registered to another account",
+            )
+
+        # Re-fetch user
+        res = await db.execute(select(User).where(User.user_id == current_user.user_id))
+        user = res.scalar_one()
+
+        old_phone = user.phone
+        user.phone = new_phone
+        user.is_phone_verified = True
+
+        history_entry = UserPhoneChangeHistory(
+            user_id=user.user_id,
+            old_phone=old_phone,
+            new_phone=new_phone,
+            ip_address=client_ip,
+        )
+        db.add(history_entry)
+        await db.commit()
+        await db.refresh(user)
+
+        if redis:
+            await redis.delete(f"otp:phone_change:{current_user.user_id}:target_phone")
+
+        return ProfileResponse(
+            success=True,
+            user=UserResponse.from_orm(user),
+        )
+
 
 
 def _parse_device_name(ua_or_device: Optional[str]) -> str:

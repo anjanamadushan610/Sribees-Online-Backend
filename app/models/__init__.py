@@ -60,6 +60,7 @@ from app.models.user import (
     PasswordReset,
     Session,
     User,
+    UserPhoneChangeHistory,
 )
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.models.wishlist import WishlistItem
@@ -70,6 +71,7 @@ __all__ = [
     "AssistantReceipt",
     # User models
     "User",
+    "UserPhoneChangeHistory",
     "EmailVerification",
     "PasswordReset",
     "Session",

@@ -371,3 +371,37 @@ class SocialLoginRequest(BaseModel):
     id_token: str = Field(..., min_length=20, max_length=8192)
     nonce: Optional[str] = Field(default=None, max_length=256)
     full_name: Optional[str] = Field(default=None, max_length=200)
+
+
+class PhoneChangeStatusResponse(BaseModel):
+    """Quota info for primary phone changes."""
+
+    success: bool = True
+    daily_remaining: int = Field(..., alias="dailyRemaining")
+    monthly_remaining: int = Field(..., alias="monthlyRemaining")
+    daily_limit: int = Field(2, alias="dailyLimit")
+    monthly_limit: int = Field(4, alias="monthlyLimit")
+    can_change: bool = Field(..., alias="canChange")
+
+    class Config:
+        populate_by_name = True
+
+
+class PhoneChangeRequest(BaseModel):
+    """Request to change primary phone number."""
+
+    new_phone: str = Field(..., max_length=20, alias="newPhone", description="New Sri Lankan mobile number")
+
+    class Config:
+        populate_by_name = True
+
+
+class PhoneChangeVerifyRequest(BaseModel):
+    """Verification for primary phone number change."""
+
+    new_phone: str = Field(..., max_length=20, alias="newPhone")
+    otp: str = Field(..., min_length=4, max_length=8)
+
+    class Config:
+        populate_by_name = True
+

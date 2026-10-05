@@ -218,6 +218,12 @@ class RedisKeys:
         return f"otp:phone:{user_id}"
 
     @staticmethod
+    def phone_change_otp(user_id: str) -> str:
+        """Short-lived primary phone change OTP key."""
+        return f"otp:phone_change:{user_id}"
+
+
+    @staticmethod
     def account_deletion_otp(user_id: str) -> str:
         """Short-lived OTP key for confirming an account closure.
 
