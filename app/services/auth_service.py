@@ -3,13 +3,14 @@ SRIBEESonline FastAPI Backend - Auth Service
 
 Business logic for user authentication.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config.redis import RedisKeys, RedisTTL
 from app.core.exceptions import (
     DuplicateError,
     EmailAlreadyExistsError,
@@ -22,7 +23,7 @@ from app.core.security import (
     create_token_pair,
     verify_token,
 )
-from app.models.user import Session, User
+from app.models.user import Session, User, UserPhoneChangeHistory
 from app.schemas.auth import (
     AuthResponse,
     MessageResponse,
@@ -606,10 +607,6 @@ class AuthService:
     @staticmethod
     async def get_phone_change_status(user_id: UUID, db: AsyncSession) -> dict:
         """Calculate remaining daily (2) and monthly (4) primary phone change quotas."""
-        from datetime import timezone
-        from sqlalchemy import func
-        from app.models.user import UserPhoneChangeHistory
-
         now = datetime.now(timezone.utc)
         since_day = now - timedelta(hours=24)
         since_month = now - timedelta(days=30)
@@ -653,7 +650,6 @@ class AuthService:
         redis,
     ):
         """Validate quotas and uniqueness, then send OTP for primary phone change."""
-        from app.config.redis import RedisKeys
         from app.services.app_settings_service import AppSettingsService
         from app.services.otp_service import OTPService
         from app.utils.identity import normalize_mobile
@@ -724,9 +720,7 @@ class AuthService:
         redis,
     ):
         """Verify OTP and update the user's primary phone number with audit logging."""
-        from app.config.redis import RedisKeys
-        from app.models.user import UserPhoneChangeHistory
-        from app.schemas.auth import ProfileResponse, UserResponse
+        from app.schemas.auth import ProfileResponse
         from app.services.otp_service import OTPService, invalid_code_error
         from app.utils.identity import normalize_mobile
 

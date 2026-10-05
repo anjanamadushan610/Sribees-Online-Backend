@@ -1,7 +1,7 @@
 """
 Tests for customer primary phone number change, OTP verification, and rate limiting.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -129,6 +129,8 @@ async def test_verify_phone_change_updates_number_and_logs():
             db=db,
             redis=redis,
         )
+
+    assert res is not None
 
     assert user.phone == "+94778888888"
     assert user.is_phone_verified is True
