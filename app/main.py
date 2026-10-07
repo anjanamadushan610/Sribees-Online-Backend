@@ -225,7 +225,8 @@ async def log_requests(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app|https://([a-z0-9-]+\.)*sribees\.com",
+    # An empty setting means "the list only", not "a pattern matching nothing".
+    allow_origin_regex=settings.cors_origin_regex or None,
     allow_credentials=settings.cors_allow_credentials,
     allow_methods=settings.cors_allow_methods,
     allow_headers=settings.cors_allow_headers,

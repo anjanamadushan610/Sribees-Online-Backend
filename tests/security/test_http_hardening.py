@@ -55,6 +55,9 @@ async def test_health_answers_without_storage(client):
         "https://sribees.com.evil.example",
         "http://api.sribees.com",  # plain http must not match the https rule
         "https://evilsribees.com",
+        # Only the development server takes Netlify previews, and only because
+        # its environment says so (CORS_ORIGIN_REGEX).
+        "https://some-preview.netlify.app",
         "null",
     ],
 )
@@ -73,6 +76,15 @@ async def test_cors_allows_our_own_origins(client, origin):
         headers={"Origin": origin, "Access-Control-Request-Method": "GET"},
     )
     assert r.headers.get("access-control-allow-origin") == origin
+
+
+def test_cors_pattern_comes_from_settings(storage_free_app):
+    """The environment decides which origins match, so development can be
+    wider than production without a second copy of the rule in main.py."""
+    from starlette.middleware.cors import CORSMiddleware
+
+    cors = next(m for m in storage_free_app.user_middleware if m.cls is CORSMiddleware)
+    assert cors.kwargs["allow_origin_regex"] == settings.cors_origin_regex
 
 
 # ---------------------------------------------------------------------------
