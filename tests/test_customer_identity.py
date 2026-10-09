@@ -19,7 +19,7 @@ from app.models.user import User
 from app.schemas.auth import UpdateProfileRequest
 from app.schemas.order import CreateOrderRequest
 from app.services.auth_service import AuthService
-from app.utils.identity import normalize_mobile, normalize_nic
+from app.utils.identity import missing_profile_fields, normalize_mobile, normalize_nic
 
 
 def _result(value):
@@ -184,6 +184,38 @@ async def test_the_second_number_can_be_added_and_removed():
         db,
     )
     assert user.alternate_phone is None
+
+
+@pytest.mark.asyncio
+async def test_a_half_finished_account_is_asked_only_for_what_it_lacks():
+    """
+    An account opened on the website and signed into on the app is the same
+    row. Each client asks for the fields named here and no others, so what
+    the first one saved is never asked for -- or written over -- again.
+    """
+    user = _account(nic="199512345678")
+    db = AsyncMock()
+    db.execute.side_effect = [_result(user)]
+    response = await AuthService.get_profile(SimpleNamespace(user_id=user.user_id), db)
+    assert response.user.missing_profile_fields == ["email"]
+    # The clients read it under its camelCase name, like every other field.
+    assert response.model_dump(by_alias=True)["user"]["missingProfileFields"] == ["email"]
+
+    user.email = "customer@example.com"
+    db.execute.side_effect = [_result(user)]
+    response = await AuthService.get_profile(SimpleNamespace(user_id=user.user_id), db)
+    assert response.user.missing_profile_fields == []
+
+
+def test_a_new_account_owes_its_name_its_nic_and_its_email():
+    assert missing_profile_fields(full_name="", email=None, nic=None) == [
+        "full_name",
+        "nic",
+        "email",
+    ]
+    assert missing_profile_fields(full_name="  ", email="a@b.lk", nic="952345678V") == [
+        "full_name"
+    ]
 
 
 def test_an_order_needs_two_different_reachable_numbers():

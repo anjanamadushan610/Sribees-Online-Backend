@@ -222,22 +222,3 @@ async def sign_in(
     await db.refresh(user)
     logger.info(f"New account from {provider} sign-in: {user.user_id}")
     return user, True
-
-
-def missing_profile_fields(user: User) -> list[str]:
-    """
-    What this account still owes before it can order.
-
-    The app reads this to decide whether to send someone to the profile gate.
-    Phone and NIC are the two a social sign-in arrives without, and both are
-    required to place an order -- the NIC because it is how this business
-    recognises a person, the phone because a courier has to ring somebody.
-    """
-    missing = []
-    if not (user.phone or "").strip():
-        missing.append("phone")
-    if not (user.nic or "").strip():
-        missing.append("nic")
-    if not (user.full_name or "").strip():
-        missing.append("full_name")
-    return missing
