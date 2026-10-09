@@ -87,3 +87,18 @@ def normalize_mobile(value: str) -> str:
     if _MOBILE.match(digits):
         return f"+94{digits}"
     raise ValueError("Enter a Sri Lankan mobile number, e.g. 0771234567")
+
+
+def missing_profile_fields(
+    *, full_name: Optional[str], email: Optional[str], nic: Optional[str]
+) -> list[str]:
+    """
+    What an account still owes before sign-up is finished, in asking order.
+
+    The one rule the app and the website both follow. An account is one row
+    whichever of them created it, so a client asks for the fields named here
+    and nothing else: asking again for a name or a NIC the account already
+    has is how a second sign-in on another device came to overwrite the first.
+    """
+    held = {"full_name": full_name, "nic": nic, "email": email}
+    return [field for field, value in held.items() if not (value or "").strip()]

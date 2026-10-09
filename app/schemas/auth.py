@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator
 
 # ============================================================================
 # Request Schemas
@@ -214,6 +214,17 @@ class UserResponse(BaseModel):
     created_at: datetime = Field(..., alias="createdAt")
     updated_at: datetime = Field(..., alias="updatedAt")
     last_login: Optional[datetime] = Field(None, alias="lastLogin")
+
+    @computed_field(alias="missingProfileFields")
+    @property
+    def missing_profile_fields(self) -> list[str]:
+        # Derived here so every response that carries a user carries the same
+        # answer -- sign-in, /auth/me and a profile update alike.
+        from app.utils.identity import missing_profile_fields
+
+        return missing_profile_fields(
+            full_name=self.full_name, email=self.email, nic=self.nic
+        )
 
     class Config:
         from_attributes = True
