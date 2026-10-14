@@ -1,7 +1,7 @@
 """
 Category Service - Business Logic
 """
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
@@ -9,12 +9,61 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import Branch
 from app.models.category import BranchCategory, Category
+from app.models.product import BranchInventory, Product
 from app.schemas.category import CategoryCreate, CategoryUpdate
 from app.utils.i18n import DEFAULT_LANGUAGE, localized
 
 
 class CategoryService:
     """Service class for category operations."""
+
+    @staticmethod
+    async def _product_counts(
+        db: AsyncSession,
+        storefront: bool,
+        branch_id: Optional[UUID] = None,
+    ) -> Dict[UUID, int]:
+        """
+        Products filed under each category, keyed by category id.
+
+        A product counts towards its category, its sub-category and that
+        sub-category's parent, once each — the same set a category page
+        lists (see ``ProductService._category_filter``), so the number on a
+        tile matches what tapping it shows.
+
+        *storefront* counts only what a customer can buy: active products,
+        and with *branch_id* only those active and in stock in that branch.
+        Otherwise every product in the catalogue counts (the admin view).
+        """
+        query = select(Product.product_id, Product.category_id, Product.subcategory_id)
+        if storefront:
+            query = query.where(Product.is_active.is_(True))
+            if branch_id is not None:
+                query = query.join(
+                    BranchInventory,
+                    and_(
+                        BranchInventory.product_id == Product.product_id,
+                        BranchInventory.branch_id == branch_id,
+                    ),
+                ).where(
+                    BranchInventory.is_active.is_(True),
+                    BranchInventory.stock_quantity > 0,
+                )
+        rows = (await db.execute(query)).all()
+
+        parents = dict(
+            (await db.execute(
+                select(Category.category_id, Category.parent_category_id)
+                .where(Category.parent_category_id.is_not(None))
+            )).all()
+        )
+        counts: Dict[UUID, int] = {}
+        for _pid, category_id, subcategory_id in rows:
+            filed = {c for c in (category_id, subcategory_id) if c is not None}
+            filed |= {parents[c] for c in filed if c in parents}
+            for c in filed:
+                counts[c] = counts.get(c, 0) + 1
+        return counts
 
     @staticmethod
     async def get_all(
@@ -30,87 +79,45 @@ class CategoryService:
         When *include_inactive=True* with *branch_id*, returns all categories
         with *is_active* reflecting the branch's specific activation status.
         When *branch_id* is None, operates on global category status.
-        """
-        if branch_id is not None:
-            if not include_inactive:
-                query = (
-                    select(
-                        Category,
-                        func.count(func.distinct(Category.products)).label("product_count"),
-                    )
-                    .join(
-                        BranchCategory,
-                        and_(
-                            BranchCategory.category_id == Category.category_id,
-                            BranchCategory.branch_id == branch_id,
-                        ),
-                    )
-                    .outerjoin(Category.products)
-                    .where(
-                        Category.is_active == True,
-                        BranchCategory.is_active.is_(True),
-                    )
-                    .group_by(Category.category_id)
-                    .order_by(Category.name)
-                )
-                result = await db.execute(query)
-                categories = result.all()
-                return [
-                    {
-                        **cat[0].__dict__,
-                        "product_count": cat[1] or 0,
-                    }
-                    for cat in categories
-                ]
-            else:
-                query = (
-                    select(
-                        Category,
-                        func.count(func.distinct(Category.products)).label("product_count"),
-                        func.coalesce(BranchCategory.is_active, False).label("branch_is_active"),
-                    )
-                    .outerjoin(
-                        BranchCategory,
-                        and_(
-                            BranchCategory.category_id == Category.category_id,
-                            BranchCategory.branch_id == branch_id,
-                        ),
-                    )
-                    .outerjoin(Category.products)
-                    .group_by(Category.category_id, BranchCategory.is_active)
-                    .order_by(Category.name)
-                )
-                result = await db.execute(query)
-                categories = result.all()
-                return [
-                    {
-                        **cat[0].__dict__,
-                        "product_count": cat[1] or 0,
-                        "is_active": bool(cat[0].is_active and cat[2]),
-                    }
-                    for cat in categories
-                ]
 
-        query = (
-            select(
-                Category,
-                func.count(func.distinct(Category.products)).label("product_count")
-            )
-            .outerjoin(Category.products)
-            .group_by(Category.category_id)
-            .order_by(Category.name)
+        ``product_count`` follows the same split — see ``_product_counts``:
+        a customer sees what they can buy, the admin sees the catalogue.
+        """
+        counts = await CategoryService._product_counts(
+            db, storefront=not include_inactive, branch_id=branch_id
         )
 
-        if not include_inactive:
-            query = query.where(Category.is_active == True)
+        if branch_id is not None and include_inactive:
+            query = (
+                select(
+                    Category,
+                    func.coalesce(BranchCategory.is_active, False).label("branch_is_active"),
+                )
+                .outerjoin(
+                    BranchCategory,
+                    and_(
+                        BranchCategory.category_id == Category.category_id,
+                        BranchCategory.branch_id == branch_id,
+                    ),
+                )
+                .order_by(Category.name)
+            )
+            return [
+                {
+                    **cat.__dict__,
+                    "product_count": counts.get(cat.category_id, 0),
+                    "is_active": bool(cat.is_active and branch_active),
+                }
+                for cat, branch_active in (await db.execute(query)).all()
+            ]
 
-        result = await db.execute(query)
-        categories = result.all()
-
+        categories = await CategoryService.get_all_simple(
+            db, include_inactive=include_inactive, branch_id=branch_id
+        )
         return [
             {
-                **cat[0].__dict__,
-                "product_count": cat[1] or 0
+                **cat.__dict__,
+                "product_count": counts.get(cat.category_id, 0),
             }
             for cat in categories
         ]
@@ -153,6 +160,9 @@ class CategoryService:
         ``get_all``.
         """
         categories = await CategoryService.get_all_simple(db, branch_id=branch_id)
+        counts = await CategoryService._product_counts(
+            db, storefront=True, branch_id=branch_id
+        )
 
         # Build hierarchy
         category_map = {}
@@ -169,7 +179,7 @@ class CategoryService:
                 "image_url": cat.image_url,
                 "parent_category_id": cat.parent_category_id,
                 "is_active": cat.is_active,
-                "product_count": 0,
+                "product_count": counts.get(cat.category_id, 0),
                 "children": []
             }
 

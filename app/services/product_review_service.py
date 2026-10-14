@@ -6,7 +6,7 @@ Business logic for product reviews, built on the registered
 User.reviews). Ratings are aggregated on the fly, so no denormalized columns
 on Product are required.
 """
-from typing import List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
@@ -20,6 +20,37 @@ from app.models.product import Product, Review
 
 class ProductReviewService:
     """Review operations on the registered Review model."""
+
+    @staticmethod
+    async def get_rating_summaries(
+        db: AsyncSession, product_ids: Iterable[UUID]
+    ) -> Dict[UUID, dict]:
+        """
+        ``{product_id: {"average": float, "count": int}}`` for a page of
+        products in one query, so listing cards can show their stars.
+        Products with no approved review are simply absent.
+        """
+        ids = list(product_ids)
+        if not ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(
+                    Review.product_id,
+                    func.avg(Review.rating),
+                    func.count(Review.review_id),
+                )
+                .where(
+                    Review.product_id.in_(ids),
+                    Review.is_approved == True,  # noqa: E712
+                )
+                .group_by(Review.product_id)
+            )
+        ).all()
+        return {
+            pid: {"average": round(float(avg), 2), "count": int(count)}
+            for pid, avg, count in rows
+        }
 
     @staticmethod
     async def get_rating_summary(

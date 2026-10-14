@@ -91,6 +91,7 @@ async def list_banners(
                     "bannerId": str(b.banner_id),
                     "title": b.title,
                     "subtitle": b.subtitle,
+                    "description": b.description,
                     "imageUrl": media_url(b.image_url),
                     # 'category' | 'product' | 'quick_sale' | null. The app
                     # routes on this; 'quick_sale' carries no targetId because
