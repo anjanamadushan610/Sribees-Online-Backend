@@ -23,12 +23,27 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Production ships main and nothing else. Between 2026-09-30 and 2026-10-05
+  # this workflow was started on development, and the server ended up running
+  # code that main did not have. Development goes to Contabo (deploy-dev.yml).
+  main-only:
+    name: Production deploys main only
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse any ref but main
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::Production deploys main only (this run is on ${{ github.ref }}). Use deploy-dev.yml for development."
+            exit 1
+          fi
+
   # The whole CI gate (deploy.yml), as a prerequisite. Nothing is built, pushed
   # or deployed unless lint, the security scans, every test suite and the
   # deploy rehearsal pass. Until 2026-09-25 this workflow and CI ran side by
   # side, so a red CI never stopped a production deploy.
   ci:
     name: CI gate
+    needs: main-only
     uses: ./.github/workflows/deploy.yml
     permissions:
       contents: read
