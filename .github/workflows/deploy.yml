@@ -187,8 +187,11 @@ jobs:
           assert ran["integration"] > 0 and skipped["integration"] == 0, (ran, skipped)
           PY
 
+      # The reports are for reading a failure, not part of the verdict: a full
+      # artifact storage quota (2026-10-18) must not fail a green test run.
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
+        continue-on-error: true
         with:
           name: test-reports
           path: reports/
