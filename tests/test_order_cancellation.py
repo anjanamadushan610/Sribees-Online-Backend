@@ -74,7 +74,7 @@ def test_a_parcel_on_a_motorbike_can_still_be_stopped(status):
 @pytest.mark.parametrize(
     "status",
     ["delivered", "cancelled", "refunded", "return_requested",
-     "return_approved", "delivery_failed", "rto_initiated"],
+     "return_approved", "return_rejected", "delivery_failed", "rto_initiated"],
 )
 def test_past_the_doorstep_it_is_a_return_not_a_cancellation(status):
     """The goods have changed hands. That is different machinery, with its own

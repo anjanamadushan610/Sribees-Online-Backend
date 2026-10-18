@@ -20,6 +20,9 @@ from app.schemas.auth import (
     AuthResponse,
     ConfirmAccountDeletionRequest,
     MessageResponse,
+    PhoneChangeRequest,
+    PhoneChangeStatusResponse,
+    PhoneChangeVerifyRequest,
     ProfileResponse,
     RefreshTokenRequest,
     RefreshTokenResponse,
@@ -529,3 +532,76 @@ async def apple_callback(request: Request):
         f"#Intent;package={settings.android_package};scheme=signinwithapple;end"
     )
     return RedirectResponse(target, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+# ============================================================================
+# Primary Phone Number Change & OTP Verification Endpoints
+# ============================================================================
+
+@router.get(
+    "/phone/change-status",
+    response_model=PhoneChangeStatusResponse,
+    summary="Get primary phone number change quota status",
+)
+async def get_phone_change_status(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> PhoneChangeStatusResponse:
+    """Returns remaining daily (2) and monthly (4) phone change attempts."""
+    status_data = await AuthService.get_phone_change_status(current_user.user_id, db)
+    return PhoneChangeStatusResponse(
+        success=True,
+        daily_remaining=status_data["daily_remaining"],
+        monthly_remaining=status_data["monthly_remaining"],
+        daily_limit=status_data["daily_limit"],
+        monthly_limit=status_data["monthly_limit"],
+        can_change=status_data["can_change"],
+    )
+
+
+@router.post(
+    "/phone/change-request",
+    response_model=RequestOTPResponse,
+    summary="Request OTP to change primary phone number",
+)
+async def request_phone_change(
+    request: Request,
+    data: PhoneChangeRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> RequestOTPResponse:
+    """Validates quotas and number uniqueness, then texts a 6-digit OTP to the new number."""
+    challenge = await AuthService.request_phone_change(
+        current_user=current_user,
+        new_phone_raw=data.new_phone,
+        client_ip=_client_ip(request),
+        lang=_lang(request),
+        db=db,
+        redis=redis,
+    )
+    return RequestOTPResponse.from_challenge(challenge)
+
+
+@router.post(
+    "/phone/verify-change",
+    response_model=ProfileResponse,
+    summary="Verify OTP and update primary phone number",
+)
+async def verify_phone_change(
+    request: Request,
+    data: PhoneChangeVerifyRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> ProfileResponse:
+    """Verifies OTP, updates the primary phone number, and records audit history."""
+    return await AuthService.verify_phone_change(
+        current_user=current_user,
+        new_phone_raw=data.new_phone,
+        otp=data.otp,
+        client_ip=_client_ip(request),
+        db=db,
+        redis=redis,
+    )
+

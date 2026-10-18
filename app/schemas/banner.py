@@ -51,6 +51,7 @@ class BannerCreate(BaseModel):
 
     title: str = Field(..., min_length=1, max_length=120)
     subtitle: Optional[str] = Field(None, max_length=200)
+    description: Optional[str] = Field(None, max_length=300)
     image_url: Optional[str] = Field(
         None,
         max_length=500,
@@ -91,6 +92,7 @@ class BannerUpdate(BaseModel):
 
     title: Optional[str] = Field(None, min_length=1, max_length=120)
     subtitle: Optional[str] = Field(None, max_length=200)
+    description: Optional[str] = Field(None, max_length=300)
     image_url: Optional[str] = Field(None, max_length=500)
     link_type: Optional[LinkType] = None
     target_id: Optional[UUID] = None

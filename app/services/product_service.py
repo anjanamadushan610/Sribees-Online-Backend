@@ -11,6 +11,7 @@ Implements the **Global Catalog + Branch Overrides** pattern:
                                              ?? platform cashback rate
   - A ``BranchInventory.is_active = False`` row hides the product for that branch.
 """
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
@@ -22,11 +23,13 @@ from sqlalchemy.orm import selectinload
 
 from app.config.settings import settings
 from app.models.branch import Branch
+from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import (
     BranchInventory,
     Product,
     ProductImage,
     ProductVariant,
+    Review,
     VariantOption,
 )
 from app.schemas.product import (
@@ -38,6 +41,25 @@ from app.schemas.product import (
 from app.services import catalog_search_service as catalog_search
 from app.services.category_service import CategoryService
 from app.services.storage import get_storage
+
+# Values of the storefront's ``promotion`` filter.
+#   sale     — on sale in the branch: the same set as the Quick Sale screen.
+#   cashback — earns more cashback than the platform's standard rate.
+PROMOTION_KINDS = ("sale", "cashback")
+
+# Popular Picks: units sold over this many days, across every branch.
+POPULAR_WINDOW_DAYS = 30
+
+# Orders whose goods never reached (or came back from) a customer are not
+# sales; everything else from checkout onwards is.
+_NOT_A_SALE = (
+    OrderStatus.AWAITING_PAYMENT.value,
+    OrderStatus.CANCELLED.value,
+    OrderStatus.DELIVERY_FAILED.value,
+    OrderStatus.RTO_INITIATED.value,
+    OrderStatus.RETURN_APPROVED.value,
+    OrderStatus.REFUNDED.value,
+)
 
 
 class ProductService:
@@ -607,6 +629,9 @@ class ProductService:
         max_price: Optional[Decimal] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
+        category_ids: Optional[List[UUID]] = None,
+        min_rating: Optional[int] = None,
+        promotions: Optional[List[str]] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         """
         Get products visible in *branch_id* with effective pricing.
@@ -614,6 +639,11 @@ class ProductService:
         Enforces strict branch visibility (JOIN + active + in-stock). With
         *search*, results come back in relevance order and sort_by/sort_order
         are ignored — see catalog_search_service.
+
+        *category_ids* matches any of several categories (each with its
+        sub-categories); *min_rating* keeps products whose approved reviews
+        average at least that many stars; *promotions* keeps products on any
+        of the listed PROMOTION_KINDS.
         """
         filters = {
             "category_id": category_id,
@@ -621,6 +651,9 @@ class ProductService:
             "is_featured": is_featured,
             "min_price": min_price,
             "max_price": max_price,
+            "category_ids": category_ids,
+            "min_rating": min_rating,
+            "promotions": promotions,
         }
         if search and search.strip():
             return await ProductService._search_for_branch(
@@ -642,8 +675,19 @@ class ProductService:
         count_q = select(func.count()).select_from(base.subquery())
         total = (await db.execute(count_q)).scalar() or 0
 
-        sort_col = getattr(Product, sort_by, Product.created_at)
-        base = base.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
+        if sort_by == "rating":
+            # Unrated products sort after every rated one, in either direction.
+            stats = ProductService._rating_stats()
+            base = base.outerjoin(stats, stats.c.product_id == Product.product_id)
+            avg = stats.c.avg_rating
+            base = base.order_by(
+                (avg.desc() if sort_order == "desc" else avg.asc()).nulls_last(),
+                stats.c.review_count.desc().nulls_last(),
+                Product.name,
+            )
+        else:
+            sort_col = getattr(Product, sort_by, Product.created_at)
+            base = base.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
         base = base.limit(limit).offset(offset)
 
         rows = (await db.execute(base)).unique().all()
@@ -665,9 +709,43 @@ class ProductService:
         is_featured: Optional[bool] = None,
         min_price: Optional[Decimal] = None,
         max_price: Optional[Decimal] = None,
+        category_ids: Optional[List[UUID]] = None,
+        min_rating: Optional[int] = None,
+        promotions: Optional[List[str]] = None,
     ):
+        """
+        Narrow a branch listing. *query* must already carry the branch
+        inventory join (``_branch_visibility_join``) — the promotion filter
+        reads the branch's own sale flag and cashback override.
+        """
         if category_id:
             query = query.where(await ProductService._category_filter(db, category_id))
+        if category_ids:
+            query = query.where(or_(*[
+                await ProductService._category_filter(db, cid) for cid in category_ids
+            ]))
+        if min_rating:
+            rated = (
+                select(Review.product_id)
+                .where(Review.is_approved.is_(True))
+                .group_by(Review.product_id)
+                .having(func.avg(Review.rating) >= min_rating)
+            )
+            query = query.where(Product.product_id.in_(rated))
+        if promotions:
+            on_promotion = []
+            if "sale" in promotions:
+                on_promotion.append(BranchInventory.is_on_sale.is_(True))
+            if "cashback" in promotions:
+                # No override anywhere means the platform rate, which is not
+                # a promotion — so a NULL here correctly fails the comparison.
+                on_promotion.append(
+                    func.coalesce(
+                        BranchInventory.cashback_percentage,
+                        Product.cashback_percentage,
+                    ) > float(settings.cashback_rate) * 100
+                )
+            query = query.where(or_(*on_promotion))
         if subcategory_id:
             query = query.where(Product.subcategory_id == subcategory_id)
         if is_featured is not None:
@@ -718,6 +796,79 @@ class ProductService:
             for item in await ProductService.get_by_ids_for_branch(db, page, branch_id)
         }
         return [by_id[pid] for pid in page if pid in by_id], len(ranked)
+
+    @staticmethod
+    def _rating_stats():
+        """Approved-review average and count per product, as a subquery."""
+        return (
+            select(
+                Review.product_id.label("product_id"),
+                func.avg(Review.rating).label("avg_rating"),
+                func.count(Review.review_id).label("review_count"),
+            )
+            .where(Review.is_approved.is_(True))
+            .group_by(Review.product_id)
+            .subquery("rating_stats")
+        )
+
+    @staticmethod
+    async def get_popular_for_branch(
+        db: AsyncSession,
+        branch_id: UUID,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Popular Picks: the best sellers of the last POPULAR_WINDOW_DAYS,
+        among the products this branch can sell right now.
+
+        Units sold are counted across every branch — one branch alone has too
+        few orders yet for a ranking to mean anything — but only products
+        visible in *branch_id* are returned. When fewer than *limit* have
+        sold, the list is topped up with featured products, then the most
+        viewed, so the section is never half empty. Sales figures themselves
+        are not returned.
+        """
+        since = datetime.now(timezone.utc) - timedelta(days=POPULAR_WINDOW_DAYS)
+        sales = (
+            select(
+                OrderItem.product_id.label("product_id"),
+                func.sum(OrderItem.quantity).label("units_sold"),
+            )
+            .join(Order, Order.order_id == OrderItem.order_id)
+            .where(
+                Order.created_at >= since,
+                Order.status.not_in(_NOT_A_SALE),
+            )
+            .group_by(OrderItem.product_id)
+            .subquery("sales")
+        )
+
+        query = (
+            select(Product, BranchInventory)
+            .options(
+                selectinload(Product.category),
+                selectinload(Product.subcategory),
+                selectinload(Product.images),
+            )
+            .outerjoin(sales, sales.c.product_id == Product.product_id)
+            .where(Product.is_active.is_(True))
+        )
+        query, _, _ = ProductService._branch_visibility_join(query, branch_id)
+        query = query.order_by(
+            func.coalesce(sales.c.units_sold, 0).desc(),
+            Product.is_featured.desc(),
+            func.coalesce(Product.view_count, 0).desc(),
+            Product.name,
+        ).limit(limit)
+
+        rows = (await db.execute(query)).unique().all()
+        return [
+            {
+                "product": product,
+                "effective": ProductService.compute_effective_data(product, inv),
+            }
+            for product, inv in rows
+        ]
 
     @staticmethod
     async def get_by_id_for_branch(

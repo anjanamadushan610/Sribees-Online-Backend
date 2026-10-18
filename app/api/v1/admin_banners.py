@@ -97,6 +97,7 @@ def _format_banner(banner: Banner, performance: dict | None = None) -> dict:
         "banner_id": str(banner.banner_id),
         "title": banner.title,
         "subtitle": banner.subtitle,
+        "description": banner.description,
         "image_url": media_url(banner.image_url),
         "link_type": banner.link_type,
         "target_id": str(banner.target_id) if banner.target_id else None,
@@ -348,6 +349,7 @@ async def create_banner(
     banner = Banner(
         title=body.title,
         subtitle=body.subtitle,
+        description=body.description,
         image_url=body.image_url,
         link_type=body.link_type,
         starts_at=body.starts_at,

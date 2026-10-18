@@ -29,7 +29,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import settings
-from app.models.order import Order
+from app.models.order import Order, OrderStatusHistory
 from app.schemas.order import OrderStatusEnum
 from app.services import courier_credentials
 from app.services.courier_service import (
@@ -345,6 +345,15 @@ async def apply_return_payload(db: AsyncSession, order: Order, payload: dict) ->
     # later `in_transit` must not restamp the moment of collection.
     if status_value in _RETURN_COLLECTED_STATUSES and order.return_collected_at is None:
         order.return_collected_at = at or datetime.now(timezone.utc)
+        history = OrderStatusHistory(
+            order_id=order.order_id,
+            old_status=order.status,
+            new_status=order.status,
+            changed_by="SribeesExpress",
+            notes=f"Courier collected returned item from customer ({status_value})",
+            created_at=order.return_collected_at,
+        )
+        db.add(history)
         changed = True
 
     if status_value == "delivered":

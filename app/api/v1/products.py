@@ -9,7 +9,7 @@ Enforces **Strict Branch-Specific Visibility**:
   - Prices, discounts and stock use COALESCE fallback (branch → global).
 """
 from decimal import Decimal
-from typing import Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from fastapi import (
@@ -261,6 +261,35 @@ async def _get_branch_context_for_request(
     return context
 
 
+async def _format_listing(db: AsyncSession, items: list, lang: str) -> list:
+    """Format a page of branch listing items, each with its review stars."""
+    ratings = await ProductReviewService.get_rating_summaries(
+        db, [item["product"].product_id for item in items]
+    )
+    return [
+        format_product(
+            item["product"],
+            branch_overrides=item["effective"],
+            rating=ratings.get(item["product"].product_id),
+            lang=lang,
+        )
+        for item in items
+    ]
+
+
+def _uuid_list(raw: Optional[str]) -> Optional[list]:
+    """Comma-separated ids to UUIDs; malformed entries are skipped, as before."""
+    if not raw:
+        return None
+    ids = []
+    for part in raw.split(","):
+        try:
+            ids.append(UUID(part.strip()))
+        except ValueError:
+            pass
+    return ids or None
+
+
 # ============================================================================
 # Public Endpoints  (all require branch context for visibility)
 # ============================================================================
@@ -276,7 +305,18 @@ async def get_products(
     search: Optional[str] = None,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
-    sort_by: str = Query("created_at", pattern="^(created_at|price|name|view_count)$"),
+    min_rating: Optional[int] = Query(
+        None, ge=1, le=5,
+        description="Only products whose approved reviews average this many stars or more",
+    ),
+    promotion: Optional[List[Literal["sale", "cashback"]]] = Query(
+        None,
+        description=(
+            "Repeatable. 'sale' = on sale in the branch (the Quick Sale set); "
+            "'cashback' = above the standard cashback rate. Several match any."
+        ),
+    ),
+    sort_by: str = Query("created_at", pattern="^(created_at|price|name|view_count|rating)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
@@ -292,7 +332,9 @@ async def get_products(
     with ``is_active=True`` and ``stock_quantity > 0`` are returned.
 
     ``category_id`` matches the category and every sub-category under it;
-    ``subcategory_id`` narrows to a single leaf.
+    several comma-separated ids match any of them. ``subcategory_id``
+    narrows to a single leaf. ``min_rating`` and ``promotion`` drive the
+    storefront's filter panel; ``sort_by=rating`` puts unrated products last.
     """
     try:
         context = await _get_branch_context_for_request(redis, request, current_user)
@@ -300,12 +342,7 @@ async def get_products(
         branch_id = UUID(context["branch_id"])
         offset = (page - 1) * limit
 
-        cat_uuid = None
-        if category_id:
-            try:
-                cat_uuid = UUID(category_id)
-            except ValueError:
-                pass
+        category_ids = _uuid_list(category_id)
 
         subcat_uuid = None
         if subcategory_id:
@@ -319,7 +356,7 @@ async def get_products(
             branch_id=branch_id,
             limit=limit,
             offset=offset,
-            category_id=cat_uuid,
+            category_ids=category_ids,
             subcategory_id=subcat_uuid,
             is_featured=is_featured,
             search=search,
@@ -327,19 +364,14 @@ async def get_products(
             max_price=Decimal(str(max_price)) if max_price else None,
             sort_by=sort_by,
             sort_order=sort_order,
+            min_rating=min_rating,
+            promotions=promotion,
         )
 
         return {
             "success": True,
             "data": {
-                "products": [
-                    format_product(
-                        item["product"],
-                        branch_overrides=item["effective"],
-                        lang=lang,
-                    )
-                    for item in items
-                ],
+                "products": await _format_listing(db, items, lang),
                 "pagination": {
                     "total": total,
                     "page": page,
@@ -386,14 +418,7 @@ async def get_featured_products(
         return {
             "success": True,
             "data": {
-                "products": [
-                    format_product(
-                        item["product"],
-                        branch_overrides=item["effective"],
-                        lang=lang,
-                    )
-                    for item in items
-                ],
+                "products": await _format_listing(db, items, lang),
             },
         }
     except HTTPException:
@@ -435,17 +460,45 @@ async def get_home_feed(
     return {
         "success": True,
         "data": {
-            "products": [
-                format_product(
-                    item["product"],
-                    branch_overrides=item["effective"],
-                    lang=lang,
-                )
-                for item in items
-            ],
+            "products": await _format_listing(db, items, lang),
             "branch": {
                 "branchId": context["branch_id"],
                 "branchName": context["branch_name"],
+            },
+            "total": len(items),
+        },
+    }
+
+
+@router.get("/popular", response_model=dict)
+async def get_popular_products(
+    request: Request,
+    limit: int = Query(10, ge=1, le=10),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+    current_user=Depends(get_current_user_optional),
+):
+    """
+    Popular Picks: up to 10 best sellers of the last 30 days that the
+    customer's branch can sell now, topped up with featured and then
+    most-viewed products when fewer have sold — see
+    ``ProductService.get_popular_for_branch``.
+
+    Works for guests via ``X-Device-Id``; ``400 NO_BRANCH_CONTEXT`` until a
+    delivery location is chosen, like every branch listing.
+    """
+    context = await _get_branch_context_for_request(redis, request, current_user)
+    lang = _request_lang(request)
+    items = await ProductService.get_popular_for_branch(
+        db, UUID(context["branch_id"]), limit
+    )
+    return {
+        "success": True,
+        "data": {
+            "products": await _format_listing(db, items, lang),
+            "branch": {
+                "branchId": context["branch_id"],
+                "branchName": context.get("branch_name"),
             },
             "total": len(items),
         },
@@ -500,14 +553,7 @@ async def search_products(
         return {
             "success": True,
             "data": {
-                "products": [
-                    format_product(
-                        item["product"],
-                        branch_overrides=item["effective"],
-                        lang=lang,
-                    )
-                    for item in items
-                ],
+                "products": await _format_listing(db, items, lang),
                 "pagination": {
                     "total": total,
                     "page": page,
@@ -568,14 +614,7 @@ async def get_products_by_category(
         return {
             "success": True,
             "data": {
-                "products": [
-                    format_product(
-                        item["product"],
-                        branch_overrides=item["effective"],
-                        lang=lang,
-                    )
-                    for item in items
-                ],
+                "products": await _format_listing(db, items, lang),
                 "pagination": {
                     "total": total,
                     "page": page,

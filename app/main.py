@@ -125,6 +125,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.app_content_service import run_content_watcher
     from app.services.assistant_reminder_worker import run_reminder_worker
     from app.services.campaign_service import run_campaign_worker
+    from app.services.courier_coverage_worker import run_postal_city_worker
     from app.services.order_reward_worker import run_order_reward_worker
     from app.services.referral_vesting_worker import run_referral_vesting_worker
     from app.services.return_settlement_worker import run_return_settlement_worker
@@ -142,6 +143,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         asyncio.create_task(run_campaign_worker()),
         asyncio.create_task(run_content_watcher()),
         asyncio.create_task(run_payment_worker()),
+        asyncio.create_task(run_postal_city_worker()),
     ]
     try:
         yield
@@ -223,7 +225,8 @@ async def log_requests(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app|https://([a-z0-9-]+\.)*sribees\.com",
+    # An empty setting means "the list only", not "a pattern matching nothing".
+    allow_origin_regex=settings.cors_origin_regex or None,
     allow_credentials=settings.cors_allow_credentials,
     allow_methods=settings.cors_allow_methods,
     allow_headers=settings.cors_allow_headers,

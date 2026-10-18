@@ -38,6 +38,8 @@ class Banner(Base):
 
     title = Column(String(120), nullable=False)
     subtitle = Column(String(200), nullable=True)
+    # Optional longer copy for the web storefront's hero slide.
+    description = Column(String(300), nullable=True)
 
     # Stored as an origin-free relative path (see app/core/media.py); resolved
     # to a fetchable URL at serialization time.

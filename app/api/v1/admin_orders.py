@@ -83,6 +83,7 @@ def _format_order_row(order: Order, customer: Optional[User], branch_name: Optio
         "user_id": str(order.user_id),
         "customer_name": (customer.full_name if customer else None),
         "customer_email": (customer.email if customer else None),
+        "customer_phone": (customer.phone or order.contact_phone) if customer else order.contact_phone,
         "branch_id": str(order.branch_id) if order.branch_id else None,
         "branch_name": branch_name,
         "status": order.status,
@@ -90,6 +91,10 @@ def _format_order_row(order: Order, customer: Optional[User], branch_name: Optio
         "total_amount": float(order.total_amount or 0),
         "item_count": len(order.items) if order.items is not None else 0,
         "created_at": order.created_at.isoformat() if order.created_at else None,
+        "delivered_at": order.delivered_at.isoformat() if order.delivered_at else None,
+        "return_requested_at": order.return_requested_at.isoformat() if order.return_requested_at else None,
+        "return_reason": order.return_reason,
+        "return_images": [media_url(p) for p in (order.return_images or [])],
         # Enough courier state to spot a parcel that needs a human without
         # opening every order. A failed booking is otherwise invisible from
         # the list: the order sits at Packed looking perfectly normal while
@@ -450,8 +455,14 @@ async def list_orders(
         conds.append(
             or_(
                 Order.order_number.ilike(pattern),
+                Order.courier_waybill_number.ilike(pattern),
+                Order.return_waybill_number.ilike(pattern),
                 User.full_name.ilike(pattern),
                 User.email.ilike(pattern),
+                User.phone.ilike(pattern),
+                User.alternate_phone.ilike(pattern),
+                Order.contact_phone.ilike(pattern),
+                Order.alternate_phone.ilike(pattern),
             )
         )
     if from_date:
@@ -565,8 +576,14 @@ async def export_orders_csv(
         query = query.outerjoin(User, Order.user_id == User.user_id).where(
             or_(
                 Order.order_number.ilike(term),
+                Order.courier_waybill_number.ilike(term),
+                Order.return_waybill_number.ilike(term),
                 User.full_name.ilike(term),
                 User.email.ilike(term),
+                User.phone.ilike(term),
+                User.alternate_phone.ilike(term),
+                Order.contact_phone.ilike(term),
+                Order.alternate_phone.ilike(term),
             )
         )
     if from_date:
@@ -673,8 +690,14 @@ async def export_orders_pdf(
         query = query.outerjoin(User, Order.user_id == User.user_id).where(
             or_(
                 Order.order_number.ilike(term),
+                Order.courier_waybill_number.ilike(term),
+                Order.return_waybill_number.ilike(term),
                 User.full_name.ilike(term),
                 User.email.ilike(term),
+                User.phone.ilike(term),
+                User.alternate_phone.ilike(term),
+                Order.contact_phone.ilike(term),
+                Order.alternate_phone.ilike(term),
             )
         )
     if from_date:
@@ -727,6 +750,121 @@ async def export_orders_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=dispatch_manifest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"},
     )
+
+
+def _esc_out(e: OrderEscalation) -> dict:
+    return {
+        "escalation_id": str(e.escalation_id),
+        "order_id": str(e.order_id),
+        "raised_by_admin_id": str(e.raised_by_admin_id) if e.raised_by_admin_id else None,
+        "raised_by_role": e.raised_by_role,
+        "category": e.category,
+        "message": e.message,
+        "status": e.status,
+        "resolution_note": e.resolution_note,
+        "raised_by_name": e.raised_by_name,
+        "handled_by_name": e.handled_by_name,
+        "created_at": e.created_at.isoformat() if e.created_at else None,
+        "acknowledged_at": e.acknowledged_at.isoformat() if e.acknowledged_at else None,
+        "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
+    }
+
+
+@router.get("/escalations/queue", response_model=dict)
+async def list_escalation_queue(
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status: open, acknowledged, resolved, or all"),
+    for_role: Optional[str] = Query(None, description="Perspective filter: e.g. customer_support, branch_manager"),
+    box: Optional[str] = Query(None, description="Perspective box: inbox, outbox, or resolved"),
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """Network-wide or branch-scoped queue of escalation tickets with box & role filtering."""
+    query = (
+        select(OrderEscalation, Order.order_number, Branch.name.label("branch_name"))
+        .join(Order, OrderEscalation.order_id == Order.order_id)
+        .outerjoin(Branch, OrderEscalation.branch_id == Branch.branch_id)
+    )
+    if scope.branch_id is not None:
+        query = query.where(OrderEscalation.branch_id == scope.branch_id)
+
+    # Box filtering:
+    if box == "resolved":
+        query = query.where(OrderEscalation.status == EscalationStatus.RESOLVED.value)
+    elif box == "outbox":
+        if for_role == "customer_support":
+            query = query.where(OrderEscalation.raised_by_role == "customer_support")
+        elif for_role == "branch_manager":
+            query = query.where(OrderEscalation.raised_by_role == "branch_manager")
+        if status_filter:
+            if status_filter != "all":
+                query = query.where(OrderEscalation.status == status_filter)
+    elif box == "inbox":
+        if for_role == "customer_support":
+            role_filter = or_(
+                OrderEscalation.raised_by_role != "customer_support",
+                OrderEscalation.raised_by_role.is_(None),
+                OrderEscalation.resolution_note.isnot(None),
+                OrderEscalation.status.in_([EscalationStatus.ACKNOWLEDGED.value, EscalationStatus.RESOLVED.value]),
+            )
+            query = query.where(role_filter)
+        elif for_role == "branch_manager":
+            query = query.where(OrderEscalation.raised_by_role != "branch_manager")
+        if status_filter:
+            if status_filter != "all":
+                query = query.where(OrderEscalation.status == status_filter)
+        else:
+            query = query.where(OrderEscalation.status.in_([EscalationStatus.OPEN.value, EscalationStatus.ACKNOWLEDGED.value]))
+    else:
+        # Default behavior when box is not specified
+        if status_filter:
+            if status_filter != "all":
+                query = query.where(OrderEscalation.status == status_filter)
+        else:
+            query = query.where(OrderEscalation.status.in_([EscalationStatus.OPEN.value, EscalationStatus.ACKNOWLEDGED.value]))
+        if for_role == "customer_support":
+            role_filter = or_(
+                OrderEscalation.raised_by_role != "customer_support",
+                OrderEscalation.raised_by_role.is_(None),
+                OrderEscalation.resolution_note.isnot(None),
+                OrderEscalation.status.in_([EscalationStatus.ACKNOWLEDGED.value, EscalationStatus.RESOLVED.value]),
+            )
+            query = query.where(role_filter)
+
+    query = query.order_by(OrderEscalation.created_at.desc()).limit(limit)
+    rows = (await db.execute(query)).all()
+
+    # Open count query for badges
+    count_query = select(func.count(OrderEscalation.escalation_id)).where(
+        OrderEscalation.status == EscalationStatus.OPEN.value
+    )
+    if scope.branch_id is not None:
+        count_query = count_query.where(OrderEscalation.branch_id == scope.branch_id)
+    if for_role == "customer_support":
+        count_query = count_query.where(
+            or_(
+                OrderEscalation.raised_by_role != "customer_support",
+                OrderEscalation.raised_by_role.is_(None),
+                OrderEscalation.resolution_note.isnot(None),
+            )
+        )
+    open_count = (await db.execute(count_query)).scalar() or 0
+
+    items = []
+    for esc, order_number, branch_name in rows:
+        out = _esc_out(esc)
+        out["order_number"] = order_number
+        out["branch_name"] = branch_name
+        items.append(out)
+
+    return {
+        "success": True,
+        "data": {
+            "items": items,
+            "total": len(items),
+            "open_count": open_count,
+        }
+    }
 
 
 def _hours_since_delivery(order: Order) -> Optional[float]:
@@ -782,6 +920,20 @@ async def get_order(
     fulfilment contacts, escalation tickets — B4 — and the SribeesExpress
     shipment)."""
     order = await _load_scoped_order(db, order_id, scope)
+
+    # Auto-refresh courier tracking if parcel is actively handled by courier
+    if order.courier_shipment_id and order.status in (
+        OrderStatusEnum.READY_FOR_PICKUP.value,
+        OrderStatusEnum.HANDED_TO_COURIER.value,
+        OrderStatusEnum.SHIPPED.value,
+        OrderStatusEnum.OUT_FOR_DELIVERY.value,
+    ):
+        try:
+            if await courier_sync_service.refresh_order_tracking(db, order) is not None:
+                order = await _load_scoped_order(db, order_id, scope)
+        except Exception as sync_err:
+            logger.warning(f"Auto courier sync failed for admin order {order.order_number}: {sync_err}")
+
     branch_name = await _branch_name(db, order.branch_id)
     data = _format_order_detail(order, branch_name)
     data["fulfilment_contacts"] = await _fulfilment_contacts(db, order)
@@ -1182,16 +1334,21 @@ async def approve_order_return(
     pickup) or a reverse pickup (a rider will collect the goods).
     """
     order = await _load_scoped_order(db, order_id, scope)
+    admin_name = getattr(_decider, "full_name", None) or getattr(_decider, "email", "Admin")
     try:
         await OrderService.approve_return(
-            db, order, resolution=body.resolution.value, note=body.note
+            db,
+            order,
+            resolution=body.resolution.value,
+            note=body.note,
+            changed_by=f"Admin ({admin_name})",
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     branch_name = await _branch_name(db, order.branch_id)
     logger.info(
-        f"[admin] Return approved ({body.resolution.value}) for order {order.order_number}"
+        f"[admin] Return approved ({body.resolution.value}) for order {order.order_number} by {admin_name}"
     )
     return {
         "success": True,
@@ -1203,20 +1360,26 @@ async def approve_order_return(
 @router.post("/{order_id}/return/reject", response_model=dict)
 async def reject_order_return(
     order_id: UUID,
-    body: RejectReturnRequest = RejectReturnRequest(),
+    body: RejectReturnRequest,
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
     _decider = _RETURN_DECIDER,
 ):
     """Reject a pending return (Branch Manager / Super Admin): revert to DELIVERED."""
     order = await _load_scoped_order(db, order_id, scope)
+    admin_name = getattr(_decider, "full_name", None) or getattr(_decider, "email", "Admin")
     try:
-        await OrderService.reject_return(db, order, note=body.note)
+        await OrderService.reject_return(
+            db,
+            order,
+            note=body.note,
+            changed_by=f"Admin ({admin_name})",
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     branch_name = await _branch_name(db, order.branch_id)
-    logger.info(f"[admin] Return rejected for order {order.order_number}")
+    logger.info(f"[admin] Return rejected for order {order.order_number} by {admin_name}")
     return {
         "success": True,
         "data": _format_order_detail(order, branch_name),
@@ -1340,20 +1503,7 @@ async def add_return_note(
 # Internal escalation tickets (B4 Module B)
 # ============================================================================
 
-def _esc_out(e: OrderEscalation) -> dict:
-    return {
-        "escalation_id": str(e.escalation_id),
-        "order_id": str(e.order_id),
-        "category": e.category,
-        "message": e.message,
-        "status": e.status,
-        "resolution_note": e.resolution_note,
-        "raised_by_name": e.raised_by_name,
-        "handled_by_name": e.handled_by_name,
-        "created_at": e.created_at.isoformat() if e.created_at else None,
-        "acknowledged_at": e.acknowledged_at.isoformat() if e.acknowledged_at else None,
-        "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
-    }
+
 
 
 async def _list_escalations(db: AsyncSession, order_id: UUID) -> list[dict]:
@@ -1390,11 +1540,15 @@ async def raise_order_escalation(
     """Raise an internal support -> branch ticket (Support / BM / SA)."""
     order = await _load_scoped_order(db, order_id, scope)
     who = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
+    role_val = getattr(admin, "role", None)
+    role_str = role_val.value if hasattr(role_val, "value") else (str(role_val) if role_val else None)
+
     esc = OrderEscalation(
         order_id=order.order_id,
         branch_id=order.branch_id,
         raised_by_admin_id=getattr(admin, "admin_id", None),
         raised_by_name=who,
+        raised_by_role=role_str,
         category=body.category.value,
         message=body.message.strip(),
         status=EscalationStatus.OPEN.value,
@@ -1402,7 +1556,7 @@ async def raise_order_escalation(
     db.add(esc)
     await db.commit()
     await db.refresh(esc)
-    logger.info(f"[admin] Escalation raised on order {order.order_number} by {who}: {body.category.value}")
+    logger.info(f"[admin] Escalation raised on order {order.order_number} by {who} ({role_str}): {body.category.value}")
     return {"success": True, "data": _esc_out(esc), "message": "Escalation raised"}
 
 

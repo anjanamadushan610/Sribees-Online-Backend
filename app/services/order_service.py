@@ -1768,6 +1768,7 @@ class OrderService:
             OrderStatus.RTO_INITIATED.value,
             OrderStatus.RETURN_REQUESTED.value,
             OrderStatus.RETURN_APPROVED.value,
+            OrderStatus.RETURN_REJECTED.value,
             OrderStatus.REFUNDED.value,
             OrderStatus.CANCELLED.value,
         )
@@ -2305,6 +2306,7 @@ class OrderService:
 
         return_items = OrderService._returnable_selection(order, items)
 
+        old_status = order.status
         order.status = OrderStatus.RETURN_REQUESTED.value
         order.return_reason = reason
         order.return_comments = comments
@@ -2313,7 +2315,21 @@ class OrderService:
         # order. Stored in the order the customer added them, because the
         # first photo is usually the one they framed as the problem.
         order.return_images = list(images) if images else None
-        order.return_requested_at = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+        order.return_requested_at = now
+
+        note_text = f"Return requested by customer: {reason}"
+        if comments:
+            note_text += f" ({comments})"
+        history = OrderStatusHistory(
+            order_id=order.order_id,
+            old_status=old_status,
+            new_status=OrderStatus.RETURN_REQUESTED.value,
+            changed_by="Customer",
+            notes=note_text,
+            created_at=now,
+        )
+        db.add(history)
 
         await db.commit()
         await db.refresh(order)
@@ -2326,6 +2342,7 @@ class OrderService:
         order: Order,
         resolution: str = "returnless_refund",
         note: Optional[str] = None,
+        changed_by: str = "Admin",
     ) -> Order:
         """
         Approve a pending return. What happens next depends on whether goods
@@ -2352,10 +2369,12 @@ class OrderService:
         if resolution not in ("returnless_refund", "reverse_pickup"):
             raise ValueError(f"Unknown return resolution '{resolution}'.")
 
+        old_status = order.status
         order.return_resolution = resolution
         if note:
             order.return_resolution_note = note
-        order.return_approved_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        order.return_approved_at = now
         # Computed now, at the values the claim was approved on, rather than
         # when the goods land — so a later catalogue price change cannot move
         # what the customer was promised.
@@ -2363,6 +2382,18 @@ class OrderService:
 
         if resolution == "reverse_pickup":
             order.status = OrderStatus.RETURN_APPROVED.value
+            history_note = "Return approved for reverse pickup"
+            if note:
+                history_note += f": {note}"
+            history = OrderStatusHistory(
+                order_id=order.order_id,
+                old_status=old_status,
+                new_status=OrderStatus.RETURN_APPROVED.value,
+                changed_by=changed_by,
+                notes=history_note,
+                created_at=now,
+            )
+            db.add(history)
             await db.commit()
             await db.refresh(order)
             # Best-effort: a courier outage must not un-approve a claim a
@@ -2372,7 +2403,7 @@ class OrderService:
             await OrderService._notify_return_status(db, order, OrderStatus.RETURN_APPROVED.value)
             return order
 
-        await OrderService._credit_return_refund(db, order)
+        await OrderService._credit_return_refund(db, order, changed_by=changed_by, note=note)
         await db.commit()
         await db.refresh(order)
         logger.info(
@@ -2383,7 +2414,12 @@ class OrderService:
         return order
 
     @staticmethod
-    async def _credit_return_refund(db: AsyncSession, order: Order) -> None:
+    async def _credit_return_refund(
+        db: AsyncSession,
+        order: Order,
+        changed_by: str = "Admin",
+        note: Optional[str] = None,
+    ) -> None:
         """Put the refund in the customer's wallet and close the order.
 
         Guarded by ``refunded_at`` rather than by the status alone: the goods
@@ -2395,6 +2431,7 @@ class OrderService:
             logger.info(f"Return refund for {order.order_number} already issued, skipping")
             return
 
+        old_status = order.status
         refund = order.refund_amount
         if refund is None:
             refund = OrderService._compute_return_refund(order)
@@ -2428,8 +2465,29 @@ class OrderService:
                 db, order.order_id, returned_value
             )
 
-        order.refunded_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        order.refunded_at = now
         order.status = OrderStatus.REFUNDED.value
+
+        if old_status == OrderStatus.RETURN_REQUESTED.value:
+            history_note = f"Return approved: returnless refund of LKR {refund:.2f} credited to wallet"
+        elif old_status == OrderStatus.RETURN_APPROVED.value:
+            history_note = f"Returned goods received: refund of LKR {refund:.2f} credited to wallet"
+        else:
+            history_note = f"Refund of LKR {refund:.2f} credited to wallet"
+
+        if note:
+            history_note += f" ({note})"
+
+        history = OrderStatusHistory(
+            order_id=order.order_id,
+            old_status=old_status,
+            new_status=OrderStatus.REFUNDED.value,
+            changed_by=changed_by,
+            notes=history_note,
+            created_at=now,
+        )
+        db.add(history)
 
     @staticmethod
     async def _notify_return_status(db: AsyncSession, order: Order, status_value: str) -> None:
@@ -2538,7 +2596,11 @@ class OrderService:
         )
 
     @staticmethod
-    async def complete_return(db: AsyncSession, order: Order) -> Order:
+    async def complete_return(
+        db: AsyncSession,
+        order: Order,
+        changed_by: str = "System (Courier Handover)",
+    ) -> Order:
         """The goods are back with us — credit the refund and close the order.
 
         Called from the courier sync when the *return leg* reports
@@ -2569,7 +2631,7 @@ class OrderService:
         order.return_received_at = datetime.now(timezone.utc)
         # Also takes the returned goods' share off the cashback and the
         # referrer's commission, in the same transaction.
-        await OrderService._credit_return_refund(db, order)
+        await OrderService._credit_return_refund(db, order, changed_by=changed_by)
 
         await db.commit()
         await db.refresh(order)
@@ -2580,22 +2642,48 @@ class OrderService:
         return order
 
     @staticmethod
-    async def reject_return(db: AsyncSession, order: Order, note: Optional[str] = None) -> Order:
-        """Reject a pending return: revert the order back to DELIVERED.
+    async def reject_return(
+        db: AsyncSession,
+        order: Order,
+        note: Optional[str] = None,
+        changed_by: str = "Admin",
+    ) -> Order:
+        """Reject a pending return: transition the order to RETURN_REJECTED.
 
-        ``note`` is the manager's reason, kept on the claim so a customer who
-        rings support gets the same answer twice. Same signature fix as
-        :meth:`approve_return` — the router has been passing it all along.
+        ``note`` is mandatory: the manager's reason, kept on the claim and surfaced
+        to the customer in the app and timeline so they understand why the claim
+        could not be approved.
         """
         if order.status != OrderStatus.RETURN_REQUESTED.value:
             raise ValueError("This order has no pending return request.")
 
-        order.status = OrderStatus.DELIVERED.value
-        if note:
-            order.return_resolution_note = note
+        if not note or not note.strip():
+            raise ValueError("A reason/decision note is required when rejecting a return claim.")
+
+        old_status = order.status
+        clean_note = note.strip()
+        order.status = OrderStatus.RETURN_REJECTED.value
+        order.return_resolution_note = clean_note
+
+        now = datetime.now(timezone.utc)
+        if hasattr(order, "return_rejected_at"):
+            order.return_rejected_at = now
+
+        history_note = f"Return rejected by admin: {clean_note}"
+        history = OrderStatusHistory(
+            order_id=order.order_id,
+            old_status=old_status,
+            new_status=OrderStatus.RETURN_REJECTED.value,
+            changed_by=changed_by,
+            notes=history_note,
+            created_at=now,
+        )
+        db.add(history)
+
         await db.commit()
         await db.refresh(order)
         logger.info(f"Return rejected for order {order.order_number}")
+        await OrderService._notify_return_status(db, order, OrderStatus.RETURN_REJECTED.value)
         return order
 
     @staticmethod

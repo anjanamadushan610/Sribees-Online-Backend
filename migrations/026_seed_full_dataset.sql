@@ -223,6 +223,10 @@ ON CONFLICT (variant_type_id) DO NOTHING;
 
 -- Pack sizes on the weighed goods. `price` is per-variant, so the small pack is
 -- cheaper than the product's base price and the large one dearer.
+--
+-- A variant somebody has ordered stays: order_items keeps a foreign key to it,
+-- so deleting it aborted every deploy once a tester bought one (2026-10-14).
+-- The kept row's sku blocks its re-insert below, which is what we want.
 DELETE FROM variant_options WHERE variant_id IN (
     SELECT md5('sribees:demo-variant:' || p.product_id::text || ':' || v.suffix)::uuid
     FROM products p
@@ -231,7 +235,8 @@ DELETE FROM variant_options WHERE variant_id IN (
     ) AS v(suffix)
     WHERE p.sku IS NOT NULL
       AND p.weight_unit = 'kg'
-);
+)
+AND variant_id NOT IN (SELECT variant_id FROM order_items WHERE variant_id IS NOT NULL);
 
 DELETE FROM product_variants WHERE variant_id IN (
     SELECT md5('sribees:demo-variant:' || p.product_id::text || ':' || v.suffix)::uuid
@@ -241,7 +246,8 @@ DELETE FROM product_variants WHERE variant_id IN (
     ) AS v(suffix)
     WHERE p.sku IS NOT NULL
       AND p.weight_unit = 'kg'
-);
+)
+AND variant_id NOT IN (SELECT variant_id FROM order_items WHERE variant_id IS NOT NULL);
 
 INSERT INTO product_variants (
     variant_id, product_id, name, sku, price, compare_at_price,

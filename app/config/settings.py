@@ -106,6 +106,16 @@ class Settings(BaseSettings):
             "30-minute quote lifetime; checkout always asks for a fresh one."
         ),
     )
+    courier_postal_city_sync_hours: int = Field(
+        default=6,
+        ge=0,
+        le=168,
+        description=(
+            "How often the SribeesExpress postal city list is pulled into the directory "
+            "(app/services/courier_coverage_worker.py). 0 turns the loop off; saving a "
+            "courier key still syncs at once."
+        ),
+    )
     order_tax_rate: float = Field(
         default=0.0,
         ge=0.0,
@@ -408,12 +418,20 @@ class Settings(BaseSettings):
             "http://localhost:3001",
             "http://localhost:19006",
             "http://localhost:8081",
-            # Production web/admin origins (also covered by the regex in main.py).
+            # Production web/admin origins (also covered by cors_origin_regex).
             "https://sribees.com",
             "https://www.sribees.com",
             "https://admin.sribees.com",
         ],
         description="Allowed CORS origins"
+    )
+    # Origins allowed by pattern, on top of the list above. A setting rather
+    # than a constant so the development server can take a frontend
+    # developer's own Vercel and Netlify previews (CORS_ORIGIN_REGEX in its
+    # environment) while production keeps to this default.
+    cors_origin_regex: str = Field(
+        default=r"https://.*\.vercel\.app|https://([a-z0-9-]+\.)*sribees\.com",
+        description="Pattern an allowed CORS origin must match in full",
     )
     cors_allow_credentials: bool = Field(default=True, description="Allow credentials")
     cors_allow_methods: List[str] = Field(default=["*"], description="Allowed methods")

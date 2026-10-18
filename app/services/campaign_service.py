@@ -96,7 +96,7 @@ async def estimate(db: AsyncSession, category: str, branch_id: Optional[UUID]) -
             .group_by(lang)
         )
     ).all()
-    by_language = {code: 0 for code in i18n.LANGUAGES}
+    by_language = dict.fromkeys(i18n.LANGUAGES, 0)
     for code, count in rows:
         by_language[i18n.normalize_lang(code)] += count
 

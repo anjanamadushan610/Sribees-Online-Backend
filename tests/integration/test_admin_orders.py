@@ -140,6 +140,12 @@ async def test_support_can_read_and_escalate_but_not_dispatch(
     )
     assert r.status_code == 403, "support raises escalations; the branch resolves them"
 
+    # Check that Support's actionable queue excludes unresolved outbox tickets they created
+    r = await api.get("/api/v1/admin/orders/escalations/queue", params={"for_role": "customer_support"}, headers=support.headers)
+    assert r.status_code == 200, r.text
+    item_ids = [item["escalation_id"] for item in r.json()["data"]["items"]]
+    assert esc_id not in item_ids, "Support outbox tickets without BM response must not appear in support queue"
+
     manager = await make_admin("branch_manager", api=api)
     r = await api.get(f"/api/v1/admin/orders/{oid}/escalations", headers=manager.headers)
     assert r.status_code == 200 and esc_id in r.text
@@ -151,6 +157,12 @@ async def test_support_can_read_and_escalate_but_not_dispatch(
         )
         assert r.status_code == 200, r.text
         assert r.json()["data"]["status"] == status_
+
+    # Now that the BM has responded/resolved, it is visible in the support inbox
+    r = await api.get("/api/v1/admin/orders/escalations/queue", params={"for_role": "customer_support", "status": "all"}, headers=support.headers)
+    assert r.status_code == 200, r.text
+    item_ids = [item["escalation_id"] for item in r.json()["data"]["items"]]
+    assert esc_id in item_ids
 
 
 async def test_exports(api, world, make_customer, make_product, place_order, make_admin):

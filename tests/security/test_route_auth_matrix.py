@@ -71,6 +71,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/api/v1/products"),
     ("GET", "/api/v1/products/featured"),
     ("GET", "/api/v1/products/home-feed"),
+    # Popular Picks: product cards only; the sales figures behind the rank
+    # never leave the server.
+    ("GET", "/api/v1/products/popular"),
     ("GET", "/api/v1/products/search"),
     ("GET", "/api/v1/products/category/{category_id}"),
     ("GET", "/api/v1/products/{product_id}"),
