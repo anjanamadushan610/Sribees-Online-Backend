@@ -30,6 +30,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     SmallInteger,
     String,
@@ -171,6 +172,14 @@ class ReferralCommission(Base):
     beneficiary = relationship("User", foreign_keys=[beneficiary_user_id])
     beneficiary_partner = relationship("Partner", foreign_keys=[beneficiary_partner_id])
     source_user = relationship("User", foreign_keys=[source_user_id])
+    # Empty for rows written before per-product commission (migration 081):
+    # those were one rate on the whole basket and read as a single line.
+    lines = relationship(
+        "ReferralCommissionLine",
+        back_populates="commission",
+        cascade="all, delete-orphan",
+        order_by="ReferralCommissionLine.created_at",
+    )
 
     __table_args__ = (
         # Idempotency lives in two PARTIAL unique indexes created by migration
@@ -188,3 +197,71 @@ class ReferralCommission(Base):
             f"<ReferralCommission {self.amount} L{self.level} "
             f"{self.status} order={self.order_number}>"
         )
+
+
+class ReferralCommissionLine(Base):
+    """
+    What one order line earned one commission row.
+
+    The header's ``amount`` is always the sum of these, and its
+    ``order_subtotal`` the sum of their bases. Product name and quantity are
+    snapshots so the partner's statement reads the same after a product is
+    renamed or deleted. ``basis`` is never shown to the beneficiary, for the
+    same reason ``order_subtotal`` is not.
+    """
+
+    __tablename__ = "referral_commission_lines"
+
+    line_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    commission_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("referral_commissions.commission_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    order_item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("order_items.order_item_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    product_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    product_name = Column(String(255), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    basis = Column(Numeric(10, 2), nullable=False)
+    rate_percentage = Column(Numeric(6, 3), nullable=False)
+    amount = Column(Numeric(10, 2), nullable=False)
+    returned_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    commission = relationship("ReferralCommission", back_populates="lines")
+
+    def __repr__(self):
+        return f"<ReferralCommissionLine {self.product_name} x{self.quantity} {self.amount}>"
+
+
+class ReferralRateChange(Base):
+    """
+    Audit trail of every commission rate change: who, what, from, to.
+
+    ``branch_id`` NULL is the product default (Super Admin); set, it is that
+    branch's override. Rows are only ever inserted.
+    """
+
+    __tablename__ = "referral_rate_changes"
+
+    change_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("products.product_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    branch_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("branches.branch_id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    old_percentage = Column(Numeric(5, 2), nullable=True)
+    new_percentage = Column(Numeric(5, 2), nullable=True)
+    changed_by = Column(UUID(as_uuid=True), nullable=True, comment="admins.admin_id")
+    changed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

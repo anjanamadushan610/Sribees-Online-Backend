@@ -23,6 +23,7 @@ from app.models.branch import Branch
 from app.models.product import BranchInventory, Product
 from app.schemas.inventory import BranchOverrideCreate, InventoryUpdateRequest
 from app.services.product_service import ProductService
+from app.services.referral_commission.rate_admin import describe_rates
 
 # Allow any admin (or staff) holding inventory:read; writes additionally need inventory:update.
 router = APIRouter(
@@ -63,6 +64,9 @@ def _format_inventory_row(inv: BranchInventory, product: Product, branch: Branch
         "cashback_percentage": inv.cashback_percentage,
         "global_cashback_percentage": product.cashback_percentage,
         "effective_cashback": effective["effective_cashback"],
+        # Referral commission: edited only through /admin/referral-commission
+        # (role-gated and capped), shown here so the table can display it.
+        **describe_rates(product, inv),
         "is_on_sale": inv.is_on_sale,
         # Stock
         "stock_quantity": stock,

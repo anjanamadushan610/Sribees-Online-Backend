@@ -19,7 +19,7 @@ Prefix "/referrals" is applied by app/api/v1/router.py.
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,8 @@ from app.config.database import get_db
 from app.config.settings import settings
 from app.core.dependencies import get_current_user
 from app.schemas.referral import RedeemReferralRequest
+from app.services.referral_commission import CommissionRateResolver
+from app.services.referral_commission.presenter import offer_text
 from app.services.referral_service import ReferralError, ReferralService
 
 router = APIRouter(tags=["Referrals"])
@@ -48,6 +50,7 @@ def _referral_error(exc: ReferralError) -> HTTPException:
 
 @router.get("/me", response_model=dict)
 async def get_my_referrals(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -60,12 +63,21 @@ async def get_my_referrals(
     code = await ReferralService.get_or_create_code(db, current_user)
     totals = await ReferralService.get_summary(db, current_user.user_id)
     friends = await ReferralService.list_friends(db, current_user.user_id)
+    highest = await CommissionRateResolver.highest_live_rate(db)
 
     return {
         "success": True,
         "data": {
             "referralCode": code,
-            "commissionPercent": settings.referral_commission_percent,
+            # The best rate on offer today: rates are per product now. Kept
+            # for app builds that still word the sentence themselves; newer
+            # ones show commissionText, in the Accept-Language language.
+            "commissionPercent": float(highest),
+            "commissionText": offer_text(
+                highest,
+                audience="friend",
+                accept_language=request.headers.get("accept-language"),
+            ),
             "currency": settings.wallet_currency,
             "totals": {
                 # Accrued but not yet delivered — shown so the referrer can see

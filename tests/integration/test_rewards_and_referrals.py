@@ -46,6 +46,17 @@ async def _redeem(api, customer, code):
     return await api.post("/api/v1/referrals/redeem", json={"referral_code": code}, headers=customer.headers)
 
 
+async def _commissioned_product(api, make_product, boss, *, price: str, rate: float = 2.0):
+    """A product that carries a referral commission. Since 081 a product with
+    no rate earns nothing, so every referral test sets one, through the admin
+    API a Super Admin would use."""
+    pid = await make_product(price=price)
+    r = await api.put(f"/api/v1/admin/referral-commission/products/{pid}",
+                      json={"percentage": rate}, headers=boss.headers)
+    assert r.status_code == 200, r.text
+    return pid
+
+
 async def test_invite_codes_are_write_once_and_not_self_serve(api, world, make_customer):
     alice = await make_customer()
     bob = await make_customer()
@@ -71,8 +82,8 @@ async def test_a_referrer_is_paid_once_the_return_window_closes(
 
     alice, bob = await make_customer(), await make_customer()
     assert (await _redeem(api, bob, await _code_of(api, alice))).status_code == 200
-    order = await place_order(bob, await make_product(price="1000.00"), 2)
     boss = await make_admin("super_admin", api=api)
+    order = await place_order(bob, await _commissioned_product(api, make_product, boss, price="1000.00"), 2)
     await _deliver(api, boss, order["order_id"])
 
     db.expire_all()
@@ -195,7 +206,7 @@ async def test_partner_commissions_pay_two_levels(
 
     buyer = await make_customer()
     assert (await _redeem(api, buyer, agent_code)).status_code == 200
-    order = await place_order(buyer, await make_product(price="1000.00"), 5)
+    order = await place_order(buyer, await _commissioned_product(api, make_product, boss, price="1000.00"), 5)
     await _deliver(api, boss, order["order_id"])
 
     db.expire_all()

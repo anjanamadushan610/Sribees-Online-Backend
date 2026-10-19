@@ -629,12 +629,14 @@ async def get_product(
         if inv is None:
             eff["is_active"] = False
 
-    return {
-        "success": True,
-        "data": format_product(
-            product, include_variants=True, include_translations=True, branch_overrides=eff
-        ),
-    }
+    data = format_product(
+        product, include_variants=True, include_translations=True, branch_overrides=eff
+    )
+    # Admin-only: the public product payload never carries commission rates.
+    # Edited through /admin/referral-commission/products/{id}.
+    rate = product.referral_commission_percentage
+    data["referral_commission_percentage"] = float(rate) if rate is not None else None
+    return {"success": True, "data": data}
 
 
 @router.post("/products/suggest-keywords", response_model=dict,

@@ -25,13 +25,27 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config.settings import settings
-from app.models.order import Order
+from app.models.order import Order, OrderItem
 from app.models.partner import Partner
-from app.models.referral import ReferralCommission, ReferralCommissionStatus
+from app.models.referral import (
+    ReferralCommission,
+    ReferralCommissionLine,
+    ReferralCommissionStatus,
+)
 from app.models.user import User
 from app.models.wallet import WalletTransactionType
+from app.services.referral_commission import (
+    CommissionLine,
+    LevelPolicy,
+    ReferralProgramConfig,
+    SaleLine,
+    build_lines,
+    kept_amount,
+)
+from app.services.referral_commission.presenter import line_payload
 from app.services.wallet_service import WalletService
 
 # Deliberately excludes 0/O/1/I/L — codes get read aloud and typed by hand, and
@@ -203,22 +217,28 @@ class ReferralService:
         order: Order,
         source_user_id: UUID,
         level: int,
-        rate: float,
-        basis: Decimal,
+        lines: list[CommissionLine],
         beneficiary_user_id: Optional[UUID] = None,
         beneficiary_partner_id: Optional[UUID] = None,
     ) -> Optional[ReferralCommission]:
         """
-        Write one commission row, or nothing if it already exists.
+        Write one commission row and its lines, or nothing if it already exists.
+
+        The header is the sum of its lines -- ``amount`` and ``order_subtotal``
+        alike -- so the ledger and the per-product breakdown cannot disagree.
+        ``rate_percentage`` keeps the blended rate for readers that predate the
+        lines; the lines carry the real ones.
 
         Uses a SAVEPOINT rather than a bare flush: this runs inside the
         caller's order-creation transaction, and letting a duplicate-key error
         roll that back would discard the order itself over a commission we did
         not need to write.
         """
-        amount = ReferralService._commission_amount(basis, rate)
+        amount = _money(sum((line.amount for line in lines), Decimal("0")))
         if amount <= 0:
             return None
+        basis = _money(sum((line.basis for line in lines), Decimal("0")))
+        blended = float((amount * 100 / basis).quantize(Decimal("0.001"))) if basis > 0 else 0.0
 
         commission = ReferralCommission(
             order_id=order.order_id,
@@ -227,10 +247,22 @@ class ReferralService:
             beneficiary_partner_id=beneficiary_partner_id,
             source_user_id=source_user_id,
             level=level,
-            rate_percentage=rate,
+            rate_percentage=blended,
             order_subtotal=basis,
             amount=amount,
             status=ReferralCommissionStatus.PENDING,
+            lines=[
+                ReferralCommissionLine(
+                    order_item_id=line.order_item_id,
+                    product_id=line.product_id,
+                    product_name=line.product_name,
+                    quantity=line.quantity,
+                    basis=line.basis,
+                    rate_percentage=line.rate,
+                    amount=line.amount,
+                )
+                for line in lines
+            ],
         )
 
         try:
@@ -247,10 +279,35 @@ class ReferralService:
             return None
 
         logger.info(
-            f"Referral commission L{level} accrued: {amount} on order "
-            f"{order.order_number}"
+            f"Referral commission L{level} accrued: {amount} over {len(lines)} "
+            f"line(s) on order {order.order_number}"
         )
         return commission
+
+    @staticmethod
+    async def _sale_lines(db: AsyncSession, order: Order) -> list[SaleLine]:
+        """
+        The order's lines with the rate and coupon share frozen at checkout.
+
+        A line without a rate snapshot earns nothing: since 081 checkout stamps
+        every line, so a missing one is either an order from before the change
+        or a line nobody priced -- and "unset" means 0 by the owner's rule.
+        """
+        items = (
+            await db.execute(select(OrderItem).where(OrderItem.order_id == order.order_id))
+        ).scalars().all()
+        return [
+            SaleLine(
+                order_item_id=item.order_item_id,
+                product_id=item.product_id,
+                product_name=item.product_name,
+                quantity=int(item.quantity or 0),
+                gross=Decimal(str(item.unit_price or 0)) * int(item.quantity or 0),
+                coupon_discount=Decimal(str(item.coupon_discount or 0)),
+                rate=Decimal(str(item.referral_commission_percentage or 0)),
+            )
+            for item in items
+        ]
 
     @staticmethod
     async def accrue_for_order(
@@ -258,30 +315,40 @@ class ReferralService:
         order: Order,
         *,
         commit: bool = False,
+        policy: Optional[LevelPolicy] = None,
     ) -> list[ReferralCommission]:
         """
         Record what an order owes, to whoever referred the buyer.
+
+        Each line earns its own product's rate (frozen on the order item at
+        checkout) on what the customer paid for it, coupon share deducted. A
+        line at 0% earns nothing for anyone.
 
         Two shapes:
 
         * **Referred by another customer** — one level-1 row to that customer.
         * **Referred by a professional partner** — level 1 to that partner and,
-          if the partner was itself recruited, level 2 to their upline. Only
-          two levels: the depth is fixed here rather than walked, because an
-          unbounded chain is a pyramid, not a referral programme.
+          if the partner was itself recruited, level 2 to their upline at
+          ``policy.level2_share`` of each line's rate. Only two levels: the
+          depth is fixed here rather than walked, because an unbounded chain is
+          a pyramid, not a referral programme.
 
-        No-ops when the buyer has no referrer or the basis is zero. Safe to run
+        No-ops when the buyer has no referrer or nothing earns. Safe to run
         twice; the partial unique indexes are the authority.
         """
         buyer = await db.get(User, order.user_id)
         if buyer is None:
             return []
-
-        basis = Decimal(str(order.subtotal or 0))
-        if basis <= 0:
+        if buyer.referred_by_partner_id is None and buyer.referred_by_user_id is None:
             return []
 
-        rate = float(settings.referral_commission_percent)
+        sale_lines = await ReferralService._sale_lines(db, order)
+        if not sale_lines:
+            return []
+
+        if policy is None:
+            policy = (await ReferralProgramConfig.load(db)).policy
+        level1 = build_lines(sale_lines, policy.for_level(1))
         created: list[ReferralCommission] = []
 
         # --- Referred by a professional partner ---------------------------
@@ -291,8 +358,7 @@ class ReferralService:
                 order=order,
                 source_user_id=buyer.user_id,
                 level=1,
-                rate=rate,
-                basis=basis,
+                lines=level1,
                 beneficiary_partner_id=buyer.referred_by_partner_id,
             )
             if row is not None:
@@ -306,8 +372,7 @@ class ReferralService:
                     order=order,
                     source_user_id=buyer.user_id,
                     level=2,
-                    rate=float(settings.referral_level2_percent),
-                    basis=basis,
+                    lines=build_lines(sale_lines, policy.for_level(2)),
                     beneficiary_partner_id=upline_id,
                 )
                 if row2 is not None:
@@ -327,8 +392,7 @@ class ReferralService:
                     order=order,
                     source_user_id=buyer.user_id,
                     level=1,
-                    rate=rate,
-                    basis=basis,
+                    lines=level1,
                     beneficiary_user_id=buyer.referred_by_user_id,
                 )
                 if row is not None:
@@ -397,6 +461,124 @@ class ReferralService:
         return len(rows)
 
     @staticmethod
+    def returned_quantities(order: Order) -> dict[str, int]:
+        """
+        Units coming back per order item id.
+
+        No ``return_items`` means the whole order came back -- the same reading
+        as ``OrderService._compute_return_refund``.
+        """
+        items = list(order.items or [])
+        if not order.return_items:
+            return {str(i.order_item_id): int(i.quantity or 0) for i in items}
+        ordered = {str(i.order_item_id): int(i.quantity or 0) for i in items}
+        returned: dict[str, int] = {}
+        for line in order.return_items:
+            key = str(line.get("order_item_id"))
+            if key in ordered:
+                qty = min(int(line.get("quantity", 0) or 0), ordered[key])
+                if qty > 0:
+                    returned[key] = qty
+        return returned
+
+    @staticmethod
+    async def reduce_for_return(
+        db: AsyncSession,
+        order: Order,
+        *,
+        legacy_returned_value: Decimal = Decimal("0"),
+        commit: bool = False,
+    ) -> int:
+        """
+        Take back what the returned units earned, line by line.
+
+        Each line keeps ``(quantity - returned_quantity) / quantity`` of its
+        commission, recomputed from its stored basis and rate. The returned
+        quantity is the order's return set, not an increment, so looking at
+        the same return twice changes nothing. The header follows its lines.
+
+        Already-PAID customer rows are clawed back by the difference only, as
+        before. Rows written before 081 have no lines and go through the old
+        proportional path with ``legacy_returned_value``.
+        """
+        returned = ReferralService.returned_quantities(order)
+        if not returned:
+            return 0
+
+        result = await db.execute(
+            select(ReferralCommission)
+            .where(
+                ReferralCommission.order_id == order.order_id,
+                ReferralCommission.status.in_(
+                    [
+                        ReferralCommissionStatus.PENDING,
+                        ReferralCommissionStatus.CLAIMABLE,
+                        ReferralCommissionStatus.PAID,
+                    ]
+                ),
+            )
+            .options(selectinload(ReferralCommission.lines))
+            .with_for_update()
+        )
+        rows = result.scalars().all()
+        touched = 0
+        has_legacy = False
+
+        for row in rows:
+            if not row.lines:
+                has_legacy = True
+                continue
+
+            returned_basis = Decimal("0")
+            for line in row.lines:
+                want = min(returned.get(str(line.order_item_id), 0), line.quantity)
+                line.returned_quantity = max(int(line.returned_quantity or 0), want)
+                line.amount = kept_amount(
+                    line.basis, line.rate_percentage, line.quantity, line.returned_quantity
+                )
+                returned_basis += (
+                    Decimal(str(line.basis)) * line.returned_quantity / line.quantity
+                )
+
+            old_amount = Decimal(str(row.amount or 0))
+            new_amount = _money(sum((Decimal(str(line.amount)) for line in row.lines), Decimal("0")))
+            difference = old_amount - new_amount
+            if difference <= 0:
+                continue
+
+            row.amount = new_amount
+            row.returned_subtotal = _money(returned_basis)
+
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_user_id:
+                await WalletService.apply_transaction(
+                    db,
+                    user_id=row.beneficiary_user_id,
+                    tx_type=WalletTransactionType.SPENT,
+                    amount=difference,
+                    title="Referral adjusted — items returned",
+                    order_id=row.order_id,
+                    order_number=row.order_number,
+                )
+
+            if new_amount <= 0:
+                row.status = ReferralCommissionStatus.REVERSED
+            touched += 1
+
+        if has_legacy and legacy_returned_value > 0:
+            touched += await ReferralService.reduce_for_returned_value(
+                db, order.order_id, legacy_returned_value
+            )
+
+        if touched and commit:
+            await db.commit()
+        if touched:
+            logger.info(
+                f"{touched} referral commission(s) reduced for returned goods "
+                f"on order {order.order_number}"
+            )
+        return touched
+
+    @staticmethod
     async def reduce_for_returned_value(
         db: AsyncSession,
         order_id: UUID,
@@ -431,6 +613,9 @@ class ReferralService:
             select(ReferralCommission)
             .where(
                 ReferralCommission.order_id == order_id,
+                # Rows with lines are reduced per line by reduce_for_return;
+                # this proportional path is for the ones written before 081.
+                ~ReferralCommission.lines.any(),
                 ReferralCommission.status.in_(
                     [
                         ReferralCommissionStatus.PENDING,
@@ -731,6 +916,7 @@ class ReferralService:
                 ReferralCommission.beneficiary_user_id == user_id,
                 ReferralCommission.source_user_id == friend_user_id,
             )
+            .options(selectinload(ReferralCommission.lines))
             .order_by(ReferralCommission.created_at.desc())
         )
 
@@ -750,6 +936,7 @@ class ReferralService:
                 "claimable_at": (
                     row.claimable_at.isoformat() if row.claimable_at else None
                 ),
+                "lines": [line_payload(line) for line in row.lines],
             }
             for row in result.scalars().all()
         ]

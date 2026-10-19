@@ -24,12 +24,18 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config.settings import settings
 from app.core.security import hash_password, verify_password
 from app.models.partner import Partner
-from app.models.referral import ReferralCommission, ReferralCommissionStatus
+from app.models.referral import (
+    ReferralCommission,
+    ReferralCommissionLine,
+    ReferralCommissionStatus,
+)
 from app.models.user import User
+from app.services.referral_commission.presenter import line_payload
 
 
 class PartnerEmailTakenError(ValueError):
@@ -494,6 +500,7 @@ class PartnerService:
         result = await db.execute(
             select(ReferralCommission)
             .where(ReferralCommission.beneficiary_partner_id == partner_id)
+            .options(selectinload(ReferralCommission.lines))
             .order_by(ReferralCommission.created_at.desc())
             .limit(limit)
         )
@@ -507,6 +514,62 @@ class PartnerService:
                 "rate_percentage": row.rate_percentage,
                 "level": row.level,
                 "status": row.status,
+                # Where the money came from, product by product. Empty for
+                # rows written before per-product commission (one flat rate on
+                # the whole order).
+                "lines": [line_payload(line) for line in row.lines],
             }
             for row in result.scalars().all()
+        ]
+
+    @staticmethod
+    async def top_products(
+        db: AsyncSession, partner_id: UUID, limit: int = 10
+    ) -> list[dict]:
+        """
+        What the partner's earnings were made of, best product first.
+
+        Reversed commissions are left out: money that was taken back did not
+        come from anywhere. Units are net of returns.
+        """
+        name = func.max(ReferralCommissionLine.product_name)
+        earned = func.coalesce(func.sum(ReferralCommissionLine.amount), 0)
+        rows = (
+            await db.execute(
+                select(
+                    ReferralCommissionLine.product_id,
+                    name,
+                    earned,
+                    func.coalesce(
+                        func.sum(
+                            ReferralCommissionLine.quantity
+                            - ReferralCommissionLine.returned_quantity
+                        ),
+                        0,
+                    ),
+                    func.count(func.distinct(ReferralCommission.order_id)),
+                )
+                .join(
+                    ReferralCommission,
+                    ReferralCommission.commission_id == ReferralCommissionLine.commission_id,
+                )
+                .where(
+                    ReferralCommission.beneficiary_partner_id == partner_id,
+                    ReferralCommission.status != ReferralCommissionStatus.REVERSED,
+                )
+                .group_by(ReferralCommissionLine.product_id)
+                .order_by(earned.desc())
+                .limit(limit)
+            )
+        ).all()
+
+        return [
+            {
+                "product_id": str(pid),
+                "product_name": pname,
+                "total_earned": float(_money(Decimal(str(total or 0)))),
+                "units": int(units or 0),
+                "orders": int(orders or 0),
+            }
+            for pid, pname, total, units, orders in rows
         ]

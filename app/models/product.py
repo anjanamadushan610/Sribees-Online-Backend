@@ -135,6 +135,14 @@ class Product(Base):
             "cashback rate; a branch may override this per product."
         ),
     )
+    referral_commission_percentage = Column(
+        Numeric(5, 2),
+        nullable=True,
+        comment=(
+            "Default level-1 referral commission % (0-100). NULL = no "
+            "commission; a branch may override it. Set by a Super Admin."
+        ),
+    )
 
     view_count = Column(Integer, default=0)
     meta_title = Column(String(255), nullable=True)
@@ -229,6 +237,15 @@ class BranchInventory(Base):
         comment=(
             "Branch override cashback % (NULL -> products.cashback_percentage "
             "-> platform cashback rate)"
+        ),
+    )
+    referral_commission_percentage = Column(
+        Numeric(5, 2),
+        nullable=True,
+        comment=(
+            "Branch override referral commission % (NULL -> "
+            "products.referral_commission_percentage -> 0). Capped by "
+            "app_settings.referral_branch_max_percent for Branch Managers."
         ),
     )
     is_active = Column(

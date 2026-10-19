@@ -65,9 +65,9 @@ class Settings(BaseSettings):
         ge=0.0,
         le=100.0,
         description=(
-            "Percentage of a referred user's order subtotal paid to their "
-            "referrer (2.0 = 2%). Snapshotted onto each commission row, so "
-            "changing this never rewrites what people already earned."
+            "UNUSED since migration 081: commission is per product now "
+            "(products / branch_inventory.referral_commission_percentage). "
+            "Kept so an environment that still sets it does not fail to boot."
         ),
     )
     referral_level2_percent: float = Field(
@@ -75,10 +75,9 @@ class Settings(BaseSettings):
         ge=0.0,
         le=100.0,
         description=(
-            "Percentage paid to a partner's upline on orders from customers "
-            "their recruit signed up (level 2). Lower than level 1 by design: "
-            "the recruit did the work. Two levels only — a deeper chain is a "
-            "pyramid, not a referral programme. Agent 2%, lead 1%."
+            "UNUSED since migration 081: the upline now earns "
+            "app_settings.referral_level2_share of each product's rate. Kept "
+            "so an environment that still sets it does not fail to boot."
         ),
     )
     referral_code_length: int = Field(

@@ -26,6 +26,7 @@ from app.api.v1 import (
     admin_loyalty,
     admin_orders,
     admin_partners,
+    admin_referral_commission,
     admin_roles,
     admin_settings,
     admin_sms,
@@ -305,6 +306,15 @@ router.include_router(
     admin_partners.router,
     prefix="/admin/partners",
     tags=["Admin Partners"],
+)
+
+# Per-product referral commission rates (/admin/referral-commission): product
+# defaults and programme settings for Super Admins, branch overrides for
+# Branch Managers (own branch, capped). Role-gated, never delegatable.
+router.include_router(
+    admin_referral_commission.router,
+    prefix="/admin/referral-commission",
+    tags=["Admin Referral Commission"],
 )
 
 # Admin Order management (/admin/orders). Branch-scoped via inject_branch_filter;

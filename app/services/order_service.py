@@ -230,6 +230,38 @@ class OrderService:
         return priced
 
     @staticmethod
+    async def _attach_referral_rates(
+        db: AsyncSession,
+        items: List[dict],
+        branch_id: Optional[UUID],
+    ) -> List[dict]:
+        """
+        Return *items* with each line's level-1 referral commission rate
+        attached as ``referral_commission_percentage`` (branch override ->
+        product default -> 0).
+
+        Same shape and reasoning as ``_attach_cashback_rates``: read from the
+        database at checkout, never from the Redis cart, and returned as copies.
+        """
+        if not items:
+            return []
+
+        from app.services.referral_commission import CommissionRateResolver
+
+        product_ids = []
+        for item in items:
+            try:
+                product_ids.append(UUID(str(item.get("product_id"))))
+            except (ValueError, TypeError):
+                continue
+
+        rates = await CommissionRateResolver.resolve(db, product_ids, branch_id)
+        return [
+            {**item, "referral_commission_percentage": rates.get(str(item.get("product_id")), Decimal("0"))}
+            for item in items
+        ]
+
+    @staticmethod
     async def _attach_weights(db: AsyncSession, items: List[dict]) -> List[dict]:
         """
         Return *items* with each line's DB-resolved, kg-normalized weight
@@ -360,6 +392,11 @@ class OrderService:
         # in cart.py is a courtesy so the shopper finds out at apply time.
         coupon_row = None
         coupon_for_pricing = None
+        # Which lines the coupon may discount, in order_items order -- used to
+        # share the discount out over exactly those lines (order_items.
+        # coupon_discount), which is what a line's referral commission is
+        # computed on.
+        coupon_eligible = [False] * len(order_items)
         raw_coupon = (
             {"code": data.coupon_code.strip()}
             if (data.coupon_code and data.coupon_code.strip())
@@ -379,6 +416,7 @@ class OrderService:
             eligible_subtotal = CouponService.eligible_subtotal(
                 coupon_row, enriched_items
             )
+            coupon_eligible = CouponService.eligible_mask(coupon_row, enriched_items)
 
             # Customer-specific facts the synchronous validator cannot look up.
             # Checkout is the authoritative gate, so it supplies all of them.
@@ -422,6 +460,7 @@ class OrderService:
             db, order_items, branch_id
         )
         priced_items = await OrderService._attach_weights(db, priced_items)
+        priced_items = await OrderService._attach_referral_rates(db, priced_items, branch_id)
 
         # Matched against the synced directory now if it never was -- a sync
         # since the address was saved may have added its town.
@@ -659,11 +698,27 @@ class OrderService:
             )).all()
         } if order_items else {}
 
+        # Each line's share of the coupon discount, to the cent: the shares sum
+        # to exactly breakdown.discount. The referral commission is computed on
+        # what the customer paid for the goods, so it needs the line's share,
+        # not just the order total.
+        from app.services.referral_commission import allocate_discount
+
+        coupon_shares = allocate_discount(
+            [
+                Decimal(str(i.get("price") if "price" in i else i.get("unit_price", 0)))
+                * Decimal(str(i["quantity"]))
+                for i in priced_items
+            ],
+            coupon_eligible,
+            breakdown.discount,
+        )
+
         # Create order items — from priced_items, not the raw order_items, so
         # each line carries the cashback % actually resolved for checkout
         # (branch override -> product default -> platform rate), frozen the
         # way unit_price already is.
-        for item in priced_items:
+        for item, coupon_share in zip(priced_items, coupon_shares, strict=True):
             unit_price_val = item.get("price") if "price" in item else item.get("unit_price", 0)
             rate = item.get("cashback_percentage")
             order_item = OrderItem(
@@ -678,6 +733,10 @@ class OrderService:
                 subtotal=Decimal(str(unit_price_val * item["quantity"])),
                 is_returnable=returnable.get(UUID(str(item["product_id"])), True),
                 cashback_percentage=Decimal(str(rate)) if rate is not None else None,
+                referral_commission_percentage=Decimal(
+                    str(item.get("referral_commission_percentage", 0))
+                ),
+                coupon_discount=coupon_share,
             )
             db.add(order_item)
 
@@ -2459,11 +2518,11 @@ class OrderService:
 
         from app.services.referral_service import ReferralService
 
-        returned_value = OrderService._compute_return_refund(order)
-        if returned_value > 0:
-            await ReferralService.reduce_for_returned_value(
-                db, order.order_id, returned_value
-            )
+        await ReferralService.reduce_for_return(
+            db,
+            order,
+            legacy_returned_value=OrderService._compute_return_refund(order),
+        )
 
         now = datetime.now(timezone.utc)
         order.refunded_at = now

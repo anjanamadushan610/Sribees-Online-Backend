@@ -315,6 +315,15 @@ class OrderItem(Base):
     # line (branch override -> product default -> platform rate). See
     # migration 065. Null for orders placed before this column existed.
     cashback_percentage = Column(Numeric(5, 2), nullable=True)
+    # Snapshot of the level-1 referral commission % resolved at checkout
+    # (branch override -> product default -> 0), and this line's share of the
+    # order's coupon discount. Together they are the line's commission basis
+    # and rate; see migration 081. NULL rate = placed before per-product
+    # commission existed.
+    referral_commission_percentage = Column(Numeric(5, 2), nullable=True)
+    coupon_discount = Column(
+        Numeric(10, 2), nullable=False, default=0, server_default="0"
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

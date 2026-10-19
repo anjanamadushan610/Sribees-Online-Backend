@@ -91,19 +91,28 @@ class CouponService:
         wrong zero — checkout always supplies them; see
         ``CartService.items_for_coupon``.
         """
+        total = Decimal("0")
+        for item, eligible in zip(items, CouponService.eligible_mask(coupon, items), strict=True):
+            if eligible:
+                total += Decimal(str(item["price"])) * Decimal(str(item["quantity"]))
+        return total
+
+    @staticmethod
+    def eligible_mask(coupon: Coupon, items: list[dict]) -> list[bool]:
+        """
+        Per line, whether this coupon may discount it -- the rule behind
+        :meth:`eligible_subtotal`, kept separate so checkout can share the
+        discount out over exactly the lines it came off.
+        """
         category_ids = {str(c.category_id) for c in (coupon.eligible_categories or [])}
         product_ids = {str(pr.product_id) for pr in (coupon.eligible_products or [])}
-        restricted = bool(category_ids or product_ids)
-
-        total = Decimal("0")
-        for item in items:
-            if restricted:
-                pid = str(item.get("product_id") or "")
-                cid = str(item.get("category_id") or "")
-                if pid not in product_ids and cid not in category_ids:
-                    continue
-            total += Decimal(str(item["price"])) * Decimal(str(item["quantity"]))
-        return total
+        if not (category_ids or product_ids):
+            return [True for _ in items]
+        return [
+            str(item.get("product_id") or "") in product_ids
+            or str(item.get("category_id") or "") in category_ids
+            for item in items
+        ]
 
     @staticmethod
     async def enrich_items(

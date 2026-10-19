@@ -19,7 +19,7 @@ Prefix "/partner" is applied by app/api/v1/router.py.
 """
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,8 @@ from app.core.dependencies import get_current_partner
 from app.core.security import create_access_token
 from app.schemas.partner import PartnerCreateRequest, PartnerLoginRequest
 from app.services.partner_service import PartnerEmailTakenError, PartnerService
+from app.services.referral_commission import CommissionRateResolver
+from app.services.referral_commission.presenter import offer_text
 
 router = APIRouter(tags=["Partner Portal"])
 
@@ -95,12 +97,18 @@ async def partner_login(
 
 @router.get("/me", response_model=dict)
 async def get_my_partner_profile(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     partner=Depends(get_current_partner),
 ):
-    """Profile, invite code and commission totals — the dashboard header."""
+    """Profile, invite code and commission totals — the dashboard header.
+
+    ``commissionPercent`` is the best rate on offer today (rates are per
+    product now); ``commissionText`` is the sentence to show for it.
+    """
     code = await PartnerService.get_or_create_code(db, partner)
     summary = await PartnerService.get_summary(db, partner.partner_id)
+    highest = await CommissionRateResolver.highest_live_rate(db)
 
     return {
         "success": True,
@@ -109,7 +117,12 @@ async def get_my_partner_profile(
             "fullName": partner.full_name,
             "email": partner.email,
             "referralCode": code,
-            "commissionPercent": settings.referral_commission_percent,
+            "commissionPercent": float(highest),
+            "commissionText": offer_text(
+                highest,
+                audience="partner",
+                accept_language=request.headers.get("accept-language"),
+            ),
             "currency": settings.wallet_currency,
             "hasUpline": partner.parent_partner_id is not None,
             "totals": {
@@ -243,3 +256,18 @@ async def get_my_commissions(
         "success": True,
         "data": {"commissions": rows, "total": len(rows)},
     }
+
+
+# ============================================================================
+# GET /top-products
+# ============================================================================
+
+@router.get("/top-products", response_model=dict)
+async def get_my_top_products(
+    limit: int = Query(10, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+    partner=Depends(get_current_partner),
+):
+    """The products the partner's commission came from, best first."""
+    rows = await PartnerService.top_products(db, partner.partner_id, limit)
+    return {"success": True, "data": {"products": rows}}

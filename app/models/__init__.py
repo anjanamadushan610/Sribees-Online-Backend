@@ -49,7 +49,12 @@ from app.models.product import (
     VariantOption,
     VariantType,
 )
-from app.models.referral import ReferralCommission, ReferralCommissionStatus
+from app.models.referral import (
+    ReferralCommission,
+    ReferralCommissionLine,
+    ReferralCommissionStatus,
+    ReferralRateChange,
+)
 from app.models.role import Permission, Role, RolePermission
 from app.models.search_miss import SearchMiss, SearchMissStatus
 from app.models.stock_transfer import StockTransfer, TransferStatus
@@ -86,6 +91,7 @@ __all__ = [
     # Referrals
     "Partner",
     "ReferralCommission",
+    "ReferralCommissionLine",
     # Loyalty
     "LoyaltyAccount",
     "LoyaltyTier",
@@ -95,6 +101,7 @@ __all__ = [
     "SearchMiss",
     "SearchMissStatus",
     "ReferralCommissionStatus",
+    "ReferralRateChange",
     # Category
     "Category",
     # Coupon
