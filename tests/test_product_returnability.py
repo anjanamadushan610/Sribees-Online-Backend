@@ -38,6 +38,7 @@ def _item(item_id: str, name: str, returnable: bool, qty: int = 1, price: str = 
         quantity=qty,
         unit_price=Decimal(price),
         subtotal=Decimal(price) * qty,
+        coupon_discount=Decimal("0"),
         is_returnable=returnable,
     )
 
@@ -49,6 +50,7 @@ def _order(*items):
         status=OrderStatus.DELIVERED.value,
         delivered_at=datetime.now(timezone.utc) - timedelta(hours=1),
         items=list(items),
+        discount_amount=Decimal("0"),
         return_items=None,
         return_reason=None,
         return_comments=None,

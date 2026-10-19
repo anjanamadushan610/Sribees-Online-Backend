@@ -4,7 +4,7 @@ Order Service - Business Logic
 import random
 import string
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -2237,31 +2237,77 @@ class OrderService:
     # ================================================================
 
     @staticmethod
-    def _compute_return_refund(order: Order) -> Decimal:
-        """
-        Value to refund for a return: the returned items' subtotals.
-
-        With no ``return_items`` recorded it is a full return (sum of every
-        item's subtotal). Otherwise it sums ``unit_price × min(requested_qty,
-        ordered_qty)`` for each selected item.
-        """
-        items = order.items or []
+    def _returned_lines(order: Order) -> List[Tuple[OrderItem, int]]:
+        """(item, units coming back) for a return. No ``return_items`` = all."""
+        items = list(order.items or [])
         return_items = order.return_items or []
-
         if not return_items:
-            total = sum((i.subtotal or Decimal("0")) for i in items)
-            return Decimal(str(total)).quantize(Decimal("0.01"))
+            return [(i, int(i.quantity or 0)) for i in items if (i.quantity or 0) > 0]
 
         by_id = {str(i.order_item_id): i for i in items}
-        total = Decimal("0")
+        returned = []
         for ri in return_items:
             item = by_id.get(str(ri.get("order_item_id")))
             if item is None:
                 continue
             qty = min(int(ri.get("quantity", 0)), item.quantity)
             if qty > 0:
-                total += (item.unit_price or Decimal("0")) * qty
+                returned.append((item, qty))
+        return returned
+
+    @staticmethod
+    def _returned_gross(order: Order) -> Decimal:
+        """
+        Shelf value of the returned goods, ``unit_price x units``, before any
+        coupon. The basis that commission rows written before migration 081
+        were computed on, so it is what their proportional reduction needs.
+        """
+        total = sum(
+            (Decimal(str(item.unit_price or 0)) * qty for item, qty in OrderService._returned_lines(order)),
+            Decimal("0"),
+        )
         return total.quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _coupon_share(order: Order, item: OrderItem) -> Decimal:
+        """
+        The part of the order's coupon discount that came off *item*.
+
+        Since 081 checkout stores it per line (``order_items.coupon_discount``,
+        shares summing to ``orders.discount_amount``). An older order has a
+        discount but no shares; it is spread over every line by value, the
+        only fair split left without knowing which lines the coupon covered.
+        """
+        items = list(order.items or [])
+        if any(Decimal(str(i.coupon_discount or 0)) > 0 for i in items):
+            return Decimal(str(item.coupon_discount or 0))
+
+        discount = Decimal(str(order.discount_amount or 0))
+        gross = sum((Decimal(str(i.unit_price or 0)) * (i.quantity or 0) for i in items), Decimal("0"))
+        if discount <= 0 or gross <= 0:
+            return Decimal("0")
+        line = Decimal(str(item.unit_price or 0)) * (item.quantity or 0)
+        return min(discount, gross) * line / gross
+
+    @staticmethod
+    def _compute_return_refund(order: Order) -> Decimal:
+        """
+        Value to refund for a return: what the customer paid for the goods
+        that came back.
+
+        Each returned unit is refunded at its price less its share of the
+        coupon discount -- a Rs 1,000 bag bought with Rs 100 off came back as
+        Rs 900, and refunding Rs 1,000 paid out money that was never taken.
+        With no ``return_items`` recorded it is a full return of every line.
+        A whole-order return therefore refunds exactly ``subtotal - discount``.
+        """
+        total = Decimal("0")
+        for item, qty in OrderService._returned_lines(order):
+            line_qty = int(item.quantity or 0)
+            gross = Decimal(str(item.unit_price or 0)) * qty
+            share = OrderService._coupon_share(order, item) * qty / line_qty if line_qty else Decimal("0")
+            total += max(gross - share, Decimal("0"))
+        return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     @staticmethod
     def return_window_expires_at(order: Order) -> Optional[datetime]:
@@ -2521,7 +2567,7 @@ class OrderService:
         await ReferralService.reduce_for_return(
             db,
             order,
-            legacy_returned_value=OrderService._compute_return_refund(order),
+            legacy_returned_value=OrderService._returned_gross(order),
         )
 
         now = datetime.now(timezone.utc)

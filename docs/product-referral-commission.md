@@ -167,10 +167,14 @@ Note: when this reaches production, every product earns 0 until rates are set.
 That is the owner's choice. Set the rates before announcing the change to
 partners.
 
-## 9. Found on the way (out of scope, needs an owner decision)
+## 9. Return refunds and coupons (fixed 2026-10-19, owner's go-ahead)
 
-- `OrderService._compute_return_refund` refunds `unit_price x quantity` and
-  ignores the coupon discount. A returned item from a couponed order is
-  refunded more than the customer paid for it. The new `coupon_discount`
-  column makes the fix one line. Not changed here, because it is customer
-  money and needs its own decision.
+`OrderService._compute_return_refund` used to refund `unit_price x quantity`
+and ignore the coupon discount. A returned item from a couponed order was
+therefore refunded more than the customer paid for it. Each returned unit
+now refunds its price less its share of the coupon (`order_items.coupon_discount`,
+pro rata per unit), so a whole-order return refunds exactly
+`subtotal - discount`. Orders from before 081 have a discount but no shares,
+so their discount is spread over every line by value. Commission rows from
+before 081 still reduce on shelf value (`_returned_gross`), the basis they
+were computed on. Tax and delivery are not refunded, as before.

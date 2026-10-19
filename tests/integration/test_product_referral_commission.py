@@ -286,6 +286,15 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
     await OrderService._credit_return_refund(db, row, note="ZZ one bag torn")
     await db.commit()
 
+    # The customer gets back what that bag cost them: 1000 less its 100 of
+    # the coupon, not the shelf price.
+    db.expire_all()
+    refunded = (await db.execute(select(Order.refund_amount).where(Order.order_id == order["order_id"]))).scalar_one()
+    assert refunded == Decimal("900.00")
+    body = (await api.get("/api/v1/wallet", headers=buyer.headers)).json()
+    wallet = body.get("data", body)
+    assert float(wallet["balance"]) == 900.0
+
     rows = await ledger()
     assert rows[1].amount == Decimal("63.00") and rows[2].amount == Decimal("31.50")
     rice_line = next(line for line in rows[1].lines if line.product_id == rice)
