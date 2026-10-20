@@ -32,6 +32,8 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/api"),
     ("GET", "/.well-known/assetlinks.json"),
     ("GET", "/p/{product_id}"),
+    # The share picture for that link: what WhatsApp and Facebook fetch.
+    ("GET", "/p/{product_id}/share.jpg"),
     # Store-listing legal pages: Play requires them reachable without sign-in.
     ("GET", "/privacy"),
     ("GET", "/account-deletion"),

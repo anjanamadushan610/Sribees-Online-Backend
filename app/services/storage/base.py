@@ -110,6 +110,13 @@ class StorageProvider(ABC):
         the user has already been told succeeded.
         """
 
+    def read(self, path: str) -> Optional[bytes]:
+        """
+        The bytes stored at *path*, or None if this provider does not hold it
+        (absent, outside the store, or a legacy absolute URL). Never raises.
+        """
+        return None
+
 
 class StorageError(RuntimeError):
     """Raised when a provider cannot store or remove a file."""

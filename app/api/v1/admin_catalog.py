@@ -27,6 +27,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.concurrency import run_in_threadpool
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,7 +56,11 @@ from app.schemas.product import (
     SuggestKeywordsRequest,
     SuggestSkuRequest,
 )
-from app.services import sales_velocity_service, search_insights_service
+from app.services import (
+    product_imagery,
+    sales_velocity_service,
+    search_insights_service,
+)
 from app.services.category_service import CategoryService
 from app.services.embedding_service import GeminiAPIError
 from app.services.keyword_suggestion_service import (
@@ -78,6 +83,11 @@ ALLOWED_IMAGE_TYPES = {
     "image/webp",
     "image/gif",
 }
+
+# A transparent cutout is re-encoded to a small WebP on the server, so it may
+# arrive larger than an ordinary photo, which is stored as sent.
+_CUTOUT_TYPES = {"image/png", "image/webp"}
+_CUTOUT_MAX_MB = 10
 
 
 async def _validate_parent(
@@ -168,6 +178,11 @@ async def _upload_image(file: UploadFile, folder: str, max_mb: Optional[int] = N
 
     limit_mb = max_mb if max_mb is not None else settings.media_max_upload_size_mb
     contents = await file.read()
+    _check_size(contents, limit_mb)
+    return _store_bytes(contents, file.filename or "image.jpg", folder, file.content_type)
+
+
+def _check_size(contents: bytes, limit_mb: int) -> None:
     if len(contents) > limit_mb * 1024 * 1024:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -176,14 +191,16 @@ async def _upload_image(file: UploadFile, folder: str, max_mb: Optional[int] = N
             ),
         )
 
+
+def _store_bytes(contents: bytes, filename: str, folder: str, content_type: Optional[str]) -> str:
     import io
 
     try:
         return get_storage().save(
             fileobj=io.BytesIO(contents),
-            filename=file.filename or "image.jpg",
+            filename=filename,
             folder=folder,
-            content_type=file.content_type,
+            content_type=content_type,
         )
     except StorageError as exc:
         # 500, not 502. The storage backend is in-process (local disk), so a
@@ -988,7 +1005,29 @@ async def upload_product_image(
     The client is handed the resolved absolute URL so it can preview the file
     immediately, but what it sends back to be persisted is that same value; the
     link endpoint stores the relative path. See ``_link_path``.
+
+    A PNG or WebP with a transparent background is a product cutout: it is not
+    stored as sent but laid out on the standard white square (see
+    ``product_imagery``), so every product in the app sits the same way. Any
+    other picture is stored exactly as uploaded.
     """
+    if file.content_type in _CUTOUT_TYPES:
+        contents = await file.read()
+        _check_size(contents, _CUTOUT_MAX_MB)
+        try:
+            picture = await run_in_threadpool(product_imagery.normalize_cutout, contents)
+        except product_imagery.ImageryError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        if picture is not None:
+            stem = (file.filename or "product").rsplit(".", 1)[0]
+            path = _store_bytes(picture, f"{stem}.webp", "products", "image/webp")
+            return {
+                "success": True,
+                "data": {"image_url": media_url(path), "filename": file.filename},
+                "message": "Image uploaded successfully",
+            }
+        await file.seek(0)
+
     path = await _upload_image(file, folder="products", max_mb=1)
     return {
         "success": True,

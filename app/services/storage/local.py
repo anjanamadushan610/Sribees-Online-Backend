@@ -90,6 +90,15 @@ class LocalDiskStorageProvider(StorageProvider):
         # Only the relative path is returned — and therefore only it is stored.
         return relative_path
 
+    def read(self, path: str) -> Optional[bytes]:
+        if not path or path.startswith(("http://", "https://", "//")):
+            return None
+        target = self._resolve(path)
+        try:
+            return target.read_bytes() if target is not None else None
+        except OSError:
+            return None
+
     def delete(self, path: str) -> bool:
         if not path:
             return True

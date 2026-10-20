@@ -12,10 +12,12 @@ import uuid
 
 import pytest
 
-# The smallest valid PNG: 1x1, transparent. Enough for the upload path, which
-# checks the declared type and stores the bytes.
+# The smallest valid PNG: 1x1. Enough for the upload path, which checks the
+# declared type and stores the bytes. Opaque on purpose: a transparent product
+# PNG is a cutout and is laid out on the white square instead (see
+# test_product_imagery), and a 1x1 cutout is refused.
 PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4saUCAAQ8AfUgFpilAAAAAElFTkSuQmCC"
 )
 
 

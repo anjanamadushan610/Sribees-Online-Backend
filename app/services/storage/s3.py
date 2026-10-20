@@ -110,6 +110,18 @@ class S3StorageProvider(StorageProvider):
         logger.info(f"S3 upload OK: {relative_path} ({ct})")
         return relative_path
 
+    def read(self, path: str) -> Optional[bytes]:
+        if not path or path.startswith(("http://", "https://", "//")):
+            return None
+        try:
+            obj = self._get_client().get_object(
+                Bucket=self.bucket, Key=self._key_for(path)
+            )
+            return obj["Body"].read()
+        except Exception as exc:
+            logger.warning(f"S3 read failed for {path}: {exc}")
+            return None
+
     def delete(self, path: str) -> bool:
         if not path or path.startswith(("http://", "https://")):
             return False
