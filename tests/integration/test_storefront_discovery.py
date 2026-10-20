@@ -91,6 +91,47 @@ async def test_a_category_counts_what_the_shopper_can_buy(api, db, world, make_p
     assert tree[str(parent)]["children"][0]["product_count"] == 1
 
 
+async def test_a_product_on_a_second_shelf_lists_and_counts_there(api, db, world, make_product):
+    """One home in the product row, a second shelf through product_extra_categories."""
+    from app.models.product import ProductExtraCategory
+
+    dairy = await _category(db, world)
+    milk_powder = await _category(db, world, parent=dairy)
+    beverages = await _category(db, world)
+    tea = await _category(db, world, parent=beverages)
+    sachet = await make_product()
+    tea_only = await make_product()
+    await _file(db, sachet, dairy, milk_powder)
+    await _file(db, tea_only, beverages, tea)
+    db.add(ProductExtraCategory(product_id=sachet, subcategory_id=tea))
+    await db.commit()
+
+    headers = _device()
+    await _choose_location(api, world, headers)
+
+    # Both shelves list it, by sub-category and by parent alike.
+    for shelf, expected in (
+        (milk_powder, {sachet}), (dairy, {sachet}),
+        (tea, {sachet, tea_only}), (beverages, {sachet, tea_only}),
+    ):
+        r = await api.get("/api/v1/products", params={"category_id": str(shelf)}, headers=headers)
+        assert set(_ids(r)) == {str(x) for x in expected}, shelf
+    r = await api.get(
+        "/api/v1/products",
+        params={"category_id": str(beverages), "subcategory_id": str(tea)},
+        headers=headers,
+    )
+    assert set(_ids(r)) == {str(sachet), str(tea_only)}
+
+    # Tiles agree with what tapping them shows; the home is unchanged.
+    r = await api.get("/api/v1/categories", headers=headers)
+    counts = {c["category_id"]: c["product_count"] for c in r.json()["data"]["categories"]}
+    assert counts[str(milk_powder)] == 1 and counts[str(dairy)] == 1
+    assert counts[str(tea)] == 2 and counts[str(beverages)] == 2
+    r = await api.get(f"/api/v1/products/{sachet}", headers=headers)
+    assert r.json()["data"]["subcategory_id"] == str(milk_powder)
+
+
 async def test_the_filter_panel(api, db, world, make_product, make_customer):
     from app.models.product import BranchInventory
 

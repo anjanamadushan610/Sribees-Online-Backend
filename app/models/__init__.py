@@ -43,6 +43,7 @@ from app.models.payment import PaymentAttempt, PaymentAttemptStatus
 from app.models.product import (
     BranchInventory,
     Product,
+    ProductExtraCategory,
     ProductImage,
     ProductVariant,
     Review,
@@ -116,6 +117,7 @@ __all__ = [
     # Product models
     "BranchInventory",
     "Product",
+    "ProductExtraCategory",
     "ProductImage",
     "ProductVariant",
     "VariantType",

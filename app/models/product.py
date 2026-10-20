@@ -295,6 +295,40 @@ class ProductImage(Base):
         return f"<ProductImage {self.image_id}>"
 
 
+class ProductExtraCategory(Base):
+    """
+    A second shelf for a product.
+
+    ``Product.category_id``/``subcategory_id`` stay the product's one home —
+    the admin form, the product page and every report read those. A row here
+    makes the product also list under another sub-category (and so under that
+    sub-category's parent), e.g. a 18g milk powder sachet filed under Dairy ›
+    Milk Powder that also belongs on Beverages › Tea. Listing filters and
+    category counts read both; nothing else needs to know.
+    """
+
+    __tablename__ = "product_extra_categories"
+
+    product_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("products.product_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    subcategory_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("categories.category_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_product_extra_categories_subcategory", "subcategory_id"),
+    )
+
+    def __repr__(self):
+        return f"<ProductExtraCategory {self.product_id} -> {self.subcategory_id}>"
+
+
 class ProductVariant(Base):
     """Product variants model (size, color, etc.)."""
 

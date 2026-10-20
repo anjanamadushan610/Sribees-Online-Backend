@@ -27,6 +27,7 @@ from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import (
     BranchInventory,
     Product,
+    ProductExtraCategory,
     ProductImage,
     ProductVariant,
     Review,
@@ -74,12 +75,28 @@ class ProductService:
         matches a product whose ``category_id`` is the category *or* whose
         ``subcategory_id`` is one of its children. Passing a sub-category's own
         id still works — it simply has no children, and products pinned to it
-        carry it in ``subcategory_id``.
+        carry it in ``subcategory_id``. A product given a second shelf
+        (``product_extra_categories``) shows on that shelf too.
         """
         ids = await CategoryService.get_branch_ids(db, category_id)
         return or_(
             Product.category_id.in_(ids),
             Product.subcategory_id.in_(ids),
+            Product.product_id.in_(
+                select(ProductExtraCategory.product_id)
+                .where(ProductExtraCategory.subcategory_id.in_(ids))
+            ),
+        )
+
+    @staticmethod
+    def _subcategory_filter(subcategory_id: UUID):
+        """Products filed under *subcategory_id*, as their home or second shelf."""
+        return or_(
+            Product.subcategory_id == subcategory_id,
+            Product.product_id.in_(
+                select(ProductExtraCategory.product_id)
+                .where(ProductExtraCategory.subcategory_id == subcategory_id)
+            ),
         )
 
     @staticmethod
@@ -131,7 +148,7 @@ class ProductService:
             )
 
         if subcategory_id:
-            query = query.where(Product.subcategory_id == subcategory_id)
+            query = query.where(ProductService._subcategory_filter(subcategory_id))
 
         if is_featured is not None:
             query = query.where(Product.is_featured == is_featured)
@@ -747,7 +764,7 @@ class ProductService:
                 )
             query = query.where(or_(*on_promotion))
         if subcategory_id:
-            query = query.where(Product.subcategory_id == subcategory_id)
+            query = query.where(ProductService._subcategory_filter(subcategory_id))
         if is_featured is not None:
             query = query.where(Product.is_featured == is_featured)
         if min_price is not None:

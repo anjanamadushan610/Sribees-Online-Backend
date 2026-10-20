@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import Branch
 from app.models.category import BranchCategory, Category
-from app.models.product import BranchInventory, Product
+from app.models.product import BranchInventory, Product, ProductExtraCategory
 from app.schemas.category import CategoryCreate, CategoryUpdate
 from app.utils.i18n import DEFAULT_LANGUAGE, localized
 
@@ -29,7 +29,9 @@ class CategoryService:
         A product counts towards its category, its sub-category and that
         sub-category's parent, once each — the same set a category page
         lists (see ``ProductService._category_filter``), so the number on a
-        tile matches what tapping it shows.
+        tile matches what tapping it shows. A second shelf
+        (``product_extra_categories``) counts there as well; a product on two
+        shelves under one parent still counts once for that parent.
 
         *storefront* counts only what a customer can buy: active products,
         and with *branch_id* only those active and in stock in that branch.
@@ -50,6 +52,14 @@ class CategoryService:
                     BranchInventory.stock_quantity > 0,
                 )
         rows = (await db.execute(query)).all()
+        product_ids = query.with_only_columns(Product.product_id)
+        extra = (await db.execute(
+            select(ProductExtraCategory.product_id, ProductExtraCategory.subcategory_id)
+            .where(ProductExtraCategory.product_id.in_(product_ids))
+        )).all()
+        extra_by_product: Dict[UUID, set] = {}
+        for pid, sub_id in extra:
+            extra_by_product.setdefault(pid, set()).add(sub_id)
 
         parents = dict(
             (await db.execute(
@@ -58,8 +68,9 @@ class CategoryService:
             )).all()
         )
         counts: Dict[UUID, int] = {}
-        for _pid, category_id, subcategory_id in rows:
+        for pid, category_id, subcategory_id in rows:
             filed = {c for c in (category_id, subcategory_id) if c is not None}
+            filed |= extra_by_product.get(pid, set())
             filed |= {parents[c] for c in filed if c in parents}
             for c in filed:
                 counts[c] = counts.get(c, 0) + 1
