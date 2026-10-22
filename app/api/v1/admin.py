@@ -8,11 +8,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
+from redis.asyncio import Redis
 from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.database import get_db
+from app.config.redis import get_redis
 from app.core.dependencies import (
     BranchScope,
     get_current_admin,
@@ -25,7 +27,7 @@ from app.models.branch import Branch
 from app.models.category import Category
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.product import Product
-from app.models.user import Address, Session, User
+from app.models.user import Session, User
 from app.services import customer_insight_service
 from app.services.account_deletion_service import (
     accounts_sharing_nic,
@@ -1093,6 +1095,7 @@ async def unblock_customer(
 async def delete_customer(
     user_id: str,
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
     current_user = Depends(get_current_admin)
 ):
     try:
@@ -1126,22 +1129,11 @@ async def delete_customer(
         else:
             # The same closure a customer gets from the app, so the account
             # lands on the Deleted tab, its NIC is free for a new sign-up, and
-            # the name and history stay readable to admins. It used to rename
-            # the row "Deleted Account" without setting deleted_at, which left
-            # the NIC reserved and the person impossible to recognise.
-            # Only the addresses no order points at. An order's delivery
-            # address is part of its record (where the goods went), and the
-            # foreign key refused deleting it -- so this path failed with a
-            # 500 for every customer who had ever ordered.
-            await db.execute(
-                delete(Address).where(
-                    Address.user_id == user_uuid,
-                    ~select(Order.order_id)
-                    .where(Order.delivery_address_id == Address.address_id)
-                    .exists(),
-                )
-            )
-            await close_account(db, user_uuid, reason="Deleted by an admin")
+            # the history stays readable to admins through the NIC. It used to
+            # rename the row "Deleted Account" without setting deleted_at,
+            # which left the NIC reserved and the person impossible to
+            # recognise.
+            await close_account(db, user_uuid, reason="Deleted by an admin", redis=redis)
             return {
                 "success": True,
                 "message": "User account closed. Order history preserved for accounting."

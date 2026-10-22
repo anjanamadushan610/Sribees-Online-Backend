@@ -31,12 +31,17 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/health"),
     ("GET", "/api"),
     ("GET", "/.well-known/assetlinks.json"),
+    # The iOS twin of assetlinks: Universal Links for the same /p/ links.
+    ("GET", "/.well-known/apple-app-site-association"),
+    ("GET", "/apple-app-site-association"),
     ("GET", "/p/{product_id}"),
     # The share picture for that link: what WhatsApp and Facebook fetch.
     ("GET", "/p/{product_id}/share.jpg"),
     # Store-listing legal pages: Play requires them reachable without sign-in.
     ("GET", "/privacy"),
     ("GET", "/account-deletion"),
+    # App Store support URL: how to reach us, no account needed.
+    ("GET", "/support"),
     # --- sign-in / sign-up ---------------------------------------------------
     # Customers: phone OTP, Google or Apple only; no email/password (2026-09-25).
     ("POST", "/api/v1/auth/phone/request-otp"),

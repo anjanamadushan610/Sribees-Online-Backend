@@ -382,6 +382,10 @@ class SocialLoginRequest(BaseModel):
     id_token: str = Field(..., min_length=20, max_length=8192)
     nonce: Optional[str] = Field(default=None, max_length=256)
     full_name: Optional[str] = Field(default=None, max_length=200)
+    # Apple only: the one-time authorization code from the same sign-in. The
+    # server trades it for the refresh token it revokes when the account is
+    # closed (App Store 5.1.1(v)). Optional: sign-in works without it.
+    authorization_code: Optional[str] = Field(default=None, max_length=2048)
 
 
 class PhoneChangeStatusResponse(BaseModel):

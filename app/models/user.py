@@ -200,6 +200,11 @@ class User(Base):
     # on it is partial.
     auth_provider: Optional[str] = Column(String(20), nullable=True)
     provider_uid: Optional[str] = Column(String(128), nullable=True, index=True)
+    # Sign in with Apple only: the refresh token Apple issued for this account
+    # and the client it was issued to. Kept for one purpose -- revoking it when
+    # the account is closed (app/services/apple_tokens.py). Never returned.
+    apple_refresh_token: Optional[str] = Column(Text, nullable=True)
+    apple_client_id: Optional[str] = Column(String(255), nullable=True)
 
     # --- Account closure (Google Play requires an in-app delete) ------------
     #

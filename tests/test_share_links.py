@@ -109,6 +109,41 @@ async def test_assetlinks_empty_when_unconfigured(client, monkeypatch):
     assert r.json() == []
 
 
+@pytest.mark.asyncio
+async def test_apple_app_site_association_names_the_ios_app(client, monkeypatch):
+    monkeypatch.setattr(settings, "apple_team_id", "S92FL624YV")
+    monkeypatch.setattr(settings, "apple_bundle_id", "com.sribeesonline.sribeesMobile")
+
+    async with client as c:
+        r = await c.get("/.well-known/apple-app-site-association")
+
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    [detail] = r.json()["applinks"]["details"]
+    assert detail["appIDs"] == ["S92FL624YV.com.sribeesonline.sribeesMobile"]
+    assert detail["components"][0]["/"] == "/p/*"
+
+
+@pytest.mark.asyncio
+async def test_apple_app_site_association_claims_nothing_half_configured(client, monkeypatch):
+    monkeypatch.setattr(settings, "apple_team_id", "S92FL624YV")
+    monkeypatch.setattr(settings, "apple_bundle_id", "")
+
+    async with client as c:
+        r = await c.get("/apple-app-site-association")
+
+    assert r.json() == {"applinks": {"details": []}}
+
+
+@pytest.mark.asyncio
+async def test_support_page_is_public(client):
+    async with client as c:
+        r = await c.get("/support")
+
+    assert r.status_code == 200
+    assert "support@sribeesonline.com" in r.text
+
+
 def _stub_branch(monkeypatch, branch):
     seen = []
 
