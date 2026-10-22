@@ -15,7 +15,7 @@ Rates come from settings and are snapshotted onto each commission row by
 ``ReferralService``, so changing them never rewrites history.
 """
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID, uuid4
@@ -48,6 +48,19 @@ _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 # account does not answer measurably faster than a wrong password. Computed
 # once at import; the value it encodes is irrelevant and never matches.
 _DUMMY_HASH = hash_password(secrets.token_urlsafe(32))
+
+
+def password_stamp(partner: Partner) -> int:
+    """
+    Which password a token was issued under (the ``pwv`` claim): microseconds
+    of ``password_changed_at``, 0 if it never changed. Exact, unlike ``iat``,
+    which is whole seconds and would let a token from the second of the
+    change survive it.
+    """
+    changed = partner.password_changed_at
+    if changed is None:
+        return 0
+    return (changed - datetime(1970, 1, 1, tzinfo=timezone.utc)) // timedelta(microseconds=1)
 
 
 def _money(value: Decimal) -> Decimal:
@@ -306,6 +319,7 @@ class PartnerService:
             partner.phone = fields["phone"].strip() if fields["phone"] else None
         if fields.get("password"):
             partner.password_hash = hash_password(fields["password"])
+            partner.password_changed_at = datetime.now(timezone.utc)
         if "is_active" in fields and fields["is_active"] is not None:
             partner.is_active = fields["is_active"]
 

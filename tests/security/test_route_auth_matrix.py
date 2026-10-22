@@ -50,6 +50,11 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("POST", "/api/v1/admin/auth/login"),
     ("POST", "/api/v1/admin/auth/refresh"),
     ("POST", "/api/v1/partner/auth/login"),
+    # Forgot password: no login by definition. Same answer for unknown emails,
+    # 60 s cooldown, 5 wrong guesses burn the code (partner_password_reset).
+    ("POST", "/api/v1/partner/auth/forgot-password"),
+    ("POST", "/api/v1/partner/auth/verify-otp"),
+    ("POST", "/api/v1/partner/auth/reset-password"),
     # --- signed or static callbacks -----------------------------------------
     ("POST", "/api/v1/payments/webhook"),  # Stripe signature, see test_webhooks
     ("GET", "/api/v1/payments/marx/return"),  # static "return to the app" page

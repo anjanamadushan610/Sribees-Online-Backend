@@ -196,6 +196,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     AUTH_PATHS = {
         "/api/v1/admin/auth/login",
         "/api/v1/partner/auth/login",
+        "/api/v1/partner/auth/forgot-password",
+        "/api/v1/partner/auth/verify-otp",
+        "/api/v1/partner/auth/reset-password",
     }
 
     # Endpoints to skip rate limiting

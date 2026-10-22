@@ -240,6 +240,13 @@ async def get_current_partner(
     if not partner.is_active:
         raise AuthenticationError(message="Partner account is deactivated")
 
+    # A password change (reset or admin edit) ends every earlier session: the
+    # token carries the stamp of the password it was issued under.
+    from app.services.partner_service import password_stamp
+
+    if payload.get("pwv", 0) != password_stamp(partner):
+        raise InvalidTokenError(message="Session has been revoked or expired")
+
     return partner
 
 
