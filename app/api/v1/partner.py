@@ -2,6 +2,8 @@
 Partner Portal API — the professional referral team.
 
   POST /partner/auth/login   — separate login, refuses admin/customer accounts
+  POST /partner/auth/forgot-password, /verify-otp, /reset-password
+                             — reset by an emailed code (partner_password_reset)
   GET  /partner/me           — profile, code, commission totals by level
   GET  /partner/customers    — customers this partner signed up
   GET  /partner/recruits     — sub-partners, and the level-2 they generate
@@ -17,18 +19,46 @@ it is served as a separate frontend.
 
 Prefix "/partner" is applied by app/api/v1/router.py.
 """
+import re
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from loguru import logger
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
+from app.config.redis import get_redis
 from app.config.settings import settings
-from app.core.dependencies import get_current_partner
+from app.core.dependencies import get_client_ip, get_current_partner
 from app.core.security import create_access_token
-from app.schemas.partner import PartnerCreateRequest, PartnerLoginRequest
-from app.services.partner_service import PartnerEmailTakenError, PartnerService
+from app.schemas.partner import (
+    PartnerCreateRequest,
+    PartnerForgotPasswordRequest,
+    PartnerLoginRequest,
+    PartnerResetPasswordRequest,
+    PartnerVerifyOtpRequest,
+)
+from app.services import email_sender
+from app.services.partner_password_reset import (
+    CODE_TTL_SECONDS,
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
+    PartnerPasswordReset,
+    reset_error,
+)
+from app.services.partner_service import (
+    PartnerEmailTakenError,
+    PartnerService,
+    password_stamp,
+)
 from app.services.referral_commission import CommissionRateResolver
 from app.services.referral_commission.presenter import offer_text
 
@@ -73,6 +103,7 @@ async def partner_login(
             "sub": str(partner.partner_id),
             "email": partner.email,
             "is_partner": True,
+            "pwv": password_stamp(partner),
         },
         expires_delta=timedelta(minutes=settings.jwt_access_token_expire_minutes),
     )
@@ -88,6 +119,105 @@ async def partner_login(
                 "fullName": partner.full_name,
             },
         },
+    }
+
+
+# ============================================================================
+# POST /auth/forgot-password, /auth/verify-otp, /auth/reset-password
+# ============================================================================
+
+# Shape only. Deliberately looser than email-validator: login accepts any
+# stored address, so the reset must not refuse one login takes.
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _valid_email(raw: str) -> str:
+    email = raw.strip().lower()
+    if not _EMAIL_SHAPE.match(email):
+        raise reset_error(
+            status.HTTP_400_BAD_REQUEST, "Invalid email address format.", "INVALID_EMAIL"
+        )
+    return email
+
+
+@router.post("/auth/forgot-password", response_model=dict)
+async def partner_forgot_password(
+    body: PartnerForgotPasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """
+    Email a 6-digit reset code.
+
+    The same answer whether or not the email belongs to a partner, and the
+    mail goes out after the response, so this cannot be used to find out who
+    the partners are. Only the cooldown and hourly caps refuse (429).
+    """
+    email = _valid_email(body.email)
+    if not email_sender.is_configured():
+        raise reset_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Password reset by email is not available right now. Please contact support.",
+            "EMAIL_UNAVAILABLE",
+        )
+
+    await PartnerPasswordReset.request_code(db, redis, email, client_ip=get_client_ip(request))
+
+    return {
+        "success": True,
+        "message": "Verification code has been sent to your email address.",
+        "data": {"email": email, "expires_in": CODE_TTL_SECONDS},
+    }
+
+
+@router.post("/auth/verify-otp", response_model=dict)
+async def partner_verify_otp(
+    body: PartnerVerifyOtpRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Check the code; the reset token it returns is good for 10 minutes."""
+    token = await PartnerPasswordReset.verify(db, redis, _valid_email(body.email), body.otp)
+    return {
+        "success": True,
+        "message": "OTP verified successfully.",
+        "data": {"reset_token": token},
+    }
+
+
+@router.post("/auth/reset-password", response_model=dict)
+async def partner_reset_password(
+    body: PartnerResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    """Set the new password. Every token issued before this stops working."""
+    email = _valid_email(body.email)
+    password = body.new_password
+    if len(password) > PASSWORD_MAX_LENGTH:
+        raise reset_error(
+            status.HTTP_400_BAD_REQUEST,
+            f"Password must be at most {PASSWORD_MAX_LENGTH} characters.",
+            "INVALID_PASSWORD",
+        )
+    if (
+        password != body.confirm_password
+        or len(password) < PASSWORD_MIN_LENGTH
+        or not password.strip()
+    ):
+        raise reset_error(
+            status.HTTP_400_BAD_REQUEST,
+            "Passwords do not match or password must be at least 8 characters.",
+            "INVALID_PASSWORD",
+        )
+
+    await PartnerPasswordReset.reset(
+        db, redis, email, password, reset_token=body.reset_token, code=body.otp
+    )
+    return {
+        "success": True,
+        "message": "Password has been reset successfully. Please login with your new password.",
     }
 
 

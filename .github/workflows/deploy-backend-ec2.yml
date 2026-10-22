@@ -158,14 +158,21 @@ jobs:
           # secrets only so they live next to the rest of the config.
           GOOGLE_CLIENT_IDS: ${{ secrets.GOOGLE_CLIENT_IDS }}
           APPLE_SERVICES_ID: ${{ secrets.APPLE_SERVICES_ID }}
-          # Native iOS Apple tokens use the app Bundle ID as their audience.
-          APPLE_BUNDLE_ID: com.sribeesonline.sribeesMobile
+          # The iOS app: Apple identity tokens from the native sheet name the
+          # bundle ID. Public; the default is the App Store app.
+          APPLE_BUNDLE_ID: ${{ secrets.APPLE_BUNDLE_ID || 'com.sribeesonline.sribeesMobile' }}
+          # Sign in with Apple key: revokes Apple sign-ins when an account is
+          # closed (App Store 5.1.1(v)) and names the app in
+          # apple-app-site-association. The .p8 is escaped to one line below.
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
+          APPLE_PRIVATE_KEY: ${{ secrets.APPLE_PRIVATE_KEY }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON,OTP_TEST_PHONES,SMOKE_ADMIN_EMAIL,SMOKE_ADMIN_PASSWORD,SMS_PROVIDER,TEXTLK_API_TOKEN,TEXTLK_SENDER_ID,GOOGLE_CLIENT_IDS,APPLE_SERVICES_ID,APPLE_BUNDLE_ID
+          envs: COMPOSE_B64,ENV_CONTENT,REGISTRY_USERNAME,REGISTRY_TOKEN,DOCKER_IMAGE,MARX_IPG_API_KEY,MARX_IPG_BASE_URL,MARX_IPG_RETURN_URL,MARX_GATEWAY_METHODS_ENABLED,FIREBASE_CREDENTIALS_JSON,OTP_TEST_PHONES,SMOKE_ADMIN_EMAIL,SMOKE_ADMIN_PASSWORD,SMS_PROVIDER,TEXTLK_API_TOKEN,TEXTLK_SENDER_ID,GOOGLE_CLIENT_IDS,APPLE_SERVICES_ID,APPLE_BUNDLE_ID,APPLE_TEAM_ID,APPLE_KEY_ID,APPLE_PRIVATE_KEY
           # MUST stay false. script_stop makes the action test every command's
           # exit status itself and return on the first non-zero one. That check
           # sits outside bash, so it ignores `set +e` AND the rule that a
@@ -277,8 +284,12 @@ jobs:
               echo "SMOKE_ADMIN_PASSWORD=${SMOKE_ADMIN_PASSWORD}" >> .env
             fi
             # SMS gateway and sign-in client IDs. Same pattern; a value is never echoed.
-            for key in SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID APPLE_BUNDLE_ID; do
+            for key in SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID APPLE_BUNDLE_ID APPLE_TEAM_ID APPLE_KEY_ID APPLE_PRIVATE_KEY; do
               value=$(printenv "$key" || true)
+              if [ "$key" = "APPLE_PRIVATE_KEY" ] && [ -n "$value" ]; then
+                # A .p8 spans lines; the .env wants one. Settings unescape it.
+                value=$(printf '%s' "$value" | tr -d '\r' | awk 'BEGIN { ORS = "\\n" } { print }')
+              fi
               if [ -n "$value" ]; then
                 grep -v "^${key}=" .env > .env.tmp || true
                 mv .env.tmp .env

@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import settings
 from app.models.user import User
+from app.services import apple_tokens
 
 
 class SocialAuthError(Exception):
@@ -113,7 +114,7 @@ async def _verify(provider: str, id_token: str, nonce: Optional[str] = None) -> 
     """
     The verified identity, or an error. Never trusts the request body.
 
-    Returns ``{"uid", "email", "email_verified", "name"}``. ``uid`` is
+    Returns ``{"uid", "email", "email_verified", "name", "aud"}``. ``uid`` is
     namespaced by provider ("google:<sub>", "apple:<sub>"): the two providers'
     subject ids are separate spaces and must never be able to meet.
     """
@@ -126,6 +127,9 @@ async def _verify(provider: str, id_token: str, nonce: Optional[str] = None) -> 
         "email": email,
         "email_verified": bool(email) and _truthy(claims.get("email_verified")),
         "name": (claims.get("name") or "").strip(),
+        # Which of our clients the token was issued to (bundle ID or Services
+        # ID): Apple's token endpoints want the same one back.
+        "aud": claims["aud"] if isinstance(claims["aud"], str) else claims["aud"][0],
     }
 
 
@@ -136,6 +140,7 @@ async def sign_in(
     *,
     nonce: Optional[str] = None,
     full_name: Optional[str] = None,
+    authorization_code: Optional[str] = None,
 ) -> tuple[User, bool]:
     """
     Find or create the account behind a verified Google/Apple token.
@@ -195,6 +200,7 @@ async def sign_in(
         # auth_service writes it). An aware value is refused by asyncpg, which
         # made every returning Google/Apple sign-in a 500.
         existing.last_login = datetime.utcnow()
+        await _keep_apple_token(existing, provider, identity, authorization_code)
         await db.commit()
         await db.refresh(existing)
         return existing, False
@@ -217,8 +223,26 @@ async def sign_in(
         phone=None,
         password_hash=None,
     )
+    await _keep_apple_token(user, provider, identity, authorization_code)
     db.add(user)
     await db.commit()
     await db.refresh(user)
     logger.info(f"New account from {provider} sign-in: {user.user_id}")
     return user, True
+
+
+async def _keep_apple_token(
+    user: User, provider: str, identity: dict, authorization_code: Optional[str]
+) -> None:
+    """
+    Trade an Apple sign-in's authorization code for the refresh token that
+    closing the account will revoke. Only after the identity token verified:
+    a code is worth nothing without it. A failed exchange keeps whatever the
+    account already holds and never fails the sign-in.
+    """
+    if provider != "apple" or not authorization_code:
+        return
+    refresh = await apple_tokens.exchange_code(authorization_code, identity["aud"])
+    if refresh:
+        user.apple_refresh_token = refresh
+        user.apple_client_id = identity["aud"]

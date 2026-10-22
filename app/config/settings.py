@@ -240,8 +240,10 @@ class Settings(BaseSettings):
     # =========================================================================
     # Email Settings
     # =========================================================================
-    mail_from: str = Field(default="noreply@sribeesonline.lk", description="From email address")
-    mail_from_name: str = Field(default="SRIBEESonline", description="From name")
+    # Used only by app/services/email_sender.py (partner password reset).
+    # Until MAIL_USERNAME and MAIL_PASSWORD are set, no mail goes out.
+    mail_from: str = Field(default="noreply@sribeesonline.com", description="From email address")
+    mail_from_name: str = Field(default="Sribees Online", description="From name")
     mail_server: str = Field(default="smtp.gmail.com", description="SMTP server")
     mail_port: int = Field(default=587, description="SMTP port")
     mail_username: str = Field(default="", description="SMTP username")
@@ -637,6 +639,17 @@ class Settings(BaseSettings):
     # app, its bundle ID. Either may be the audience of an Apple identity token.
     apple_services_id: str = Field(default="", description="Sign in with Apple Services ID")
     apple_bundle_id: str = Field(default="", description="iOS bundle ID (when an iOS app exists)")
+    # The Sign in with Apple key. Only needed to talk to Apple on the user's
+    # behalf -- turning a sign-in's authorization code into a refresh token,
+    # and revoking that token when the account is closed (App Store 5.1.1(v)).
+    # Verifying an identity token needs none of it. The team ID also names
+    # the app in apple-app-site-association.
+    apple_team_id: str = Field(default="", description="Apple Developer Team ID")
+    apple_key_id: str = Field(default="", description="Sign in with Apple key ID (.p8)")
+    apple_private_key: str = Field(
+        default="",
+        description="Sign in with Apple .p8 contents; newlines may be escaped",
+    )
     # Where Apple's Android web flow hands the result back to the app.
     android_package: str = Field(default="com.sribeesonline.sribees_mobile")
 

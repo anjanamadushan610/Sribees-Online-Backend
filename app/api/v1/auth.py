@@ -409,9 +409,11 @@ async def request_account_deletion_otp(
     response_model=MessageResponse,
     summary="Close this account",
     description=(
-        "Verifies the code and closes the account. The login, the phone "
-        "numbers, the email and every push token go. Order history, the "
-        "wallet ledger and the NIC stay: those are financial records with "
+        "Verifies the code and closes the account. The login, the name, the "
+        "phone numbers, the email, saved addresses, wishlist, inbox, support "
+        "tickets, AI assistant data and every push token go; Sign in with "
+        "Apple is revoked at Apple. Order history, the wallet ledger and the "
+        "NIC stay for five years: those are financial records with "
         "obligations attached, and they belong to the transaction rather "
         "than to the account."
     ),
@@ -440,7 +442,7 @@ async def confirm_account_deletion(
         raise invalid_code_error(_lang(request))
 
     try:
-        await close_account(db, current_user.user_id, reason=data.reason)
+        await close_account(db, current_user.user_id, reason=data.reason, redis=redis)
     except AccountDeletionError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
@@ -478,7 +480,12 @@ async def social_login(
 
     try:
         user, created = await sign_in(
-            db, data.provider, data.id_token, nonce=data.nonce, full_name=data.full_name
+            db,
+            data.provider,
+            data.id_token,
+            nonce=data.nonce,
+            full_name=data.full_name,
+            authorization_code=data.authorization_code,
         )
     except SocialAuthError as exc:
         # 401, not 400: the token is a credential, and a rejected credential

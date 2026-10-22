@@ -5,7 +5,9 @@ Mounted at the site root (not under /api), same reasoning as share_links.py:
 this needs one exact, stable URL to paste into the Play Console / App Store
 listing, not something namespaced under /api/v1 that could move.
 
-  GET /privacy — Privacy Policy (public, no auth).
+  GET /privacy          — Privacy Policy (public, no auth).
+  GET /account-deletion — what closing an account removes and what is kept.
+  GET /support          — the App Store support URL: how to reach us.
 
 Static HTML, not app_content-driven: a store-listing legal URL must not 404
 or go blank because of an app_content row being deactivated or unseeded, and
@@ -34,7 +36,7 @@ _PRIVACY_HTML = """<!doctype html>
 </head>
 <body>
 <h1>Privacy Policy</h1>
-<p class="meta">Sribees Online &middot; Effective 29 September 2026</p>
+<p class="meta">Sribees Online &middot; Effective 22 October 2026</p>
 
 <p>Sribees Digitel Solutions (the software arm of Sribees Lanka (Pvt) Ltd,
 "Sribees", "we", "us") operates the Sribees Online app and website. This
@@ -60,6 +62,14 @@ your order.</li>
 requesting a return or when messaging our support chat. You choose the
 photo yourself via your phone's photo picker or camera each time; we do not
 access your photo library beyond the single photo you pick.</li>
+<li><strong>AI shopping assistant:</strong> if you use the in-app
+assistant, the messages you type and any photo you choose to send it (for
+example, a photo of an empty spice jar) are used to answer you. Your recent
+conversation is kept for 7 days so the assistant can follow it, then
+deleted automatically. Photos sent to the assistant are not stored by us.
+Preferences you explicitly ask it to remember (favourite brands, ingredients
+to avoid, household size, budget) and reminders you set are kept until you
+ask it to forget them or close your account.</li>
 <li><strong>Support messages:</strong> messages you send in the in-app
 support/help chat, including any support ticket you raise and the contact
 number you give on it.</li>
@@ -97,6 +107,10 @@ instructions:</p>
 and bank payments.</li>
 <li><strong>Google (Firebase)</strong> &mdash; to deliver push notifications
 and, if you choose, Google Sign-In.</li>
+<li><strong>Google (Gemini API)</strong> &mdash; to understand and answer
+messages and photos you send to the AI shopping assistant. We use Google's
+paid API service, under which Google does not use this content to train or
+improve its models.</li>
 <li><strong>Apple</strong> &mdash; only if you choose Sign in with Apple.</li>
 <li><strong>Sentry</strong> &mdash; crash and error reporting, configured to
 exclude personal data by default.</li>
@@ -105,16 +119,23 @@ messages.</li>
 <li>Delivery riders/branches, limited to what is needed to deliver your
 order (name, phone, address).</li>
 </ul>
+<p>We do not use your information for advertising, we do not track you
+across other companies' apps or websites, and the app contains no
+advertising SDKs.</p>
 <p>We may also disclose information if required by Sri Lankan law or to
 protect the rights, property, or safety of Sribees, our customers, or the
 public.</p>
 
 <h2>Data retention</h2>
-<p>We keep account and order data for as long as your account is active,
-and afterwards for as long as needed to meet our legal, tax, and accounting
-obligations. If you ask us to delete your account, we deactivate it and
-stop using your data for new purposes; some records (such as completed
-orders and payment records) are retained as required by law.</p>
+<p>We keep account and order data for as long as your account is active.
+If you delete your account, we remove your profile and personal data
+straight away and keep only the records we are required to keep &mdash;
+your NIC, past orders (with the delivery address and contact number used
+for them) and payment and wallet records &mdash; for five years after the
+account is closed, to meet tax, accounting and delivery-dispute obligations.
+They are not used for marketing or any other new purpose. See
+<a href="/account-deletion">Account &amp; Data Deletion</a> for the full
+list.</p>
 
 <h2>Your choices</h2>
 <ul>
@@ -122,7 +143,8 @@ orders and payment records) are retained as required by law.</p>
 preferences at any time in the app under Profile &gt; Settings.</li>
 <li>You can turn off promotional/marketing notifications while still
 receiving order and delivery updates.</li>
-<li>You can delete your account at any time, in-app or by web request &mdash;
+<li>You can delete your account at any time, in-app (Profile &gt; Settings
+&gt; Delete Account) or by email &mdash;
 see <a href="/account-deletion">Account &amp; Data Deletion</a> for what is
 removed and what we are required to keep.</li>
 </ul>
@@ -201,17 +223,21 @@ on file to confirm the request before deleting anything.</p>
 
 <div class="box">
 <h2 style="margin-top:0; border-bottom:none;">What is removed</h2>
-<p>Your profile (name, NIC, email), saved addresses, wishlist, saved payment
-preferences, push notification token, and support chat history. You are
-signed out everywhere and cannot sign in again with that phone number or
-email — both are released and may be used to open a new account.</p>
+<p>Straight away: your name, phone numbers and email, saved addresses,
+wishlist, notifications inbox, cart, support tickets, the AI assistant's
+chat history, saved preferences and reminders, and your push notification
+token. You are signed out everywhere. If you signed in with Google or Apple,
+that link is removed, and Sign in with Apple is also revoked with Apple.
+Your phone number, email and Google or Apple account are released and may
+be used to open a new account.</p>
 
-<h2>What we are required to keep</h2>
-<p>Your past orders and payment records stay in our records. Sri Lankan tax,
-accounting, and delivery-dispute rules require us to keep them for a period
-even after account closure. They are no longer linked to an account you (or
-anyone) can sign in to, and are not used for marketing or any other new
-purpose.</p>
+<h2>What we are required to keep, for five years</h2>
+<p>Your NIC, your past orders (including the delivery address and contact
+number each was sent to), and payment and wallet records stay in our
+records for five years after the account is closed. Sri Lankan tax,
+accounting, and delivery-dispute rules require us to keep them. They are no
+longer linked to an account you (or anyone) can sign in to, and are not
+used for marketing or any other new purpose.</p>
 </div>
 
 <p>See the full <a href="/privacy">Privacy Policy</a> for more detail on
@@ -225,3 +251,51 @@ what we collect and why. Questions: <a href="mailto:support@sribeesonline.com">s
 @router.get("/account-deletion", response_class=HTMLResponse, include_in_schema=False)
 async def account_deletion() -> HTMLResponse:
     return HTMLResponse(content=_ACCOUNT_DELETION_HTML)
+
+
+_SUPPORT_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support - Sribees Online</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; color: #1a1a2e; line-height: 1.6; }
+  h1 { font-size: 26px; margin-bottom: 4px; }
+  .meta { color: #6b6b80; font-size: 14px; margin-bottom: 32px; }
+  h2 { font-size: 18px; margin-top: 32px; border-bottom: 1px solid #eee; padding-bottom: 6px; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  a { color: #c2185b; }
+</style>
+</head>
+<body>
+<h1>Support</h1>
+<p class="meta">Sribees Online</p>
+
+<p>Need help with an order, a delivery, a return or your account? We're
+here to help.</p>
+
+<h2>Contact us</h2>
+<ul>
+<li><strong>Email:</strong> <a href="mailto:support@sribeesonline.com">support@sribeesonline.com</a></li>
+<li><strong>In the app:</strong> open <strong>Help &amp; Support</strong> and raise a
+support ticket. Please include your order number if it is about an
+order.</li>
+</ul>
+
+<h2>Your account and data</h2>
+<ul>
+<li><a href="/account-deletion">Delete your account</a> &mdash; in the app
+or by email.</li>
+<li><a href="/privacy">Privacy Policy</a> &mdash; what we collect and
+why.</li>
+</ul>
+</body>
+</html>
+"""
+
+
+@router.get("/support", response_class=HTMLResponse, include_in_schema=False)
+async def support() -> HTMLResponse:
+    return HTMLResponse(content=_SUPPORT_HTML)
