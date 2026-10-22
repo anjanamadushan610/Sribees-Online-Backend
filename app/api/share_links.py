@@ -6,6 +6,9 @@ exact, stable URLs:
 
   GET /.well-known/assetlinks.json  — Digital Asset Links proof that the app
                                       owns this host (enables autoVerify).
+  GET /.well-known/apple-app-site-association
+                                    — the iOS equivalent: lets the iPhone app
+                                      open /p/... links (Universal Links).
   GET /p/{product_id}?b={branch_id} — The link shoppers share on WhatsApp etc.
                                       ``b`` is the sharer's branch, shown as
                                       "from the Kandy branch" here and in the app.
@@ -139,6 +142,29 @@ async def asset_links():
         )
     return JSONResponse(
         statements,
+        headers={"Cache-Control": f"public, max-age={_SHARE_CACHE_SECONDS}"},
+    )
+
+
+@router.get("/.well-known/apple-app-site-association")
+@router.get("/apple-app-site-association", include_in_schema=False)
+async def apple_app_site_association():
+    """
+    Universal Links: the iPhone app (Team ID + bundle ID) may open product
+    share links itself. Apple fetches this over HTTPS with no redirects and
+    wants JSON with no file extension. Empty until both IDs are configured,
+    so a half-set config claims no app.
+    """
+    details = []
+    if settings.apple_team_id and settings.apple_bundle_id:
+        details.append(
+            {
+                "appIDs": [f"{settings.apple_team_id}.{settings.apple_bundle_id}"],
+                "components": [{"/": "/p/*", "comment": "Product share links"}],
+            }
+        )
+    return JSONResponse(
+        {"applinks": {"details": details}},
         headers={"Cache-Control": f"public, max-age={_SHARE_CACHE_SECONDS}"},
     )
 

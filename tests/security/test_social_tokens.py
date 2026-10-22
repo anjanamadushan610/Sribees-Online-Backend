@@ -73,6 +73,7 @@ async def test_a_real_google_token_proves_who_it_is():
         "email": "nimal@example.com",
         "email_verified": True,
         "name": "Nimal Perera",
+        "aud": WEB_CLIENT,
     }
 
 
@@ -80,6 +81,8 @@ async def test_a_real_apple_token_with_its_nonce():
     who = await social._verify("apple", _token("apple", nonce=_hashed("raw-1")), nonce="raw-1")
     assert who["uid"] == "apple:1098765"
     assert who["email_verified"] is True, "Apple says \"true\" as a string"
+    # Apple's token endpoints want back the client the token was issued to.
+    assert who["aud"] == SERVICES_ID
 
 
 @pytest.mark.parametrize(

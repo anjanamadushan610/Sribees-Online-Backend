@@ -124,6 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.payments.worker import run_payment_worker
     from app.services.app_content_service import run_content_watcher
     from app.services.assistant_reminder_worker import run_reminder_worker
+    from app.services.apple_revocation_worker import run_apple_revocation_worker
     from app.services.campaign_service import run_campaign_worker
     from app.services.courier_coverage_worker import run_postal_city_worker
     from app.services.order_reward_worker import run_order_reward_worker
@@ -137,6 +138,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # the one failure nobody reports as a bug.
     background = [
         asyncio.create_task(run_reminder_worker()),
+        asyncio.create_task(run_apple_revocation_worker()),
         asyncio.create_task(run_referral_vesting_worker()),
         asyncio.create_task(run_order_reward_worker()),
         asyncio.create_task(run_return_settlement_worker()),

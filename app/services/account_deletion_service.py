@@ -11,33 +11,47 @@ or ran up referral clawbacks could close, reopen, and arrive clean — and the
 cancellation review screen would greet them as a first-time customer every
 time. The row stays, the NIC stays, and the history stays attached to it.
 
-**What actually goes,** and it is not nothing:
+**What actually goes:**
 
   * the account cannot be logged into, by any route
-  * the phone numbers and the email are released to NULL, so the person can
-    sign up again and so those numbers are free for whoever holds them next
-  * every push token is deleted, so no notification can reach a closed account
-  * every session is revoked, so a live token cannot outlive the account
+  * the name, the phone numbers and the email are released, so the person
+    can sign up again and those numbers are free for whoever holds them next
+  * saved addresses no order points at, the wishlist, the inbox, the AI
+    assistant's saved preferences, reminders and receipts, support tickets,
+    the AI chat history and the cart
+  * a Google/Apple link, so the same Apple ID or Google account can open a
+    fresh account; Sign in with Apple is also revoked at Apple (App Store
+    5.1.1(v))
+  * every push token and every session
 
-**What stays:** the NIC, the orders, the wallet ledger, the cancellation
-record. Orders are financial records with tax and courier obligations attached
-— they belong to the transaction, not to the account. A customer asking for
-deletion is asking to stop being a user, not to un-buy things.
+**What stays, for five years after closure** (the owner's retention period,
+2026-10-22): the NIC, the orders with the delivery address and contact number
+they were sent to, the wallet ledger and payment records, the cancellation
+record. Orders are financial records with tax and courier obligations
+attached -- they belong to the transaction, not to the account. A customer
+asking for deletion is asking to stop being a user, not to un-buy things.
 
 This is a defensible position under data-protection law (a legal obligation to
 retain transaction records), but it is a position worth being able to explain,
 so the app says plainly what is kept and why before anyone confirms.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import Select, delete, select
+from sqlalchemy import Select, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.notification import PushToken
-from app.models.user import User
+from app.config.redis import RedisKeys
+from app.models.app_usage import AppInstall, AppUsageDay
+from app.models.assistant import AssistantProfile, AssistantReceipt, AssistantReminder
+from app.models.notification import Notification, PushToken
+from app.models.order import Order
+from app.models.support_ticket import SupportTicket
+from app.models.user import Address, User
+from app.models.wishlist import WishlistItem
+from app.services import apple_tokens
 
 
 class AccountDeletionError(Exception):
@@ -49,6 +63,7 @@ async def close_account(
     user_id: UUID,
     *,
     reason: Optional[str] = None,
+    redis=None,
 ) -> User:
     """
     Close an account: release its identity, revoke its access, keep its record.
@@ -79,7 +94,56 @@ async def close_account(
     user.email = None
     user.alternate_phone = None
 
+    # The name goes too (full_name is NOT NULL, so empty). Orders keep their
+    # delivery address, whose recipient name is what a dispute needs.
+    user.full_name = ""
+    user.first_name = None
+    user.last_name = None
+
+    # Closing must not depend on Apple's availability. Keep a failed token
+    # only for the durable revocation worker; never discard the retry proof.
+    if user.apple_refresh_token:
+        revoked = await apple_tokens.revoke(user.apple_refresh_token, user.apple_client_id or "")
+        if revoked:
+            user.apple_refresh_token = None
+            user.apple_client_id = None
+            user.apple_revocation_retry_at = None
+        else:
+            user.apple_revocation_retry_at = now + timedelta(minutes=5)
+            logger.warning("Apple revocation pending; durable retry scheduled")
+    else:
+        user.apple_client_id = None
+        user.apple_revocation_retry_at = None
+
+    # Release the Google/Apple link. Left set, signing in with the same Apple
+    # ID would find this closed row and refuse, so the person could never
+    # come back that way. The NIC carries the history to a new account.
+    user.provider_uid = None
+
     # The NIC stays. It is the whole reason this is a soft delete.
+
+    # Personal data with no record-keeping duty. An address an order points
+    # at is part of that order (where the goods went) and stays with it.
+    await db.execute(
+        delete(Address).where(
+            Address.user_id == user_id,
+            ~select(Order.order_id)
+            .where(Order.delivery_address_id == Address.address_id)
+            .exists(),
+        )
+    )
+    for model in (
+        WishlistItem,
+        Notification,
+        AssistantProfile,
+        AssistantReminder,
+        AssistantReceipt,
+        SupportTicket,
+    ):
+        await db.execute(delete(model).where(model.user_id == user_id))
+    # Usage counts stay (they are totals); they just stop naming anyone.
+    for model in (AppInstall, AppUsageDay):
+        await db.execute(update(model).where(model.user_id == user_id).values(user_id=None))
 
     user.deleted_at = now
     user.deletion_reason = (reason or "").strip()[:500] or None
@@ -109,6 +173,22 @@ async def close_account(
 
     await db.commit()
     await db.refresh(user)
+
+    # The AI chat history and the cart live in Redis, keyed by the user.
+    if redis is not None:
+        uid = str(user_id)
+        try:
+            await redis.delete(
+                RedisKeys.chat_history(uid),
+                RedisKeys.cart(uid),
+                RedisKeys.cart_items(uid),
+                RedisKeys.wishlist(uid),
+                RedisKeys.wishlist_details(uid),
+                RedisKeys.branch_context(uid),
+            )
+        except Exception:
+            logger.warning(f"Could not clear Redis data for closed account {user_id}")
+
     logger.info(f"Account closed: {user_id}")
     return user
 
