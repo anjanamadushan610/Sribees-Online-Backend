@@ -172,6 +172,7 @@ async def test_sign_in_without_a_code_still_works(api, db, apple):
 
 async def test_failed_apple_revoke_survives_closure_and_retries(api, db, apple, monkeypatch):
     from datetime import datetime, timedelta, timezone
+
     from app.models.user import User
     from app.services import apple_tokens
     from app.services.account_deletion_service import close_account
