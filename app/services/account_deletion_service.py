@@ -35,7 +35,7 @@ This is a defensible position under data-protection law (a legal obligation to
 retain transaction records), but it is a position worth being able to explain,
 so the app says plainly what is kept and why before anyone confirms.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -100,14 +100,20 @@ async def close_account(
     user.first_name = None
     user.last_name = None
 
-    # End the app's authorization at Apple before forgetting the token.
-    # Best-effort: Apple being down must not keep an account open.
+    # Closing must not depend on Apple's availability. Keep a failed token
+    # only for the durable revocation worker; never discard the retry proof.
     if user.apple_refresh_token:
         revoked = await apple_tokens.revoke(user.apple_refresh_token, user.apple_client_id or "")
-        if not revoked:
-            logger.warning(f"Apple authorization for {user_id} was not revoked; closing anyway")
-    user.apple_refresh_token = None
-    user.apple_client_id = None
+        if revoked:
+            user.apple_refresh_token = None
+            user.apple_client_id = None
+            user.apple_revocation_retry_at = None
+        else:
+            user.apple_revocation_retry_at = now + timedelta(minutes=5)
+            logger.warning("Apple revocation pending; durable retry scheduled")
+    else:
+        user.apple_client_id = None
+        user.apple_revocation_retry_at = None
 
     # Release the Google/Apple link. Left set, signing in with the same Apple
     # ID would find this closed row and refuse, so the person could never

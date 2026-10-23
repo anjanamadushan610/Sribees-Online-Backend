@@ -168,3 +168,42 @@ async def test_sign_in_without_a_code_still_works(api, db, apple):
     assert r.status_code == 200, r.text
     user = (await db.execute(select(User).where(User.provider_uid == f"apple:{sub}"))).scalar_one()
     assert user.apple_refresh_token is None
+
+
+async def test_failed_apple_revoke_survives_closure_and_retries(api, db, apple, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.user import User
+    from app.services import apple_tokens
+    from app.services.account_deletion_service import close_account
+    from app.services.apple_revocation_worker import retry_pending
+
+    sub = f"sub-{uuid.uuid4().hex}"
+    r = await _apple_login(api, apple(sub), code="retry-code")
+    assert r.status_code == 200
+    user = (await db.execute(select(User).where(User.provider_uid == f"apple:{sub}"))).scalar_one()
+    original_revoke = apple_tokens.revoke
+
+    async def unavailable(token, client_id):
+        return False
+
+    monkeypatch.setattr(apple_tokens, "revoke", unavailable)
+    await close_account(db, user.user_id)
+    assert user.deleted_at is not None and user.is_active is False
+    assert user.apple_refresh_token == "refresh-for-retry-code"
+    assert user.apple_revocation_retry_at is not None
+    assert user.provider_uid is None
+    monkeypatch.setattr(apple_tokens, "configured", lambda: True)
+    assert await retry_pending(db) == 0, "not due yet"
+    user.apple_revocation_retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    await db.commit()
+    assert await retry_pending(db) == 0, "Apple still unavailable"
+    assert user.apple_refresh_token == "refresh-for-retry-code"
+    monkeypatch.setattr(apple_tokens, "revoke", original_revoke)
+    user.apple_revocation_retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    await db.commit()
+    assert await retry_pending(db) == 1
+    assert user.apple_refresh_token is None and user.apple_client_id is None
+    assert user.apple_revocation_retry_at is None
+    assert await retry_pending(db) == 0, "successful revocation is not repeated"
+

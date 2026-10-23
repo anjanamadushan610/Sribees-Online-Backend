@@ -205,6 +205,7 @@ class User(Base):
     # the account is closed (app/services/apple_tokens.py). Never returned.
     apple_refresh_token: Optional[str] = Column(Text, nullable=True)
     apple_client_id: Optional[str] = Column(String(255), nullable=True)
+    apple_revocation_retry_at: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
 
     # --- Account closure (Google Play requires an in-app delete) ------------
     #
