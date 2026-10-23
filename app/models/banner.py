@@ -36,7 +36,7 @@ class Banner(Base):
 
     banner_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    title = Column(String(120), nullable=False)
+    title = Column(String(120), nullable=True)
     subtitle = Column(String(200), nullable=True)
     # Optional longer copy for the web storefront's hero slide.
     description = Column(String(300), nullable=True)

@@ -49,7 +49,7 @@ def _validate_banner_fields(model):
 class BannerCreate(BaseModel):
     """Create a banner. Branch scoping is decided by the server, not the client."""
 
-    title: str = Field(..., min_length=1, max_length=120)
+    title: Optional[str] = Field(None, max_length=120)
     subtitle: Optional[str] = Field(None, max_length=200)
     description: Optional[str] = Field(None, max_length=300)
     image_url: Optional[str] = Field(
@@ -84,13 +84,15 @@ class BannerCreate(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> "BannerCreate":
+        if not (self.title and self.title.strip()) and not (self.image_url and self.image_url.strip()):
+            raise ValueError("A banner must have either a title or an image")
         return _validate_banner_fields(self)
 
 
 class BannerUpdate(BaseModel):
     """Update a banner — every field optional."""
 
-    title: Optional[str] = Field(None, min_length=1, max_length=120)
+    title: Optional[str] = Field(None, max_length=120)
     subtitle: Optional[str] = Field(None, max_length=200)
     description: Optional[str] = Field(None, max_length=300)
     image_url: Optional[str] = Field(None, max_length=500)

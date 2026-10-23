@@ -364,8 +364,9 @@ async def create_banner(
     await db.refresh(banner)
     _tell_open_apps(background)
 
+    display_title = banner.title or "Image Banner"
     logger.info(
-        f"[admin] Banner '{banner.title}' created "
+        f"[admin] Banner '{display_title}' created "
         f"({'platform-wide' if branch_id is None else f'branch {branch_id}'})"
     )
     return {
@@ -436,7 +437,7 @@ async def delete_banner(
 ):
     """Delete a banner the caller owns."""
     banner = await _get_owned_banner(db, banner_id, scope)
-    title = banner.title
+    title = banner.title or "Image Banner"
 
     await db.delete(banner)
     await db.commit()
