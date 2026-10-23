@@ -24,7 +24,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 
 from app.config.database import Base
 
@@ -87,7 +87,10 @@ class Banner(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    branch = relationship("Branch", backref="banners")
+    branch = relationship(
+        "Branch",
+        backref=backref("banners", cascade="all, delete-orphan", passive_deletes=True),
+    )
 
     __table_args__ = (
         # The storefront's only read pattern: active banners for one branch
@@ -168,7 +171,10 @@ class BannerEvent(Base):
     session_key = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    banner = relationship("Banner", backref="events")
+    banner = relationship(
+        "Banner",
+        backref=backref("events", cascade="all, delete-orphan", passive_deletes=True),
+    )
 
     __table_args__ = (
         CheckConstraint(
