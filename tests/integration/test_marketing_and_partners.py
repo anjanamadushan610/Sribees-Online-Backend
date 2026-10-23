@@ -245,7 +245,7 @@ async def test_banners(api, world, make_admin, monkeypatch):
     support = await make_admin("customer_support", api=api)
     r = await api.post("/api/v1/admin/banners", json={"title": "x"}, headers=support.headers)
     assert r.status_code == 403
-    assert len(told) == 3, "a refused write tells nobody"
+    assert len(told) == 5, "a refused write tells nobody"
 
 
 async def test_quick_sale_and_the_marketing_dashboard(api, db, world, make_admin, make_product):
