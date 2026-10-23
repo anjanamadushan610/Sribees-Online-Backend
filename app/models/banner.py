@@ -24,7 +24,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 
 from app.config.database import Base
 
@@ -36,7 +36,7 @@ class Banner(Base):
 
     banner_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    title = Column(String(120), nullable=False)
+    title = Column(String(120), nullable=True)
     subtitle = Column(String(200), nullable=True)
     # Optional longer copy for the web storefront's hero slide.
     description = Column(String(300), nullable=True)
@@ -87,7 +87,10 @@ class Banner(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    branch = relationship("Branch", backref="banners")
+    branch = relationship(
+        "Branch",
+        backref=backref("banners", cascade="all, delete-orphan", passive_deletes=True),
+    )
 
     __table_args__ = (
         # The storefront's only read pattern: active banners for one branch
@@ -168,7 +171,10 @@ class BannerEvent(Base):
     session_key = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    banner = relationship("Banner", backref="events")
+    banner = relationship(
+        "Banner",
+        backref=backref("events", cascade="all, delete-orphan", passive_deletes=True),
+    )
 
     __table_args__ = (
         CheckConstraint(

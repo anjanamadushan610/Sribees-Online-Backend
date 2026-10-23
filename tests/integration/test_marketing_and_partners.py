@@ -233,13 +233,19 @@ async def test_banners(api, world, make_admin, monkeypatch):
     assert r.status_code == 200, r.text
     r = await api.delete(f"/api/v1/admin/banners/{bid}", headers=marketing.headers)
     assert r.status_code == 200, r.text
-    # Create, rename and delete each tell every open app to re-fetch, so a
-    # deleted banner leaves customers' screens at once.
-    assert told == [("banners", {"type": "banners_changed"})] * 3
+    # Artwork-only banner: title omitted, image_url provided
+    r_art = await api.post("/api/v1/admin/banners",
+                           json={"image_url": "/uploads/banners/art.png", "sort_order": 2},
+                           headers=marketing.headers)
+    assert r_art.status_code == 201, r_art.text
+    assert r_art.json()["data"]["title"] is None
+    await api.delete(f"/api/v1/admin/banners/{r_art.json()['data']['banner_id']}", headers=marketing.headers)
+    # Create, rename, delete (x2) each tell every open app to re-fetch
+    assert told == [("banners", {"type": "banners_changed"})] * 5
     support = await make_admin("customer_support", api=api)
     r = await api.post("/api/v1/admin/banners", json={"title": "x"}, headers=support.headers)
     assert r.status_code == 403
-    assert len(told) == 3, "a refused write tells nobody"
+    assert len(told) == 5, "a refused write tells nobody"
 
 
 async def test_quick_sale_and_the_marketing_dashboard(api, db, world, make_admin, make_product):
