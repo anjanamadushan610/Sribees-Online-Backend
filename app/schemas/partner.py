@@ -14,6 +14,28 @@ class PartnerLoginRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=128)
 
 
+class PartnerForgotPasswordRequest(BaseModel):
+    """Step 1 of the reset. ``email`` is a plain string so a malformed one
+    answers 400 with the portal's message rather than a 422."""
+
+    email: str = Field(..., max_length=255)
+
+
+class PartnerVerifyOtpRequest(BaseModel):
+    email: str = Field(..., max_length=255)
+    otp: str = Field(..., max_length=12)
+
+
+class PartnerResetPasswordRequest(BaseModel):
+    """Step 3. Proof is ``reset_token`` (from verify-otp) or the ``otp``."""
+
+    email: str = Field(..., max_length=255)
+    otp: Optional[str] = Field(None, max_length=12)
+    reset_token: Optional[str] = Field(None, max_length=128)
+    new_password: str = Field(..., max_length=256)
+    confirm_password: str = Field(..., max_length=256)
+
+
 class PartnerCreateRequest(BaseModel):
     """
     Create a partner account.

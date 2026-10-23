@@ -206,3 +206,4 @@ async def test_failed_apple_revoke_survives_closure_and_retries(api, db, apple, 
     assert user.apple_refresh_token is None and user.apple_client_id is None
     assert user.apple_revocation_retry_at is None
     assert await retry_pending(db) == 0, "successful revocation is not repeated"
+

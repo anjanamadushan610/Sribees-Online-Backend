@@ -64,6 +64,11 @@ class Partner(Base):
 
     is_active = Column(Boolean, default=True, nullable=False, server_default="true")
     last_login = Column(DateTime(timezone=True), nullable=True)
+    password_changed_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Tokens issued before this are refused (get_current_partner).",
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
