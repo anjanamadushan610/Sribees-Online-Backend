@@ -440,9 +440,10 @@ async def delete_banner(
     title = banner.title or "Image Banner"
 
     try:
-        # Delete associated impression and click event records first to ensure no FK/orphan conflicts
+        # Delete associated impression and click event records first
         await db.execute(delete(BannerEvent).where(BannerEvent.banner_id == banner_id))
-        await db.delete(banner)
+        # Direct SQL delete to avoid ORM relationship traversal/MissingGreenlet issues
+        await db.execute(delete(Banner).where(Banner.banner_id == banner_id))
         await db.commit()
     except Exception as exc:
         await db.rollback()
