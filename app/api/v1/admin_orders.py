@@ -195,6 +195,7 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
                 "order_item_id": str(it.order_item_id),
                 "product_id": str(it.product_id),
                 "product_name": it.product_name,
+                "variant_name": it.variant_name,
                 "product_sku": it.product_sku,
                 "product_image": it.product_image,
                 "quantity": it.quantity,

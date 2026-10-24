@@ -474,6 +474,7 @@ def format_order(
                 "product_id": str(item.product_id),
                 "variant_id": str(item.variant_id) if item.variant_id else None,
                 "product_name": item.product_name,
+                "variant_name": item.variant_name,
                 "product_sku": item.product_sku,
                 "product_image": item.product_image,
                 "quantity": item.quantity,
@@ -551,6 +552,7 @@ def format_order_summary(order) -> dict:
             {
                 "product_id": str(item.product_id),
                 "product_name": item.product_name,
+                "variant_name": item.variant_name,
                 "product_image": item.product_image,
                 "quantity": item.quantity,
                 "unit_price": float(item.unit_price),

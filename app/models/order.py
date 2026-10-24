@@ -296,6 +296,8 @@ class OrderItem(Base):
 
     # Snapshot data (at time of order)
     product_name = Column(String(255), nullable=False)
+    # The weight option bought ("500g") for a sold-by-weight product, else NULL.
+    variant_name = Column(String(50), nullable=True)
     product_sku = Column(String(100), nullable=True)
     product_image = Column(String(500), nullable=True)
 

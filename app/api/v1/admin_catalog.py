@@ -60,6 +60,7 @@ from app.services import (
     product_imagery,
     sales_velocity_service,
     search_insights_service,
+    weight_options_service,
 )
 from app.services.category_service import CategoryService
 from app.services.embedding_service import GeminiAPIError
@@ -459,6 +460,23 @@ async def _get_branch_inventory_map(
     return {row.product_id: row for row in rows}
 
 
+async def _ensure_weight_options(db: AsyncSession, product) -> None:
+    """
+    A product just switched to sold-by-weight starts with the default options
+    (250 g ... 5 kg) priced pro rata from its price, read as the price per kg.
+    Options it already has are left alone, so switching off and on again keeps
+    whatever the super admin set.
+    """
+    if not product.sold_by_weight:
+        return
+    if await weight_options_service.options_for(db, [product.product_id], None):
+        return
+    await weight_options_service.replace_options(
+        db, product, weight_options_service.default_options(product.price or 0)
+    )
+    await db.commit()
+
+
 @router.get("/products", response_model=dict)
 async def list_products(
     page: int = Query(1, ge=1),
@@ -652,8 +670,14 @@ async def get_product(
         if inv is None:
             eff["is_active"] = False
 
+    weight_options = None
+    if product.sold_by_weight:
+        weight_options = (await weight_options_service.options_for(
+            db, [product.product_id], scope.branch_id if not scope.is_unscoped else None
+        )).get(str(product.product_id), [])
     data = format_product(
-        product, include_variants=True, include_translations=True, branch_overrides=eff
+        product, include_variants=True, include_translations=True, branch_overrides=eff,
+        weight_options=weight_options,
     )
     # Admin-only: the public product payload never carries commission rates.
     # Edited through /admin/referral-commission/products/{id}.
@@ -839,6 +863,7 @@ async def create_product(
 
     try:
         product = await ProductService.create(db, data)
+        await _ensure_weight_options(db, product)
         # Re-fetch with relationships loaded so format_product is safe.
         product = await ProductService.get_by_id(db, product.product_id, include_inactive=True)
         logger.info(f"[admin] Product created: {product.product_id} - {product.name}")
@@ -951,6 +976,7 @@ async def update_product(
 
     try:
         updated = await ProductService.update(db, product, data)
+        await _ensure_weight_options(db, updated)
         updated = await ProductService.get_by_id(db, updated.product_id, include_inactive=True)
         logger.info(f"[admin] Product updated: {updated.product_id}")
         return {

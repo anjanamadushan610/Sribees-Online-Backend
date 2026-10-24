@@ -145,6 +145,10 @@ class ProductCreate(BaseModel):
         "long",
         description="How often the price is re-checked (Sribees Price app tabs)",
     )
+    sold_by_weight: bool = Field(
+        False,
+        description="Bought by weight; starts with the default weight options priced from `price` per kg",
+    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
     images: Optional[List[ProductImageCreate]] = Field(
@@ -209,8 +213,36 @@ class ProductUpdate(BaseModel):
         None,
         description="How often the price is re-checked; null leaves it unchanged",
     )
+    sold_by_weight: Optional[bool] = Field(
+        None,
+        description="Bought by weight; null leaves it unchanged",
+    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
+
+
+class WeightOptionIn(BaseModel):
+    """One weight option of a sold-by-weight product and its global price."""
+    weight_grams: int = Field(..., gt=0, le=50_000, description="250 = 250 g")
+    price: Decimal = Field(..., ge=0, description="Global price of this pack")
+
+
+class WeightOptionsReplace(BaseModel):
+    """The product's whole list of weight options (matched by weight)."""
+    options: List[WeightOptionIn] = Field(..., min_length=1, max_length=12)
+
+
+class WeightOptionPrice(BaseModel):
+    """A new global price for one weight option."""
+    price: Decimal = Field(..., ge=0)
+
+
+class BranchWeightOptionPrice(BaseModel):
+    """One branch's own price for a weight option; null clears it."""
+    branch_id: Optional[UUID] = Field(
+        None, description="Required for a Super Admin; ignored for a branch-scoped admin"
+    )
+    price: Optional[Decimal] = Field(None, ge=0)
 
 
 class SuggestKeywordsRequest(BaseModel):

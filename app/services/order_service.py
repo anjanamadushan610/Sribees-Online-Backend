@@ -42,6 +42,7 @@ from app.services import (
     courier_location_service,
     delivery_quote_service,
     delivery_verification_service,
+    weight_options_service,
 )
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
@@ -166,8 +167,10 @@ class OrderService:
         prices = await ProductService.get_price_map(
             db, [u for u in (_uuid(i.get("product_id")) for i in items) if u], branch_id
         )
-        variants = await ProductService.get_variant_price_map(
-            db, [u for u in (_uuid(i.get("variant_id")) for i in items) if u]
+        # A weight option (variant) is priced like its product: branch
+        # override, else its own price, less the product's discount here.
+        variants = await weight_options_service.price_map(
+            db, [u for u in (_uuid(i.get("variant_id")) for i in items) if u], branch_id
         )
 
         repriced = []
@@ -177,6 +180,7 @@ class OrderService:
             variant = variants.get(str(item.get("variant_id") or ""))
             if variant is not None and variant[0] == product_id and product_id in prices:
                 line["price"] = float(variant[1])
+                line["variant_name"] = variant[2]
             elif product_id in prices:
                 line["price"] = float(prices[product_id])
             elif strict:
@@ -287,11 +291,23 @@ class OrderService:
                 continue
 
         weights = await ProductService.get_weight_map(db, product_ids)
+        # A weight option ships at its own weight, not the product's.
+        option_ids = []
+        for item in items:
+            try:
+                if item.get("variant_id"):
+                    option_ids.append(UUID(str(item["variant_id"])))
+            except (ValueError, TypeError):
+                continue
+        options = await weight_options_service.price_map(db, option_ids, None)
 
         weighted = []
         for item in items:
             enriched = dict(item)
             weight = weights.get(str(item.get("product_id")))
+            option = options.get(str(item.get("variant_id") or ""))
+            if option is not None and option[3] and option[0] == str(item.get("product_id")):
+                weight = Decimal(option[3]) / 1000
             if weight is not None:
                 enriched["weight_kg"] = weight
             weighted.append(enriched)
@@ -724,7 +740,13 @@ class OrderService:
             order_item = OrderItem(
                 order_id=order.order_id,
                 product_id=UUID(str(item["product_id"])),
-                variant_id=UUID(str(item["variant_id"])) if item.get("variant_id") else None,
+                # Only a variant the pricing step recognised (it set variant_name):
+                # an unknown id from the client would break the foreign key.
+                variant_id=(
+                    UUID(str(item["variant_id"]))
+                    if item.get("variant_id") and item.get("variant_name") else None
+                ),
+                variant_name=item.get("variant_name"),
                 product_name=item.get("name") or item.get("product_name", ""),
                 product_sku=item.get("sku") or item.get("product_sku"),
                 product_image=item.get("image") or item.get("imageUrl") or item.get("product_image"),
@@ -1219,6 +1241,7 @@ class OrderService:
                 "order_item_id": str(item.order_item_id),
                 "product_id": str(item.product_id),
                 "variant_id": str(item.variant_id) if item.variant_id else None,
+                "variant_name": item.variant_name,
                 "name": (product.name if product else None) or item.product_name,
                 "image": item.product_image,
                 "ordered_quantity": item.quantity,

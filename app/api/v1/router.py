@@ -35,6 +35,7 @@ from app.api.v1 import (
     admin_support,
     admin_transfers,
     admin_users,
+    admin_weight_options,
     app_content,
     app_public,
     app_usage,
@@ -239,6 +240,13 @@ router.include_router(
     admin_catalog.router,
     prefix="/admin",
     tags=["Admin Catalog"],
+)
+
+# Weight options of sold-by-weight products (/admin/products/{id}/weight-options).
+router.include_router(
+    admin_weight_options.router,
+    prefix="/admin",
+    tags=["Admin Weight Options"],
 )
 
 # Admin Branch Inventory management (/admin/inventory). Branch-scoped via

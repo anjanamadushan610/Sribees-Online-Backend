@@ -42,6 +42,7 @@ from app.models.partner import Partner
 from app.models.payment import PaymentAttempt, PaymentAttemptStatus
 from app.models.product import (
     BranchInventory,
+    BranchVariantPrice,
     Product,
     ProductExtraCategory,
     ProductImage,
@@ -116,6 +117,7 @@ __all__ = [
     "EscalationStatus",
     # Product models
     "BranchInventory",
+    "BranchVariantPrice",
     "Product",
     "ProductExtraCategory",
     "ProductImage",

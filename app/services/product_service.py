@@ -324,6 +324,7 @@ class ProductService:
             is_perishable=data.is_perishable,
             is_returnable=data.is_returnable,
             price_review_level=data.price_review_level,
+            sold_by_weight=data.sold_by_weight,
             meta_title=data.meta_title,
             meta_description=data.meta_description
         )
@@ -377,7 +378,7 @@ class ProductService:
             for key in exclude:
                 update_data.pop(key, None)
         # NOT NULL: an explicit null means "not changing it", not "unknown".
-        for not_null in ("is_returnable", "price_review_level"):
+        for not_null in ("is_returnable", "price_review_level", "sold_by_weight"):
             if not_null in update_data and update_data[not_null] is None:
                 update_data.pop(not_null)
 

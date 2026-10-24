@@ -108,6 +108,16 @@ class Product(Base):
             "Copied onto each order item at checkout; see OrderItem.is_returnable."
         ),
     )
+    sold_by_weight = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment=(
+            "Loose goods the customer buys by weight (sugar, rice, dhal). Its "
+            "weight options are ProductVariant rows with weight_grams set."
+        ),
+    )
     price_review_level = Column(
         String(10),
         nullable=False,
@@ -357,6 +367,11 @@ class ProductVariant(Base):
     image_url = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True)
     sort_order = Column(Integer, default=0)
+    # Set on the weight options of a sold-by-weight product (250 = 250 g).
+    # Its price is the global price of that pack; a branch may override it in
+    # BranchVariantPrice. A removed option is deactivated, never deleted --
+    # past order lines still point at it.
+    weight_grams = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -435,3 +450,31 @@ class Review(Base):
 
     def __repr__(self):
         return f"<Review {self.review_id}>"
+
+
+class BranchVariantPrice(Base):
+    """
+    One branch's own price for one weight option (ProductVariant).
+
+    The variant's price is the global one; this row overrides it in a single
+    branch, the way BranchInventory.branch_price overrides Product.price.
+    """
+
+    __tablename__ = "branch_variant_prices"
+    __table_args__ = (
+        UniqueConstraint("branch_id", "variant_id", name="uq_branch_variant_price"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id = Column(
+        UUID(as_uuid=True), ForeignKey("branches.branch_id", ondelete="CASCADE"), nullable=False
+    )
+    variant_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("product_variants.variant_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    price = Column(Numeric(10, 2), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

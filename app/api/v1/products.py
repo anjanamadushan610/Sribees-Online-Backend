@@ -39,7 +39,7 @@ from app.schemas.product import (
     ProductUpdate,
     ProductVariantCreate,
 )
-from app.services import branch_service, search_insights_service
+from app.services import branch_service, search_insights_service, weight_options_service
 from app.services.category_service import CategoryService
 from app.services.product_review_service import ProductReviewService
 from app.services.product_service import ProductService
@@ -60,6 +60,7 @@ def format_product(
     rating: dict = None,
     lang: str = DEFAULT_LANGUAGE,
     include_translations: bool = False,
+    weight_options: list = None,
 ) -> dict:
     """
     Format product for API response.
@@ -123,6 +124,7 @@ def format_product(
         "branch_price": eff.get("branch_price"),
         "is_perishable": bool(getattr(product, "is_perishable", False)),
         "price_review_level": getattr(product, "price_review_level", None),
+        "sold_by_weight": bool(getattr(product, "sold_by_weight", False)),
         "weight": float(product.weight) if getattr(product, "weight", None) is not None else None,
         "weight_unit": getattr(product, "weight_unit", None) or "kg",
         "stock_quantity": eff.get("stock_quantity", product.stock_quantity),
@@ -183,9 +185,18 @@ def format_product(
         for img in (product.images or [])
     ]
 
+    # Weight options (sold by weight): passed in already priced for the branch
+    # by weight_options_service; listed separately from generic variants.
+    if weight_options is not None:
+        data["weight_options"] = weight_options
+
     # Variants
-    if include_variants and hasattr(product, 'variants') and product.variants:
-        data["has_variants"] = len(product.variants) > 0
+    generic = [
+        v for v in (getattr(product, "variants", None) or [])
+        if getattr(v, "weight_grams", None) is None
+    ] if include_variants else []
+    if generic:
+        data["has_variants"] = True
         data["variants"] = [
             {
                 "variant_id": str(v.variant_id),
@@ -197,7 +208,7 @@ def format_product(
                 "image_url": media_url(v.image_url),
                 "is_active": v.is_active,
             }
-            for v in product.variants
+            for v in generic
         ]
     else:
         data["has_variants"] = False
@@ -695,14 +706,22 @@ async def get_product(
     # Aggregate review stats for this product.
     average, count, _ = await ProductReviewService.get_rating_summary(db, product_uuid)
 
+    product = result["product"]
+    weight_options = None
+    if product.sold_by_weight:
+        weight_options = (await weight_options_service.options_for(
+            db, [product.product_id], branch_id
+        )).get(str(product.product_id), [])
+
     return {
         "success": True,
         "data": format_product(
-            result["product"],
+            product,
             include_variants=True,
             branch_overrides=result["effective"],
             rating={"average": average, "count": count},
             lang=lang,
+            weight_options=weight_options,
         ),
     }
 
