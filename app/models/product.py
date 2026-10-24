@@ -23,6 +23,8 @@ from sqlalchemy.orm import relationship
 
 from app.config.database import Base
 
+PRICE_REVIEW_LEVELS = ("daily", "weekly", "monthly", "long")
+
 
 class Product(Base):
     """
@@ -104,6 +106,17 @@ class Product(Base):
         comment=(
             "Whether a customer may return this product after delivery. "
             "Copied onto each order item at checkout; see OrderItem.is_returnable."
+        ),
+    )
+    price_review_level = Column(
+        String(10),
+        nullable=False,
+        default="long",
+        server_default="long",
+        index=True,
+        comment=(
+            "How often the price is re-checked: daily, weekly, monthly or long "
+            "(default). Groups the Sribees Price app's tabs."
         ),
     )
 
