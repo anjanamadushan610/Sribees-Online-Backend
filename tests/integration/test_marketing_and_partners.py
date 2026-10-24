@@ -210,7 +210,7 @@ async def test_first_order_only_coupons(api, world, make_admin, make_customer, m
 # ---------------------------------------------------------------------------
 
 
-async def test_banners(api, world, make_admin, monkeypatch):
+async def test_banners(api, db, world, make_admin, monkeypatch):
     from app.services.fcm_service import FCMService
 
     told = []
@@ -239,7 +239,16 @@ async def test_banners(api, world, make_admin, monkeypatch):
                            headers=marketing.headers)
     assert r_art.status_code == 201, r_art.text
     assert r_art.json()["data"]["title"] is None
-    await api.delete(f"/api/v1/admin/banners/{r_art.json()['data']['banner_id']}", headers=marketing.headers)
+
+    # Record impressions and clicks on r_art to prove banners with events delete cleanly
+    from app.models.banner import BannerEvent
+    art_id = uuid.UUID(r_art.json()["data"]["banner_id"])
+    db.add(BannerEvent(banner_id=art_id, event_type="impression"))
+    db.add(BannerEvent(banner_id=art_id, event_type="click"))
+    await db.commit()
+
+    r_del = await api.delete(f"/api/v1/admin/banners/{art_id}", headers=marketing.headers)
+    assert r_del.status_code == 200, r_del.text
     # Create, rename, delete (x2) each tell every open app to re-fetch
     assert told == [("banners", {"type": "banners_changed"})] * 5
     support = await make_admin("customer_support", api=api)

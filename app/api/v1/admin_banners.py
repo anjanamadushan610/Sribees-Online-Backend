@@ -32,7 +32,7 @@ from fastapi import (
     status,
 )
 from loguru import logger
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -439,8 +439,19 @@ async def delete_banner(
     banner = await _get_owned_banner(db, banner_id, scope)
     title = banner.title or "Image Banner"
 
-    await db.delete(banner)
-    await db.commit()
+    try:
+        # Delete associated impression and click event records first to ensure no FK/orphan conflicts
+        await db.execute(delete(BannerEvent).where(BannerEvent.banner_id == banner_id))
+        await db.delete(banner)
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        logger.error(f"[admin] Failed to delete banner {banner_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not delete banner: {exc}",
+        )
+
     _tell_open_apps(background)
 
     logger.info(f"[admin] Banner {banner_id} ('{title}') deleted")
