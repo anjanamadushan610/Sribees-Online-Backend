@@ -115,6 +115,7 @@ class ProductService:
         sort_order: str = "desc",
         include_inactive: bool = False,
         is_active: Optional[bool] = None,
+        price_review_level: Optional[str] = None,
     ) -> Tuple[List[Product], int]:
         """Get all products with filtering and pagination.
 
@@ -152,6 +153,12 @@ class ProductService:
 
         if is_featured is not None:
             query = query.where(Product.is_featured == is_featured)
+
+        # "unset" finds the products nobody has given a level yet.
+        if price_review_level == "unset":
+            query = query.where(Product.price_review_level.is_(None))
+        elif price_review_level:
+            query = query.where(Product.price_review_level == price_review_level)
 
         if search:
             search_pattern = f"%{search.strip()}%"
@@ -319,6 +326,7 @@ class ProductService:
             is_featured=data.is_featured,
             is_perishable=data.is_perishable,
             is_returnable=data.is_returnable,
+            price_review_level=data.price_review_level,
             meta_title=data.meta_title,
             meta_description=data.meta_description
         )

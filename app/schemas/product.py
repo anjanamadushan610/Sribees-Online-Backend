@@ -15,6 +15,9 @@ from app.services.search_text import normalize_keywords
 # so without this the same term piles up.
 SearchKeywords = Annotated[Optional[str], AfterValidator(normalize_keywords)]
 
+# Mirrors app.models.product.PRICE_REVIEW_LEVELS and migration 086's CHECK.
+PriceReviewLevel = Literal["daily", "weekly", "monthly", "long"]
+
 # ============================================================================
 # Nested Schemas
 # ============================================================================
@@ -138,6 +141,10 @@ class ProductCreate(BaseModel):
         True,
         description="Whether customers may return this product after delivery",
     )
+    price_review_level: Optional[PriceReviewLevel] = Field(
+        None,
+        description="How often the price is re-checked (Sribees Price app tabs)",
+    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
     images: Optional[List[ProductImageCreate]] = Field(
@@ -197,6 +204,10 @@ class ProductUpdate(BaseModel):
     is_returnable: Optional[bool] = Field(
         None,
         description="Whether customers may return this product after delivery",
+    )
+    price_review_level: Optional[PriceReviewLevel] = Field(
+        None,
+        description="How often the price is re-checked; null clears it",
     )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None

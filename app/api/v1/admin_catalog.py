@@ -484,6 +484,11 @@ async def list_products(
         None, description="Only products currently on (or off) Quick Sale in this branch"
     ),
     perishable_only: bool = Query(False, description="Only short-shelf-life stock"),
+    price_review_level: Optional[str] = Query(
+        None,
+        pattern="^(daily|weekly|monthly|long|unset)$",
+        description="Price re-check cadence (Sribees Price app tabs); unset = not chosen yet",
+    ),
     db: AsyncSession = Depends(get_db),
     current_admin: Admin = Depends(get_current_admin),
     scope: BranchScope = Depends(inject_branch_filter),
@@ -527,6 +532,7 @@ async def list_products(
         sort_order=sort_order,
         include_inactive=True,
         is_active=is_active,
+        price_review_level=price_review_level,
     )
 
     if not scope.is_unscoped and scope.branch_id:
