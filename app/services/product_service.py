@@ -154,10 +154,7 @@ class ProductService:
         if is_featured is not None:
             query = query.where(Product.is_featured == is_featured)
 
-        # "unset" finds the products nobody has given a level yet.
-        if price_review_level == "unset":
-            query = query.where(Product.price_review_level.is_(None))
-        elif price_review_level:
+        if price_review_level:
             query = query.where(Product.price_review_level == price_review_level)
 
         if search:
@@ -380,8 +377,9 @@ class ProductService:
             for key in exclude:
                 update_data.pop(key, None)
         # NOT NULL: an explicit null means "not changing it", not "unknown".
-        if "is_returnable" in update_data and update_data["is_returnable"] is None:
-            update_data.pop("is_returnable")
+        for not_null in ("is_returnable", "price_review_level"):
+            if not_null in update_data and update_data[not_null] is None:
+                update_data.pop(not_null)
 
         for field, value in update_data.items():
             setattr(product, field, value)

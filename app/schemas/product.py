@@ -141,8 +141,8 @@ class ProductCreate(BaseModel):
         True,
         description="Whether customers may return this product after delivery",
     )
-    price_review_level: Optional[PriceReviewLevel] = Field(
-        None,
+    price_review_level: PriceReviewLevel = Field(
+        "long",
         description="How often the price is re-checked (Sribees Price app tabs)",
     )
     meta_title: Optional[str] = Field(None, max_length=255)
@@ -207,7 +207,7 @@ class ProductUpdate(BaseModel):
     )
     price_review_level: Optional[PriceReviewLevel] = Field(
         None,
-        description="How often the price is re-checked; null clears it",
+        description="How often the price is re-checked; null leaves it unchanged",
     )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None

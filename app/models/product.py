@@ -110,11 +110,13 @@ class Product(Base):
     )
     price_review_level = Column(
         String(10),
-        nullable=True,
+        nullable=False,
+        default="long",
+        server_default="long",
         index=True,
         comment=(
-            "How often the price is re-checked: daily, weekly, monthly or long. "
-            "Groups the Sribees Price app's tabs; NULL = not chosen yet."
+            "How often the price is re-checked: daily, weekly, monthly or long "
+            "(default). Groups the Sribees Price app's tabs."
         ),
     )
 

@@ -486,8 +486,8 @@ async def list_products(
     perishable_only: bool = Query(False, description="Only short-shelf-life stock"),
     price_review_level: Optional[str] = Query(
         None,
-        pattern="^(daily|weekly|monthly|long|unset)$",
-        description="Price re-check cadence (Sribees Price app tabs); unset = not chosen yet",
+        pattern="^(daily|weekly|monthly|long)$",
+        description="Price re-check cadence (Sribees Price app tabs)",
     ),
     db: AsyncSession = Depends(get_db),
     current_admin: Admin = Depends(get_current_admin),
