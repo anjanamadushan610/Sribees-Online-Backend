@@ -240,7 +240,7 @@ jobs:
           load: true
           tags: ${{ env.IMAGE }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
 
       - name: The image carries no secrets or repository metadata
         run: |
