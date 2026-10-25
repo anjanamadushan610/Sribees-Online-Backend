@@ -26,16 +26,33 @@ def mode() -> str:
     return value if value in MODES else "off"
 
 
-def rule_enabled(plan: Plan) -> bool:
-    disabled = {r.strip() for r in (settings.hybrid_disabled_rules or "").split(",") if r.strip()}
+# Rules an admin switched off at runtime (the admin page); added to the
+# HYBRID_DISABLED_RULES setting, so switching needs no restart.
+DISABLED_RULES_KEY = "assistant:hybrid:disabled_rules"
+
+
+async def disabled_rules(redis) -> set:
+    rules = {r.strip() for r in (settings.hybrid_disabled_rules or "").split(",") if r.strip()}
+    if redis is not None:
+        try:
+            members = await redis.smembers(DISABLED_RULES_KEY)
+            rules |= {m.decode() if isinstance(m, bytes) else str(m) for m in members or ()}
+        except Exception:  # noqa: BLE001 - no Redis = only the setting applies
+            pass
+    return rules
+
+
+def rule_enabled(plan: Plan, disabled: Optional[set] = None) -> bool:
+    if disabled is None:
+        disabled = {r.strip() for r in (settings.hybrid_disabled_rules or "").split(",") if r.strip()}
     return plan.rule not in disabled and plan.rule.split(".")[0] not in disabled
 
 
-def answer_allowed(plan: Plan) -> bool:
+def answer_allowed(plan: Plan, disabled: Optional[set] = None) -> bool:
     """Whether ``plan`` may answer by itself (HYBRID_MODE active is checked by the caller)."""
     if plan.layer == "L1":
         return plan.pattern_status == "active"
-    return rule_enabled(plan)
+    return rule_enabled(plan, disabled)
 
 
 async def plan_for(db, message: str, fallback_lang: str) -> Optional[Plan]:

@@ -9,6 +9,7 @@ from app.api.v1 import (
     admin,
     admin_analytics,
     admin_assistant_briefings,
+    admin_assistant_insights,
     admin_auth,
     admin_banners,
     admin_branch_categories,
@@ -126,6 +127,15 @@ router.include_router(
     admin_assistant_briefings.router,
     prefix="/admin/assistant-briefings",
     tags=["Admin AI Briefings"],
+)
+
+# Admin AI Assistant insights (/admin/assistant-insights) — the hybrid fast
+# path's free share, cost, rule agreement and learned patterns; analytics:read
+# to look, Super Admin to change what answers customers.
+router.include_router(
+    admin_assistant_insights.router,
+    prefix="/admin/assistant-insights",
+    tags=["Admin AI Assistant"],
 )
 
 router.include_router(

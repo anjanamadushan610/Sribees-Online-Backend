@@ -971,7 +971,11 @@ class ChatService:
         }
         try:
             out = None
-            if plan is not None and hybrid == "active" and engine.answer_allowed(plan):
+            if (
+                plan is not None
+                and hybrid == "active"
+                and engine.answer_allowed(plan, await engine.disabled_rules(redis))
+            ):
                 out = await engine.run_plan(
                     plan, db=db, redis=redis, user_id=user_id, branch_id=branch_id, history=history, emit=emit
                 )
