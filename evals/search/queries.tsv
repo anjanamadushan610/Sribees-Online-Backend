@@ -1,0 +1,260 @@
+# query <TAB> any of these (case-insensitive) must appear in one of the top-3 English product names <TAB> kind
+# Built 2026-10-25 for the production catalogue snapshot (evals/assistant/catalog_snapshot.json).
+sugar	Sugar	exact
+suger	Sugar	typo
+suagr	Sugar	typo
+seeni	Sugar	singlish
+sini	Sugar	singlish
+sheeni	Sugar	singlish
+සීනි	Sugar	sinhala
+சீனி	Sugar	tamil
+sudu seeni	White Sugar	singlish
+rathu seeni	Brown Sugar	singlish
+dhal	Dhal	exact
+dal	Dhal	typo
+parippu	Dhal	singlish
+paripu	Dhal	singlish
+parripu	Dhal	singlish
+පරිප්පු	Dhal	sinhala
+பருப்பு	Dhal	tamil
+milk powder	Milk Powder	exact
+milk poweder	Milk Powder	typo
+mlik powder	Milk Powder	typo
+kiripiti	Milk Powder	singlish
+kiri piti	Milk Powder	singlish
+kiripitti	Milk Powder	singlish
+කිරිපිටි	Milk Powder	sinhala
+කිරිපි	Milk Powder	partial
+பால் மா	Milk Powder	tamil
+anchor	Anchor	brand
+ankor	Anchor	brand-typo
+anker	Anchor	brand-typo
+ankor kiripiti	Anchor	brand-typo
+fresh milk	Fresh Milk	exact
+condensed milk	Condensed	exact
+ratakiri	Condensed	singlish
+rata kiri	Condensed	singlish
+milkmaid	Milkmaid	brand
+milk made	Milkmaid	brand-typo
+egg	Egg	exact
+eggs	Egg	plural
+biththara	Egg	singlish
+bittara	Egg	singlish
+bithara	Egg	singlish
+බිත්තර	Egg	sinhala
+முட்டை	Egg	tamil
+coconut	Coconut	exact
+pol	Coconut	singlish
+pol gediya	Coconut	singlish
+potato	Potato	exact
+potatos	Potato	plural
+ala	Potato	singlish
+big onion	Big Onion	exact
+loku lunu	Big Onion	singlish
+red onion	Red Onion	exact
+rathu lunu	Red Onion	singlish
+garlic	Garlic	exact
+sudu lunu	Garlic	singlish
+sudulunu	Garlic	singlish
+salt	Salt	exact
+lunu kudu	Salt	singlish
+chickpeas	Chickpeas	exact
+kadala	Chickpeas	singlish
+kadale	Chickpeas	singlish
+cowpea	Cowpea	exact
+kawpi	Cowpea	singlish
+green gram	Green Gram	exact
+mun eta	Green Gram	singlish
+rice	Rice	exact
+samba	Samba	exact
+keeri samba	Keeri Samba	exact
+kiri samba	Keeri Samba	singlish
+red rice	Red	exact
+nadu haal	Nadu	singlish
+wheat flour	Wheat Flour	exact
+thiringu piti	Wheat Flour	singlish
+tea	Tea	exact
+the kola	Tea	singlish
+tea bags	Tea Bags	exact
+coffee	Coffee	exact
+cofee	Coffee	typo
+kopi	Coffee	singlish
+chilli powder	Chilli Powder	exact
+chili powder	Chilli Powder	typo
+miris kudu	Chilli Powder	singlish
+curry powder	Curry Powder	exact
+curry pwder	Curry Powder	typo
+kari kudu	Curry Powder	singlish
+turmeric	Turmeric	exact
+tumeric	Turmeric	typo
+kaha kudu	Turmeric	singlish
+pepper powder	Pepper	exact
+gammiris	Pepper	singlish
+maldive fish	Maldive Fish	exact
+umbalakada	Maldive Fish	singlish
+umbalakade	Maldive Fish	singlish
+papadam	Pappadam	exact
+papadum	Pappadam	typo
+string hoppers	String Hopper	exact
+indiappa piti	String Hopper	singlish
+idiyappam	String Hopper	tamil-roman
+soya meat	Soya	exact
+soy meat	Soya	typo
+noodles	Noodles	exact
+noodels	Noodles	typo
+nudals	Noodles	singlish
+maggi	Maggi	brand
+biscuits	Biscuit|sub:Biscuits	exact
+biskit	Biscuit|sub:Biscuits	typo
+bisket	Biscuit|sub:Biscuits	typo
+බිස්කට්	Biscuit|sub:Biscuits	sinhala
+marie	Marie	exact
+mari biscuit	Marie	typo
+cream cracker	Cream Cracker	exact
+krem kraker	Cream Cracker	typo
+maliban	Maliban	brand
+maliben	Maliban	brand-typo
+munchee	Munchee	brand
+munchi	Munchee	brand-typo
+chocolate	Choc|sub:Chocolates	exact
+chocolat	Choc|sub:Chocolates	typo
+choclate	Choc|sub:Chocolates	typo
+ritzbury	Ritzbury	brand
+ritsbury	Ritzbury	brand-typo
+toffee	Toff|sub:Toffees, Candy & Gum	exact
+tofi	Toff|sub:Toffees, Candy & Gum	singlish
+chewing gum	Gum	exact
+chips	Chips	exact
+jam	Jam	exact
+tomato sauce	Tomato Sauce	exact
+tomato sos	Tomato Sauce	singlish
+ketchup	Tomato Sauce	synonym
+vinegar	Vinegar	exact
+vinakiri	Vinegar	singlish
+cake	Cake	exact
+keak	Cake	singlish
+bun	Bun	exact
+banis	Bun	singlish
+bread	Bread	exact
+paan	Bread	singlish
+ice cream	Ice Cream	exact
+icecream	Ice Cream	merged
+ais krim	Ice Cream	singlish
+yoghurt	Yoghurt	exact
+yogurt	Yoghurt	typo
+yogat	Yoghurt	singlish
+cheese	Cheese	exact
+chees	Cheese	typo
+sausages	Sausage	exact
+sosej	Sausage	singlish
+margarine	Astra	exact
+magarine	Astra	typo
+milo	Milo	brand
+nestomalt	Nestomalt	brand
+nesto malt	Nestomalt	brand-split
+coca cola	Coca Cola	brand
+coke	Coca Cola	synonym
+cocacola	Coca Cola	merged
+sprite	Sprite	brand
+sprit	Sprite	brand-typo
+seven up	7 Up	synonym
+ginger beer	Ginger Beer	exact
+energy drink	Energy	exact
+water bottle	Water	exact
+wathura	Water	singlish
+juice	Nectar	synonym
+soap	Soap|sub:Bath Soap	exact
+sope	Soap|sub:Bath Soap	typo
+saban	Soap|sub:Bath Soap	singlish
+sabun	Soap|sub:Bath Soap	singlish
+සබන්	Soap|sub:Bath Soap	sinhala
+சோப்பு	Soap|sub:Bath Soap	tamil-synonym
+washing powder	Washing Powder|sub:Laundry Detergents	exact
+saban kudu	Washing Powder|sub:Laundry Detergents	singlish
+detergant	Detergent	typo
+shampoo	Shampoo	exact
+shampo	Shampoo	typo
+shampu	Shampoo	singlish
+champu	Shampoo	singlish
+ෂැම්පු	Shampoo	sinhala
+sunsilk	Sunsilk	brand
+sunslik	Sunsilk	brand-typo
+toothpaste	Toothpaste	exact
+tooth paste	Toothpaste	split
+toothpast	Toothpaste	partial
+dantha lepa	Toothpaste	singlish
+toothbrush	Toothbrush	exact
+tooth brush	Toothbrush	split
+signal	Signal	brand
+signel	Signal	brand-typo
+clogard	Clogard	brand
+cloguard	Clogard	brand-typo
+lifebuoy	Lifebuoy	brand
+lifeboy	Lifebuoy	brand-typo
+dettol	Dettol	brand
+detol	Dettol	brand-typo
+diapers	Diaper	exact
+diaper	Diaper	exact
+daiper	Diaper	typo
+diapper	Diaper	typo
+nappy	Diaper	synonym
+pampers	Pampers	brand
+sanitary pads	Wings	synonym
+pads	Wings	synonym
+baby oil	Baby Oil	exact
+baby powder	Talc	synonym
+talc	Talc	exact
+perfume	Perfume	exact
+parfume	Perfume	typo
+body spray	Perfume	synonym
+razor	Razor	exact
+reser	Razor	singlish
+hair oil	Hair Oil	exact
+konda thel	Hair Oil	singlish
+hair dye	Hair Colo	synonym
+balm	Balm	exact
+bam	Balm	singlish
+cough syrup	Cough	exact
+plaster	Plaster	exact
+harpic	Harpic	brand
+harpik	Harpic	brand-typo
+toilet cleaner	Toilet	exact
+mosquito coil	Mosquito Coil	exact
+maduru dagara	Mosquito Coil	singlish
+rat poison	Rat Kill	synonym
+naphthalene	Naphthalene	exact
+naptalin	Naphthalene	typo
+kapuru bola	Naphthalene	singlish
+candles	Candles	exact
+itipandam	Candles	singlish
+incense	Incense	exact
+handunkuru	Incense	singlish
+handun kuru	Incense	singlish
+agarbathi	Incense	synonym
+bulb	Bulbs	exact
+balb	Bulbs	singlish
+pencil	Pencil	exact
+pensil	Pencil	typo
+exercise book	Ruled|sub:Exercise Books	synonym
+copy book	Ruled|sub:Exercise Books	synonym
+gelatine	Gelatine	exact
+jelatin	Gelatine	typo
+jelly	Jelly	exact
+jeli	Jelly	singlish
+custard	Custard	exact
+kastad	Custard	singlish
+baking powder	Baking Powder	exact
+yeast	Yeast	exact
+yist	Yeast	singlish
+cocoa	Cocoa	exact
+koko	Cocoa	singlish
+kotmale	Kotmale	brand
+kothmale	Kotmale	brand-typo
+elephant house	Elephant House	brand
+elephent house	Elephant House	brand-typo
+uswatte	Uswatte	brand
+uswate	Uswatte	brand-typo
+wijaya	Wijaya	brand
+vijaya	Wijaya	brand-typo
+lakspray	Lakspray	brand
+lak spray	Lakspray	brand-split

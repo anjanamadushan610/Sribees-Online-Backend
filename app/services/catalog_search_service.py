@@ -65,6 +65,7 @@ W_SOFT = 0.05                               # "5kg" nudges the 5 kg pack up
 W_NAME_PHRASE = 0.6                         # query is the product's name
 W_KEYWORD_PHRASE = 0.5                      # query is one of its keywords
 W_STEM_FACTOR = 0.95                        # "හාල" read as "හාල්"
+W_JOIN_FACTOR = 0.9                         # "rata kiri" read as "ratakiri"
 MIN_ANCHOR_LENGTH = 3                       # see rank(): short words can't match alone
 
 # Arbitrary, fixed: the advisory-lock id that keeps concurrent workers from
@@ -79,11 +80,18 @@ def max_edits(length: int) -> int:
     Stricter than Elasticsearch's AUTO at four letters: short Singlish words
     one letter apart are usually different words (kiri, kari, keri), and
     "kiri" typo-matching the Tamil "கிரீம்" (kirim) put a hair cream at the
-    top of a search for milk.
+    top of a search for milk. Four-letter words get one edit only through
+    ``short_typos`` below, under stricter rules.
     """
     if length < 5:
         return 0
     return 1 if length < 8 else 2
+
+
+# A word the catalogue uses this rarely may itself be a typo ("Suger Added"
+# on one label), so it does not stop a query word from typo-matching.
+RARE_WORD_MAX_PRODUCTS = 2
+SHORT_TYPO_LENGTH = 4
 
 
 def _deletes(word: str, depth: int) -> set[str]:
@@ -125,12 +133,22 @@ class Vocabulary:
     them would multiply the index for no one's benefit.
     """
 
-    def __init__(self, terms: Iterable[str]):
+    def __init__(self, terms: Iterable[str] | dict[str, int]):
+        # A {word: number of products using it} map lets rare words count as
+        # possible typos; a plain list treats every word as established.
+        counts = terms if isinstance(terms, dict) else {}
+        self._counts = counts
         self.terms = frozenset(t for t in terms if t)
+        self._rare = frozenset(t for t, n in counts.items() if t and n <= RARE_WORD_MAX_PRODUCTS)
         self._sorted = sorted(self.terms)
         index: dict[str, list[str]] = {}
         for term in self.terms:
-            if term.isdigit() or not max_edits(len(term)) or self._is_compound(term):
+            if (
+                term.isdigit()
+                or len(term) < SHORT_TYPO_LENGTH
+                or (not max_edits(len(term)) and len(term) != SHORT_TYPO_LENGTH)
+                or self._is_compound(term)
+            ):
                 continue
             for key in _deletes(term, 1) | {term}:
                 index.setdefault(key, []).append(term)
@@ -161,19 +179,123 @@ class Vocabulary:
         for term in completions[:MAX_PREFIX_EXPANSIONS]:
             out[term] = W_PREFIX_BASE + W_PREFIX_SPAN * len(token) / len(term)
 
-        # Typo matching only for a word the catalog doesn't already know:
-        # "miris" is a real word and must not also pull in "maris".
+        # Typo matching only for a word the catalog doesn't already know --
+        # "miris" is a real word and must not also pull in "maris" -- or knows
+        # from just one or two labels, which may themselves be misspelt.
+        if token in self.terms and token not in self._rare:
+            return out
+        rare = token in self._rare
+        if rare:
+            # Level with the typo matches, so popularity decides between the
+            # one odd label and the products spelt the common way.
+            out[token] = W_TYPO[1]
         edits = max_edits(len(token))
-        if edits and token not in self.terms:
+        if edits:
             candidates: set[str] = set()
             for key in _deletes(token, edits) | {token}:
                 candidates.update(self._by_delete.get(key, ()))
             for term in candidates:
-                allowed = min(edits, max_edits(len(term)))
+                if len(term) == SHORT_TYPO_LENGTH and term[0] != token[0]:
+                    continue  # same first-letter rule as short_typos
+                if rare and not self._yields_to(token, term):
+                    continue
+                allowed = min(edits, max_edits(len(term)) or 1)
                 distance = osa_distance(token, term, allowed)
                 if 0 < distance <= allowed:
                     out.setdefault(term, W_TYPO[distance])
+        elif len(token) == SHORT_TYPO_LENGTH:
+            out.update({
+                t: w for t, w in self.short_typos(token).items()
+                if t not in out and (not rare or self._yields_to(token, t))
+            })
         return out
+
+    def _yields_to(self, rare: str, term: str) -> bool:
+        """
+        Whether a word the catalogue knows from one or two labels should also
+        match ``term``: only a clearly more common spelling of it ("suger" ->
+        sugar), never a different word that happens to be close -- detol /
+        detox, suger / super, Tamil muttai (egg) / mittai (sweets) / muti
+        (hair), paruppu (dhal) / karuppu (black).
+        """
+        rare_count = self._counts.get(rare, 0)
+        return (
+            self._counts.get(term, 0) >= max(3, 3 * rare_count)
+            and term[0] == rare[0]
+            and _slip_not_new_word(rare, term)
+        )
+
+    def short_typos(self, token: str) -> dict[str, float]:
+        """
+        One edit for an unknown four-letter word ("mlik" -> milk, "krem" ->
+        kream), held to stricter rules than longer words: the first letter
+        must agree (shoppers rarely mistype it), the match must be four or
+        five letters long, so a short query cannot land on any longer word
+        that happens to contain it, no vowel may change (kiri/kari), and only
+        a vowel may be added or dropped ("pens" is not "pents").
+        """
+        found: dict[str, float] = {}
+        candidates: set[str] = set()
+        for key in _deletes(token, 1) | {token}:
+            candidates.update(self._by_delete.get(key, ()))
+        for term in candidates:
+            if term[0] != token[0] or not SHORT_TYPO_LENGTH <= len(term) <= SHORT_TYPO_LENGTH + 1:
+                continue
+            if (
+                osa_distance(token, term, 1) == 1
+                and not _vowel_swap(token, term)
+                and _indel_letter(token, term) in _VOWELS | {None}
+            ):
+                found[term] = W_TYPO[1]
+        return found
+
+
+_VOWELS = frozenset("aeiou")
+
+
+def _vowel_swap(a: str, b: str) -> bool:
+    """
+    Whether two same-length words differ only by one replaced vowel. In short
+    Singlish words that is a different word, not a slip: kiri (milk), kari
+    (curry), keri; pol (coconut), pal.
+    """
+    if len(a) != len(b):
+        return False
+    diff = [(x, y) for x, y in zip(a, b, strict=True) if x != y]
+    return len(diff) == 1 and (diff[0][0] in _VOWELS or diff[0][1] in _VOWELS)
+
+
+def _indel_letter(a: str, b: str) -> str | None:
+    """The letter one word has over the other when they differ by exactly one, else None."""
+    if abs(len(a) - len(b)) != 1:
+        return None
+    long, short = (a, b) if len(a) > len(b) else (b, a)
+    for i in range(len(long)):
+        if long[:i] + long[i + 1:] == short:
+            return long[i]
+    return None
+
+
+def _slip_not_new_word(a: str, b: str) -> bool:
+    """
+    Whether one replaced letter between same-length words looks like a slip of
+    the thumb rather than a different word. A changed consonant makes a new
+    word (detol/detox, suger/super), and so does a changed first vowel
+    (kiri/kari, muttai/mittai); a later vowel is the usual misspelling
+    (sug-e-r for sugar). Added, dropped or swapped letters pass.
+    """
+    if len(a) != len(b):
+        # A letter more or less turns a short word into another one (Tamil
+        # muttai -> muti, cocoa -> coca); from six letters it is a slip.
+        return min(len(a), len(b)) >= 6
+    diff = [i for i, (x, y) in enumerate(zip(a, b, strict=True)) if x != y]
+    if len(diff) != 1:
+        return True
+    i = diff[0]
+    if a[i] not in _VOWELS or b[i] not in _VOWELS:
+        return False
+    first_vowel = next((j for j, c in enumerate(a) if c in _VOWELS), i)
+    return i != first_vowel
 
 
 @dataclass(frozen=True)
@@ -195,6 +317,16 @@ def make_plan(vocabulary: Vocabulary, raw_query: str) -> SearchPlan | None:
             for word, weight in vocabulary.expand(stem).items():
                 words[word] = max(words.get(word, 0.0), weight * W_STEM_FACTOR)
         expansions[tok] = words
+    # Two words typed apart that the catalogue writes as one ("rata kiri" for
+    # ratakiri, "lak spray" for Lakspray, "milk made" for Milkmaid): the
+    # joined form, matched like any word, counts for both halves.
+    required = parsed.required
+    for left, right in zip(required, required[1:], strict=False):  # neighbours
+        for word, weight in vocabulary.expand(left + right).items():
+            for tok in (left, right):
+                joined = weight * W_JOIN_FACTOR
+                if joined > expansions[tok].get(word, 0.0):
+                    expansions[tok][word] = joined
     terms = sorted({term for words in expansions.values() for term in words})
     return SearchPlan(parsed, expansions, terms)
 
@@ -289,11 +421,16 @@ async def get_vocabulary(db: AsyncSession) -> Vocabulary:
             )).one()
         )
         if fingerprint != _fingerprint:
-            words = (await db.execute(
-                select(func.unnest(Product.search_tokens)).distinct()
-            )).scalars().all()
+            # Each word with the number of products using it: rare words may
+            # be typos on a label (see RARE_WORD_MAX_PRODUCTS).
+            word = func.unnest(Product.search_tokens).label("word")
+            inner = select(Product.product_id, word).subquery()
+            counts = dict((await db.execute(
+                select(inner.c.word, func.count(func.distinct(inner.c.product_id)))
+                .group_by(inner.c.word)
+            )).all())
             # Building the delete index is pure CPU; keep it off the event loop.
-            _vocabulary = await asyncio.to_thread(Vocabulary, words)
+            _vocabulary = await asyncio.to_thread(Vocabulary, counts)
             _fingerprint = fingerprint
             logger.info(f"Search vocabulary rebuilt: {len(_vocabulary.terms)} words")
         _checked_at = time.monotonic()

@@ -222,3 +222,57 @@ def test_flatten_structured_answer():
 
 def test_flatten_falls_back_to_plain_text():
     assert _flatten("kesel, kehel,\nplantain") == "kesel, kehel, plantain"
+
+
+# --- 2026-10-25: rarer typos, short words, words typed apart -----------------
+
+
+def test_a_word_on_one_label_does_not_block_typo_matching():
+    # One product reads "Suger Added"; "suger" must still find the sugar.
+    vocab = cs.Vocabulary({"suger": 1, "sugar": 9})
+    words = vocab.expand("suger")
+    assert words["sugar"] == cs.W_TYPO[1]
+    assert words["suger"] == cs.W_TYPO[1]  # level, so popularity decides
+
+
+def test_an_established_word_is_still_not_fuzzed():
+    vocab = cs.Vocabulary({"miris": 12, "maris": 4})
+    assert "maris" not in vocab.expand("miris")
+
+
+def test_unknown_four_letter_word_gets_one_careful_edit():
+    vocab = cs.Vocabulary({"milk": 30, "kream": 4, "kari": 6, "nilk": 1})
+    assert "milk" in vocab.expand("mlik")          # swapped letters
+    assert "kream" in vocab.expand("krem")         # a missing letter
+    assert "kari" not in vocab.expand("kiri")      # a vowel changes the word
+    assert "milk" not in vocab.expand("bilk")      # first letter must agree
+
+
+def test_words_typed_apart_match_the_joined_catalogue_word():
+    vocab = cs.Vocabulary({"ratakiri": 1, "kiri": 40, "lakspray": 2, "spray": 9})
+    plan = cs.make_plan(vocab, "rata kiri")
+    assert "ratakiri" in plan.expansions["rata"] and "ratakiri" in plan.expansions["kiri"]
+    plan = cs.make_plan(vocab, "lak spray")
+    assert "lakspray" in plan.expansions["lak"]
+
+
+def test_search_benchmark_on_the_production_catalogue_holds():
+    """Offline: 258 real-world queries over the 2026-10-25 catalogue snapshot."""
+    from scripts.search_benchmark import run
+
+    summary = run()["summary"]
+    assert summary["top3_rate"] >= 0.97, summary
+
+
+def test_a_rare_word_yields_only_to_a_more_common_spelling_of_itself():
+    vocab = cs.Vocabulary({"suger": 1, "sugar": 9, "super": 9, "mutai": 2, "muti": 8, "detol": 2, "detox": 1})
+    suger = vocab.expand("suger")
+    assert "sugar" in suger and "super" not in suger   # a changed consonant is a new word
+    assert "muti" not in vocab.expand("mutai")          # Tamil egg is not hair
+    assert "detox" not in vocab.expand("detol")         # not more common, not a slip
+
+
+def test_short_typos_add_or_drop_only_a_vowel():
+    vocab = cs.Vocabulary({"pents": 3, "kream": 4})
+    assert "pents" not in vocab.expand("pens")
+    assert "kream" in vocab.expand("krem")
