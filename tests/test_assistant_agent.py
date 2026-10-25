@@ -265,6 +265,22 @@ async def test_chat_uses_the_agent_when_switched_on(monkeypatch):
     assert saved[-1]["products"][0]["product_id"] == "p-sugar"
 
 
+@pytest.mark.parametrize(
+    "text,kept",
+    [
+        ("Prices are in Rs, see the cards.", True),  # no amount after the marker
+        ("Sugar is Rs. 260 today.", True),
+        ("Sugar is Rs 1,260.", False),  # no tool said 1260
+        ("සීනි 260/= යි.", True),
+    ],
+)
+def test_price_check_reads_amounts_safely(text, kept):
+    turn = assistant_agent.Turn("en")
+    turn.seen_text.append(json.dumps({"products": [{"price": 260}]}))
+    lang = "si" if "සීනි" in text else "en"
+    assert (assistant_agent.check_reply(text, lang, turn) == text) is kept
+
+
 def test_tool_schemas_are_plain_json():
     tools = assistant_agent.tool_declarations()[0]["functionDeclarations"]
     assert {t["name"] for t in tools} >= {"search_products", "my_orders", "stage_basket_change", "respond"}

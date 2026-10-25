@@ -426,9 +426,10 @@ async def _feature(name: str, args: BaseModel, ctx: dict, lang: str) -> dict:
 # Final answer checks
 # ---------------------------------------------------------------------------
 
+# The amount must start with a digit: "Rs, ..." once matched a bare comma.
 _PRICE = re.compile(
-    r"(?:රු\.?|රුපියල්|rs\.?|lkr|ரூ\.?|ரூபாய்)\s*([\d,]+(?:\.\d+)?)"
-    r"|([\d,]+(?:\.\d+)?)\s*(?:/=|රුපියල්|rupees|ரூபாய்)",
+    r"(?:රු\.?|රුපියල්|rs\.?|lkr|ரூ\.?|ரூபாய்)\s*(\d[\d,]*(?:\.\d+)?)"
+    r"|(\d[\d,]*(?:\.\d+)?)\s*(?:/=|රුපියල්|rupees|ரூபாய்)",
     re.IGNORECASE,
 )
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")

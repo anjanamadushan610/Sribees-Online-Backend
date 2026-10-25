@@ -396,7 +396,9 @@ async def run(args: argparse.Namespace) -> int:
                 trial["seconds"] = round(time.monotonic() - t0, 2)
                 trial["model_calls"] = len(meter.calls) - n_calls_before
                 trials.append(trial)
-            except (GeminiAPIError, asyncio.TimeoutError) as exc:
+            except Exception as exc:  # noqa: BLE001 - a crash is a failed trial, not the end of the run
+                if not isinstance(exc, (GeminiAPIError, asyncio.TimeoutError)):
+                    exc = RuntimeError(f"CRASH {type(exc).__name__}: {exc}")
                 trials.append(
                     {
                         "ok": False,
