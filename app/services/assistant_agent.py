@@ -204,6 +204,7 @@ class Turn:
         self.seen_text: List[str] = []  # every tool result as the model saw it
         self.search_context: Optional[dict] = None
         self.searched: List[str] = []
+        self.calls: List[dict] = []  # the model's tool calls, for the learner (hybrid)
 
     def register(self, products: List[dict], *, from_search: bool) -> None:
         for p in products:
@@ -605,6 +606,7 @@ async def run(
             if call.get("name") == "respond":
                 result = {"note": "Not yet: read the other results first, then call respond."}
             else:
+                turn.calls.append({"name": call.get("name", ""), "args": call.get("args") or {}})
                 try:
                     result = await _run_tool(call.get("name", ""), call.get("args") or {}, ctx, turn)
                 except Exception:  # noqa: BLE001 - one failing tool must not sink the turn
@@ -652,4 +654,5 @@ async def run(
         "search_context": turn.search_context,
         "briefing_note": answer.briefing_note if answer else None,
         "briefing_ids": answer.briefing_ids if answer else [],
+        "plan_trace": turn.calls,
     }

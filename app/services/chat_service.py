@@ -24,7 +24,9 @@ truncates the answer, not the reasoning.
 import asyncio
 import json
 import re
+import time
 import unicodedata
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from uuid import UUID
@@ -60,6 +62,8 @@ MAX_SEARCH_TERMS = 6
 MAX_MATCHES_PER_TERM = 3
 # Several model calls plus catalogue lookups; the app's own timeout is 60 s.
 AGENT_TURN_TIMEOUT = 45
+# Gemini usageMetadata of every call in the current chat turn, for the log.
+_TURN_USAGE: ContextVar[Optional[List[Dict[str, Any]]]] = ContextVar("assistant_turn_usage", default=None)
 
 # A product turn keeps the model's own sentence only when it is a short
 # introduction with none of these in it -- see ChatService._usable_product_reply.
@@ -446,6 +450,9 @@ class ChatService:
         """
         if not usage:
             return
+        collected = _TURN_USAGE.get()
+        if collected is not None:
+            collected.append(usage)
         logger.info(
             "Chat Gemini tokens: prompt={} cached={} output={} thoughts={} total={}",
             usage.get("promptTokenCount", 0),
@@ -756,28 +763,21 @@ class ChatService:
             agent: Optional[Dict[str, Any]] = None
             try:
                 if settings.assistant_agent_v2:
-                    from app.services import assistant_agent
-
-                    async def emit(stage: str, **detail: Any) -> None:
-                        await ChatService._emit(on_stage, stage, **detail)
-
-                    agent = await asyncio.wait_for(
-                        assistant_agent.run(
-                            db=db,
-                            redis=redis,
-                            user_id=user_id,
-                            branch_id=branch_id,
-                            message=message,
-                            image_base64=image_base64,
-                            image_mime_type=image_mime_type,
-                            history=history,
-                            fixed_lang=fixed_lang,
-                            fallback_lang=fallback_lang,
-                            application_context=application_context,
-                            briefing_prompt=briefings.prompt() if briefings else "",
-                            emit=emit,
-                        ),
-                        timeout=AGENT_TURN_TIMEOUT,
+                    agent = await ChatService._agent_turn(
+                        db=db,
+                        redis=redis,
+                        session_id=session_id,
+                        user_id=user_id,
+                        branch_id=branch_id,
+                        message=message,
+                        image_base64=image_base64,
+                        image_mime_type=image_mime_type,
+                        history=history,
+                        fixed_lang=fixed_lang,
+                        fallback_lang=fallback_lang,
+                        application_context=application_context,
+                        briefing_prompt=briefings.prompt() if briefings else "",
+                        on_stage=on_stage,
                     )
                 else:
                     await ChatService._emit(on_stage, "understanding")
@@ -906,6 +906,107 @@ class ChatService:
             language=lang,
         )
         return response
+
+    @staticmethod
+    async def _agent_turn(
+        *,
+        db,
+        redis,
+        session_id: str,
+        user_id: Optional[UUID],
+        branch_id: Optional[UUID],
+        message: str,
+        image_base64: Optional[str],
+        image_mime_type: Optional[str],
+        history: List[Dict[str, Any]],
+        fixed_lang: Optional[str],
+        fallback_lang: str,
+        application_context: Optional[dict],
+        briefing_prompt: str,
+        on_stage: StageCallback,
+    ) -> Dict[str, Any]:
+        """
+        One free-text turn: the fast path when a rule is sure (HYBRID_MODE
+        active), otherwise the model agent; either way one scrubbed row goes
+        to the learner's log. In shadow mode the fast plan is only recorded
+        next to what the model did.
+        """
+        from app.services import assistant_agent
+        from app.services.hybrid import engine, recorder
+
+        async def emit(stage: str, **detail: Any) -> None:
+            await ChatService._emit(on_stage, stage, **detail)
+
+        started = time.monotonic()
+        usage: List[Dict[str, Any]] = []
+        usage_token = _TURN_USAGE.set(usage)
+        hybrid = engine.mode()
+        plan = None
+        if hybrid != "off" and not image_base64:
+            try:
+                plan = await engine.plan_for(db, message, fixed_lang or fallback_lang)
+            except Exception as exc:  # noqa: BLE001 - the model is always there to answer
+                logger.warning("Fast path planning failed: {}", exc)
+        record = {
+            "message": message,
+            "branch_id": branch_id,
+            "identity": str(user_id) if user_id else session_id,
+            "signature": plan.signature if plan else None,
+            "reply_kind": plan.reply_kind if plan else None,
+        }
+        try:
+            out = None
+            if plan is not None and hybrid == "active" and engine.rule_enabled(plan):
+                out = await engine.run_plan(
+                    plan, db=db, redis=redis, user_id=user_id, branch_id=branch_id, history=history, emit=emit
+                )
+                if out is not None:
+                    record.update(layer=plan.layer, plan=plan.as_log())
+            if out is None:
+                out = await asyncio.wait_for(
+                    assistant_agent.run(
+                        db=db,
+                        redis=redis,
+                        user_id=user_id,
+                        branch_id=branch_id,
+                        message=message,
+                        image_base64=image_base64,
+                        image_mime_type=image_mime_type,
+                        history=history,
+                        fixed_lang=fixed_lang,
+                        fallback_lang=fallback_lang,
+                        application_context=application_context,
+                        briefing_prompt=briefing_prompt,
+                        emit=emit,
+                    ),
+                    timeout=AGENT_TURN_TIMEOUT,
+                )
+                trace = out.get("plan_trace") or []
+                record.update(
+                    layer="L4",
+                    plan={"steps": trace},
+                    model_trace=trace,
+                    shadow_plan=plan.as_log() if plan else None,
+                )
+        except (GeminiAPIError, asyncio.TimeoutError):
+            recorder.record(
+                **record,
+                layer="degraded",
+                shadow_plan=plan.as_log() if plan else None,
+                usage=usage,
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+            raise
+        finally:
+            _TURN_USAGE.reset(usage_token)
+        out.pop("plan_trace", None)
+        recorder.record(
+            **record,
+            language=out.get("language"),
+            usage=usage,
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
+        return out
 
     @staticmethod
     async def _first_name(db: AsyncSession, user_id: Optional[UUID]) -> Optional[str]:

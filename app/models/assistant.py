@@ -22,6 +22,38 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from app.config.database import Base
 
 
+class AssistantTurn(Base):
+    """
+    One chat turn as the hybrid assistant's learner sees it (migration 089).
+    No personal data: ``text_key`` is the scrubbed, folded search key of the
+    message and ``person_hash`` a salted hash -- see hybrid/recorder.py.
+    """
+
+    __tablename__ = "assistant_turns"
+    turn_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    branch_id = Column(UUID(as_uuid=True), nullable=True)
+    person_hash = Column(String(32), nullable=True)
+    language = Column(String(2), nullable=True)
+    text_key = Column(Text, nullable=False)
+    signature = Column(String(200), nullable=True)
+    layer = Column(String(12), nullable=False)
+    plan = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    shadow_plan = Column(JSONB, nullable=True)
+    model_trace = Column(JSONB, nullable=True)
+    reply_kind = Column(String(40), nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    model_calls = Column(Integer, nullable=False, default=0, server_default="0")
+    prompt_tokens = Column(Integer, nullable=False, default=0, server_default="0")
+    output_tokens = Column(Integer, nullable=False, default=0, server_default="0")
+    outcome = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    __table_args__ = (
+        Index("ix_assistant_turns_created", "created_at"),
+        Index("ix_assistant_turns_signature", "signature"),
+        Index("ix_assistant_turns_layer", "layer", "created_at"),
+    )
+
+
 class AssistantProfile(Base):
     __tablename__ = "assistant_profiles"
     user_id = Column(

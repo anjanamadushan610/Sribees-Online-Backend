@@ -1,0 +1,54 @@
+{"id": "fast_bare_seeni", "flow": "fast", "message": "seeni", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Sugar", "සීනි"]}}
+{"id": "fast_bare_kiripiti", "flow": "fast", "message": "kiripiti", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Milk Powder", "කිරිපිටි"]}}
+{"id": "fast_bare_parippu_si", "flow": "fast", "message": "පරිප්පු", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Dhal", "පරිප්පු"]}}
+{"id": "fast_bare_sugar_en", "flow": "fast", "message": "sugar", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Sugar", "සීනි"]}}
+{"id": "fast_want_si_script", "flow": "fast", "message": "මට සීනි කිලෝ එකක් ඕන", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Sugar", "සීනි"]}}
+{"id": "fast_want_singlish", "flow": "fast", "message": "mata biththara one", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Egg", "බිත්තර"]}}
+{"id": "fast_have_singlish", "flow": "fast", "message": "maduru dagara thiyenawada", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Mosquito", "මදුරු"]}}
+{"id": "fast_price_singlish", "flow": "fast", "message": "Anchor 400g kiripiti kiyada", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Anchor"]}}
+{"id": "fast_price_en", "flow": "fast", "message": "how much is sugar", "expect": {"intent": ["buy_product"], "lang": "en", "shows_any": ["Sugar"]}}
+{"id": "fast_want_en", "flow": "fast", "message": "do you have toothpaste", "expect": {"intent": ["buy_product"], "lang": "en", "shows_any": ["Toothpaste"]}}
+{"id": "fast_need_en", "flow": "fast", "message": "I need shampoo", "expect": {"intent": ["buy_product"], "lang": "en", "shows_any": ["Shampoo"]}}
+{"id": "fast_want_ta", "flow": "fast", "message": "முட்டை வேண்டும்", "expect": {"intent": ["buy_product"], "lang": "ta", "shows_any": ["Egg", "முட்டை"]}}
+{"id": "fast_list_two", "flow": "fast", "message": "seeni saha parippu one", "expect": {"intent": ["buy_product"], "lang": "si", "terms_all": [["seeni", "sugar"], ["parippu", "dhal"]]}}
+{"id": "fast_list_commas", "flow": "fast", "message": "seeni, parippu, kiripiti", "expect": {"intent": ["buy_product"], "lang": "si", "terms_all": [["seeni"], ["parippu"], ["kiripiti"]]}}
+{"id": "fast_typo_mlik", "flow": "fast", "message": "mlik powder", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Milk Powder", "කිරිපිටි"]}}
+{"id": "fast_typo_suger", "flow": "fast", "message": "suger one", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Sugar", "සීනි"]}}
+{"id": "fast_brand_only", "flow": "fast", "message": "maliban", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Maliban"]}}
+{"id": "fast_brand_milo", "flow": "fast", "message": "milo", "expect": {"intent": ["buy_product"], "lang": "si", "shows_any": ["Milo"]}}
+{"id": "fast_track_si", "flow": "fast", "message": "mage order eka koheda", "expect": {"intent": ["track_order"], "lang": "si", "no_terms": true}}
+{"id": "fast_track_si_script", "flow": "fast", "message": "මගේ ඇණවුම තාම ආවේ නැහැ", "expect": {"intent": ["track_order"], "lang": "si", "no_terms": true}}
+{"id": "fast_track_en_ref", "flow": "fast", "message": "where is my order SB-10423", "expect": {"intent": ["track_order"], "lang": "en", "order_reference": "SB-10423"}}
+{"id": "fast_track_ta", "flow": "fast", "message": "என் ஆர்டர் எங்கே", "expect": {"intent": ["track_order"], "lang": "ta", "no_terms": true}}
+{"id": "fast_history_si", "flow": "fast", "message": "kalin gaththa badu pennanna", "expect": {"intent": ["recent_orders"], "lang": "si", "no_terms": true}}
+{"id": "fast_history_en", "flow": "fast", "message": "show my previous orders", "expect": {"intent": ["recent_orders"], "lang": "en", "no_terms": true}}
+{"id": "fast_open_cart", "flow": "fast", "message": "cart eka open karanna", "expect": {"intent": ["navigate"], "lang": "si", "target_any": ["cart"]}}
+{"id": "fast_open_wallet_en", "flow": "fast", "message": "open my wallet", "expect": {"intent": ["navigate"], "lang": "en", "target_any": ["wallet"]}}
+{"id": "fast_how_address", "flow": "fast", "message": "address eka wenas karanne kohomada", "expect": {"intent": ["app_help"], "lang": "si", "target_any": ["addresses"]}}
+{"id": "fast_how_coupon_en", "flow": "fast", "message": "how do I use a coupon", "expect": {"intent": ["app_help"], "lang": "en", "target_any": ["offers"]}}
+{"id": "fast_how_address_ta", "flow": "fast", "message": "முகவரியை எப்படி மாற்றுவது", "expect": {"intent": ["app_help"], "lang": "ta", "target_any": ["addresses"]}}
+{"id": "fast_hi", "flow": "fast", "message": "hi", "expect": {"intent": ["chitchat"], "lang": "si"}}
+{"id": "fast_ayubowan", "flow": "fast", "message": "ආයුබෝවන්", "expect": {"intent": ["chitchat"], "lang": "si"}}
+{"id": "fast_thanks_en", "flow": "fast", "message": "thank you", "expect": {"intent": ["chitchat"]}, "note": "neutral message: continues the conversation's language, then the app's (owner's rule)"}
+{"id": "fast_thanks_si", "flow": "fast", "message": "ස්තූතියි", "expect": {"intent": ["chitchat"], "lang": "si"}}
+{"id": "fast_cart_add", "flow": "fast", "message": "kiri packet 2k cart ekata danna", "expect": {"intent": ["cart_edit"], "lang": "si", "terms_any": ["kiri"]}}
+{"id": "fast_cart_add_en", "flow": "fast", "message": "add 2 sugar to cart", "expect": {"intent": ["cart_edit"], "lang": "en", "terms_any": ["sugar"]}}
+{"id": "trap_negation", "flow": "fast-trap", "message": "seeni epa, parippu one", "expect": {"intent": ["__model__"]}}
+{"id": "trap_compare", "flow": "fast-trap", "message": "Anchor da Lakspray da hoda", "expect": {"intent": ["__model__"]}}
+{"id": "trap_cheaper", "flow": "fast-trap", "message": "meeta wada aduwata thiyenawada", "expect": {"intent": ["__model__"]}}
+{"id": "trap_recipe", "flow": "fast-trap", "message": "mata cake ekak hadanna one", "expect": {"intent": ["__model__"]}}
+{"id": "trap_need_based", "flow": "fast-trap", "message": "lamainta udeta kanna monada hoda", "expect": {"intent": ["__model__"]}}
+{"id": "trap_complaint", "flow": "fast-trap", "message": "mata awe waradi badu", "expect": {"intent": ["__model__"]}}
+{"id": "trap_cancel", "flow": "fast-trap", "message": "mage order eka cancel karanna puluwanda", "expect": {"intent": ["__model__"]}}
+{"id": "trap_refund", "flow": "fast-trap", "message": "salli aapahu denna", "expect": {"intent": ["__model__"]}}
+{"id": "trap_two_kinds", "flow": "fast-trap", "message": "seeni one, mage order eka koheda", "expect": {"intent": ["__model__"]}}
+{"id": "trap_instead", "flow": "fast-trap", "message": "me kiri wenuwata wena brand ekak", "expect": {"intent": ["__model__"]}}
+{"id": "trap_why", "flow": "fast-trap", "message": "ai mage order eka parakku", "expect": {"intent": ["__model__"]}}
+{"id": "trap_long_story", "flow": "fast-trap", "message": "ane mata godak wena wenna badu tika genna ona eth mata wenna kiyala hithuna nisa mata oya kiyana deyak karanna puluwanda", "expect": {"intent": ["__model__"]}}
+{"id": "trap_question_photo_words", "flow": "fast-trap", "message": "me photo eke thiyena eka", "expect": {"intent": ["__model__"]}}
+{"id": "trap_change_qty", "flow": "fast-trap", "message": "kiri gana 3 karanna", "expect": {"intent": ["__model__"]}}
+{"id": "trap_remove", "flow": "fast-trap", "message": "seeni ain karanna", "expect": {"intent": ["__model__"]}}
+{"id": "trap_order_kohomada", "flow": "fast-trap", "message": "mage order eka kohomada", "expect": {"intent": ["__model__", "track_order"]}, "note": "ambiguous: how is my order (status) -- tracking is acceptable, help is not"}
+{"id": "trap_qty_no_add", "flow": "fast-trap", "message": "kiri packet 2k one", "expect": {"intent": ["__model__"]}}
+{"id": "fast_how_place_order", "flow": "fast", "message": "order ekak danne kohomada", "expect": {"intent": ["app_help"], "lang": "si", "target_any": ["checkout"]}}
+{"id": "fast_buy_ganna", "flow": "fast", "message": "chocolate cake ekak ganna one", "expect": {"intent": ["buy_product"], "lang": "si", "terms_any": ["cake"]}}

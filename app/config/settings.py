@@ -550,6 +550,23 @@ class Settings(BaseSettings):
         le=6,
         description="Model calls allowed per chat turn in the agent; the last one must answer.",
     )
+    hybrid_mode: str = Field(
+        default="shadow",
+        description=(
+            "The free fast path in front of the model (app/services/hybrid): "
+            "'off'; 'shadow' = work out the fast plan and record it next to "
+            "the model's, but let the model answer; 'active' = answer with "
+            "the fast plan when a rule is sure."
+        ),
+    )
+    hybrid_disabled_rules: str = Field(
+        default="",
+        description="Comma-separated fast-path rules or rule families to send to the model instead, e.g. 'cart,orders.track'.",
+    )
+    assistant_turn_log_enabled: bool = Field(
+        default=True,
+        description="Record one scrubbed row per chat turn in assistant_turns (migration 089) for the learner.",
+    )
     semantic_search_enabled: bool = Field(
         default=False,
         description=(

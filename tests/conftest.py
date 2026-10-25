@@ -67,6 +67,21 @@ requires_db = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _assistant_side_paths_off(monkeypatch):
+    """
+    The hybrid fast path and the assistant turn log reach for the catalogue
+    vocabulary and a database session of their own; tests that are not about
+    them should not depend on either. Their own tests switch them on.
+    """
+    try:
+        from app.config.settings import settings
+    except Exception:  # pragma: no cover
+        return
+    monkeypatch.setattr(settings, "hybrid_mode", "off")
+    monkeypatch.setattr(settings, "assistant_turn_log_enabled", False)
+
+
 @pytest.fixture
 async def app_redis():
     """

@@ -1,0 +1,208 @@
+"""The free fast path: rules, execution, privacy of the log, and how chat uses it."""
+
+import json
+import uuid
+from collections import Counter
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.services import assistant_agent
+from app.services.catalog_search_service import Vocabulary
+from app.services.chat_service import ChatService
+from app.services.hybrid import engine, recorder
+from app.services.hybrid.normalize import parse
+from app.services.hybrid.plan import Plan, ToolCall
+from app.services.hybrid.rules import route
+from app.services.search_text import index_tokens
+
+CATALOG = {
+    "p-sugar": ("White Sugar 1kg", "සුදු සීනි 1kg", "seeni, sugar"),
+    "p-dhal": ("Red Dhal 1kg", "පරිප්පු 1kg", "parippu, dhal"),
+    "p-anchor": ("Anchor Full Cream Milk Powder 400g", "Anchor ෆුල් ක්‍රීම් කිරිපිටි 400g", "kiripiti"),
+    "p-coil": ("Ninja Mosquito Coils 10 Hours", "Ninja මදුරු දඟර පැය 10", "maduru dagara"),
+}
+
+
+@pytest.fixture(scope="module")
+def vocab():
+    counts = Counter()
+    for name, si, kw in CATALOG.values():
+        counts.update(set(index_tokens(name, si, None, kw)[0]))
+    return Vocabulary(counts)
+
+
+def plan_of(text, vocab, fallback="si"):
+    return route(parse(text), vocab, fallback)
+
+
+@pytest.mark.parametrize(
+    "text,rule,first_tool",
+    [
+        ("seeni", "products.list", "search_products"),
+        ("mata seeni kilo ekak one", "products.want", "search_products"),
+        ("Anchor 400g kiripiti kiyada?", "products.price", "search_products"),
+        ("maduru dagara thiyenawada", "products.want", "search_products"),
+        ("mage order eka koheda", "orders.track", "my_orders"),
+        ("where is my order SB-10423", "orders.track", "my_orders"),
+        ("kalin gaththa badu pennanna", "orders.history", "my_orders"),
+        ("cart eka open karanna", "help.open", "app_help"),
+        ("address eka wenas karanne kohomada", "help.how", "app_help"),
+        ("order ekak danne kohomada", "help.order", "app_help"),
+        ("seeni 2k cart ekata danna", "cart.add", "stage_basket_change"),
+    ],
+)
+def test_rules_take_the_frequent_safe_shapes(vocab, text, rule, first_tool):
+    plan = plan_of(text, vocab)
+    assert plan is not None and plan.rule == rule
+    assert plan.steps[0].name == first_tool
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "seeni epa, parippu one",          # negation
+        "Anchor da Lakspray da hoda",     # comparison / judgement
+        "mata cake ekak hadanna one",     # recipe
+        "seeni one, mage order eka koheda",  # two kinds of request
+        "kiri gana 3 karanna",            # a count without "add" changes the basket
+        "mage order eka cancel karanna puluwanda",
+        "hisaradayata monawada hoda",     # need-based, judgement
+        "mage order eka kohomada",        # status or how-to? not help
+    ],
+)
+def test_anything_needing_judgement_goes_to_the_model(vocab, text):
+    plan = plan_of(text, vocab)
+    assert plan is None or plan.rule == "orders.track"
+
+
+def test_sizes_become_a_filter_and_lists_split(vocab):
+    plan = plan_of("Anchor 400g kiripiti kiyada", vocab)
+    assert plan.steps[0].args == {"query": "Anchor kiripiti", "size": "400g"}
+    plan = plan_of("seeni, parippu", vocab)
+    assert [s.args["query"] for s in plan.steps] == ["seeni", "parippu"]
+
+
+def test_language_follows_the_words(vocab):
+    assert plan_of("do you have sugar", vocab).language == "en"
+    assert plan_of("seeni one", vocab, fallback="en").language == "si"
+    assert plan_of("hi", vocab, fallback="ta").language == "ta"  # neutral keeps the conversation's
+
+
+def _turn_tool(results):
+    async def run_tool(name, args, ctx, turn):
+        found = results.get(args.get("query"), [])
+        turn.register(found, from_search=True)
+        return {"query": args.get("query"), "products": [assistant_agent._lean_product(p) for p in found]}
+
+    return run_tool
+
+
+SUGAR = {"product_id": "p-sugar", "name": "සුදු සීනි 1kg", "price": 260, "discount_price": None, "is_on_sale": False, "variants": []}
+
+
+@pytest.mark.asyncio
+async def test_run_plan_answers_from_real_results(monkeypatch):
+    monkeypatch.setattr(assistant_agent, "_run_tool", _turn_tool({"seeni": [SUGAR]}))
+    plan = Plan([ToolCall("search_products", {"query": "seeni"})], "price", "L2", "products.price", "price|<P>", language="si")
+    out = await engine.run_plan(plan, db=None, redis=None, user_id=None, branch_id=uuid.uuid4(), history=[], emit=AsyncMock())
+    assert "සුදු සීනි 1kg" in out["reply"] and "260" in out["reply"]
+    assert [p["product_id"] for p in out["products"]] == ["p-sugar"]
+
+
+@pytest.mark.asyncio
+async def test_run_plan_hands_over_when_nothing_was_found(monkeypatch):
+    monkeypatch.setattr(assistant_agent, "_run_tool", _turn_tool({}))
+    plan = Plan([ToolCall("search_products", {"query": "zzz"})], "list", "L2", "products.list", "list|<P>", language="si")
+    assert await engine.run_plan(plan, db=None, redis=None, user_id=None, branch_id=uuid.uuid4(), history=[], emit=AsyncMock()) is None
+
+
+@pytest.mark.asyncio
+async def test_run_plan_asks_for_a_location_first(monkeypatch):
+    async def run_tool(name, args, ctx, turn):
+        turn.actions.append({"target": "addresses"})
+        return {"error": "No delivery location is selected"}
+
+    monkeypatch.setattr(assistant_agent, "_run_tool", run_tool)
+    plan = Plan([ToolCall("search_products", {"query": "seeni"})], "list", "L2", "products.list", "list|<P>", language="en")
+    out = await engine.run_plan(plan, db=None, redis=None, user_id=None, branch_id=None, history=[], emit=AsyncMock())
+    assert "delivery location" in out["reply"] and out["actions"][0]["target"] == "addresses"
+
+
+def test_log_text_is_scrubbed():
+    key = recorder.scrub("mage order SB-10423 koheda? call 0771234567 or me@example.com id 3f2b8c1e-1111-2222-3333-444455556666")
+    for leak in ("10423", "0771234567", "example", "3f2b8c1e"):
+        assert leak not in key
+    assert "<order>" in key and "<phone>" in key and "<email>" in key and "<id>" in key
+    assert recorder.scrub("සීනි ඕන") == "sini ona"
+
+
+def test_person_hash_is_salted_and_stable(monkeypatch):
+    monkeypatch.setattr(recorder.settings, "jwt_secret_key", "salt-a")
+    a = recorder.person_hash("user-1")
+    assert a == recorder.person_hash("user-1") and "user-1" not in a
+    monkeypatch.setattr(recorder.settings, "jwt_secret_key", "salt-b")
+    assert recorder.person_hash("user-1") != a
+
+
+async def _chat(monkeypatch, mode):
+    from app.services import assistant_briefings
+
+    monkeypatch.setattr(assistant_agent.settings, "assistant_agent_v2", True)
+    monkeypatch.setattr(assistant_agent.settings, "hybrid_mode", mode)
+    monkeypatch.setattr(assistant_briefings, "live_for", AsyncMock(return_value=[]))
+    plan = Plan([ToolCall("search_products", {"query": "seeni"})], "want", "L2", "products.want", "want|<P>", language="si")
+    monkeypatch.setattr(engine, "plan_for", AsyncMock(return_value=plan))
+    monkeypatch.setattr(assistant_agent, "_run_tool", _turn_tool({"seeni": [SUGAR]}))
+    agent = AsyncMock(return_value={
+        "reply": "සීනි මෙන්න.", "products": [SUGAR], "orders": [], "actions": [], "guide": None, "panels": [],
+        "language": "si", "search_context": None, "briefing_note": None, "briefing_ids": [],
+        "plan_trace": [{"name": "search_products", "args": {"query": "sugar"}}],
+    })
+    monkeypatch.setattr(assistant_agent, "run", agent)
+    rows = []
+    monkeypatch.setattr(recorder, "record", lambda **row: rows.append(row))
+    redis = AsyncMock()
+    redis.get.return_value = None
+    out = await ChatService.chat(AsyncMock(), redis, "guest:x", uuid.uuid4(), "seeni one", lang="si")
+    return out, agent, rows, redis
+
+
+@pytest.mark.asyncio
+async def test_active_mode_answers_without_the_model(monkeypatch):
+    out, agent, rows, redis = await _chat(monkeypatch, "active")
+    assert not agent.called
+    assert "ඔව්" in out["reply"] and out["products"][0]["product_id"] == "p-sugar"
+    assert "plan_trace" not in out
+    assert rows[0]["layer"] == "L2" and rows[0]["plan"]["rule"] == "products.want"
+    saved = json.loads(redis.set.call_args.args[1])
+    assert saved[-1]["products"][0]["product_id"] == "p-sugar"
+
+
+@pytest.mark.asyncio
+async def test_shadow_mode_lets_the_model_answer_and_records_both_plans(monkeypatch):
+    out, agent, rows, _ = await _chat(monkeypatch, "shadow")
+    assert agent.called and out["reply"] == "සීනි මෙන්න."
+    assert "plan_trace" not in out
+    row = rows[0]
+    assert row["layer"] == "L4"
+    assert row["shadow_plan"]["rule"] == "products.want"
+    assert row["model_trace"] == [{"name": "search_products", "args": {"query": "sugar"}}]
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_rule_sends_its_traffic_to_the_model(monkeypatch):
+    monkeypatch.setattr(assistant_agent.settings, "hybrid_disabled_rules", "products")
+    out, agent, rows, _ = await _chat(monkeypatch, "active")
+    assert agent.called and rows[0]["layer"] == "L4"
+
+
+def test_offline_fast_path_eval_holds():
+    """Every case the fast path answers must be right; it must answer at least half."""
+    import asyncio
+
+    from scripts.hybrid_eval import run
+
+    summary = asyncio.run(run())["summary"]
+    assert summary["precision"] == 1.0, summary
+    assert summary["coverage"] >= 0.55, summary
