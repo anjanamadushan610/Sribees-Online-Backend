@@ -261,7 +261,7 @@ def test_search_benchmark_on_the_production_catalogue_holds():
     from scripts.search_benchmark import run
 
     summary = run()["summary"]
-    assert summary["top3_rate"] >= 0.97, summary
+    assert summary["top3_rate"] >= 0.99, summary
 
 
 def test_a_rare_word_yields_only_to_a_more_common_spelling_of_itself():
