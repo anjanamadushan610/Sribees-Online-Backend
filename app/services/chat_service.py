@@ -66,8 +66,10 @@ MAX_MODEL_PRODUCT_REPLY = 280
 # Tamil phrases below are matched as plain substrings.
 _PRICE_WORDS = re.compile(r"\b(?:rs|lkr|rupees?)\b|%")
 _UNVERIFIABLE_PRODUCT_CLAIMS = (
-    # prices
-    "රු", "රුපියල්", "ரூ", "ரூபாய்",
+    # prices -- with the dot: a bare "රු" is inside "මදුරු"
+    "රු.", "රුපියල්", "ரூ.", "ரூபாய்",
+    # asking to wait while the cards are already on screen
+    "wait", "moment", "රැඳෙන්න", "මොහොතක්", "காத்திரு",
     # stock and availability, either way
     "in stock", "out of stock", "sold out", "not available", "available now",
     "we have", "don't have", "do not have", "thiyenawa", "thiyenwa",
@@ -85,7 +87,7 @@ Answer in the reply language set at the end of these instructions, whatever lang
 
 CRITICAL — you do NOT have access to live stock/inventory. A separate system checks the real database AFTER you reply, and will correct or override your reply if it disagrees with real stock. So:
 - NEVER state or imply that a specific item, brand, or size IS or ISN'T in stock (no "Ow thiyenawa", "yes we have it", "sorry we don't have it", etc.).
-- For product searches keep your reply to a brief neutral acknowledgement. For chitchat answer naturally and usefully.
+- For product searches write one short, warm sentence that introduces the results as if they are already shown right below it (e.g. "තේ එක්ක කන්න සුදුසු කෑම වර්ග කිහිපයක් මෙන්න."). Do not say you are searching, do not ask them to wait, and mention no price, discount, stock or delivery time. For chitchat answer naturally and usefully.
 
 Classify the customer's intent as exactly one of:
 - "buy_product": they want to buy a finished/packaged product (e.g. "do you have cake", "l'oreal shampoo 330ml thiyenwd", "vaseline body lotion nadda"). Search for that PRODUCT itself.

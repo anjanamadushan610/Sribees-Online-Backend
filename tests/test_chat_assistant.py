@@ -230,6 +230,7 @@ MATCH = [{"product_id": "p1", "name": "Munchee Marie 80g"}]
         ("si", "තේ එක්ක කන්න සුදුසු රසවත් කෑම වර්ග කිහිපයක් මෙන්න."),
         ("en", "Here are some remedies for a cold, and first-aid basics."),
         ("ta", "தேநீருடன் சாப்பிட சில சுவையான பொருட்கள் இதோ."),
+        ("si", "මදුරු දඟර පිළිබඳ විස්තර මෙන්න."),  # "රු" inside a word is no price
     ],
 )
 def test_matched_products_keep_the_models_own_sentence(lang, written):
@@ -249,6 +250,7 @@ def test_matched_products_keep_the_models_own_sentence(lang, written):
         "Delivered in 30 minutes.",  # delivery promise
         "50% off on these biscuits.",  # discount
         "Ow kiyanna, me thiyenne.",  # Singlish where Sinhala script is due
+        "මම නැවත සොයා බලන්නම්. කරුණාකර මොහොතක් රැඳෙන්න.",  # asks to wait
     ],
 )
 def test_matched_products_fall_back_when_the_sentence_claims_too_much(written):
