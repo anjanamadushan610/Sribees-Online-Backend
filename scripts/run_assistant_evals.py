@@ -108,6 +108,193 @@ class UsageMeter:
         return total
 
 
+# ---------------------------------------------------------------------------
+# Agent mode: the whole tool loop against a fixed catalogue snapshot
+# ---------------------------------------------------------------------------
+
+SNAPSHOT = CASES.parent / "catalog_snapshot.json"
+
+# Which tool shows that the agent understood a planner intent.
+INTENT_TOOLS = {
+    "buy_product": {"search_products"},
+    "recipe_ingredients": {"search_products", "pantry_recipes"},
+    "pantry_recipe": {"pantry_recipes", "search_products"},
+    "track_order": {"my_orders"},
+    "recent_orders": {"my_orders"},
+    "app_help": {"app_help"},
+    "navigate": {"app_help"},
+    "cart_edit": {"stage_basket_change"},
+    "compare_products": {"compare_products"},
+    "alternatives": {"compare_products", "search_products"},
+    "memory": {"saved_preferences"},
+    "reminders": {"reminders"},
+}
+
+
+class AgentHarness:
+    """
+    Stands in for the database: catalogue search runs over the snapshot with
+    the real tokenizer (exact and prefix matches, no typo expansion), orders
+    and basket/preference/reminder previews return fixed server copy. Every
+    tool call the model makes is recorded for grading.
+    """
+
+    def __init__(self) -> None:
+        from app.services import assistant_agent
+        from app.services.chat_service import ChatService
+        from app.services.search_text import index_tokens
+
+        data = json.loads(SNAPSHOT.read_text(encoding="utf-8"))["products"]
+        for p in data:
+            p["_tokens"] = index_tokens(p["name"], p.get("name_si"), p.get("name_ta"), p.get("search_keywords"))[0]
+        self.products = data
+        self.calls: List[Dict[str, Any]] = []
+        self.agent = assistant_agent
+
+        ChatService._match_products = staticmethod(self.match)
+        assistant_agent.orders_result = self.orders
+        assistant_agent._feature = self.feature
+        original = assistant_agent._run_tool
+
+        async def recorded(name, raw_args, ctx, turn):
+            self.calls.append({"name": name, "args": raw_args or {}})
+            return await original(name, raw_args, ctx, turn)
+
+        assistant_agent._run_tool = recorded
+
+    async def match(self, db, branch_id, terms, brand=None, variant=None, max_price=None, min_price=None, lang="si"):
+        from app.services.search_text import parse_query
+
+        q = parse_query(terms[0])
+
+        def hits(p):
+            toks = p["_tokens"]
+            return sum(
+                any(t == r or t.startswith(r) or (q.stems.get(r) and t.startswith(q.stems[r])) for t in toks)
+                for r in q.required
+            )
+
+        def price_of(p):
+            return p["discount_price"] if p["is_on_sale"] and p["discount_price"] else p["price"]
+
+        pool = [
+            p for p in self.products
+            if (not brand or brand.casefold() in p["name"].casefold())
+            and (max_price is None or price_of(p) <= max_price)
+            and (min_price is None or price_of(p) >= min_price)
+        ]
+        scored = sorted(((hits(p), p) for p in pool), key=lambda x: (-x[0], x[1]["name"]))
+        need = len(q.required)
+        broad = [p for n, p in scored if need and n == need] or [p for n, p in scored if need > 1 and n >= 1]
+        broad = broad[:9]
+        size = (variant or "").casefold().replace(" ", "")
+        strict = [p for p in broad if not size or size in p["name"].casefold().replace(" ", "")]
+
+        def card(p):
+            name = {"si": p.get("name_si"), "ta": p.get("name_ta")}.get(lang) or p["name"]
+            return {
+                "product_id": p["product_id"], "name": name, "price": p["price"],
+                "discount_price": p["discount_price"], "is_on_sale": p["is_on_sale"], "variants": [],
+            }
+
+        return [card(p) for p in strict], [card(p) for p in broad]
+
+    async def orders(self, db, user_id, reference, lang, *, recent=False):
+        return {
+            "reply": "Your latest orders are below.",
+            "orders": [{"order_number": "SB-10423", "status_label": "Out for delivery", "freshness": "live"}],
+        }
+
+    async def feature(self, name, args, ctx, lang):
+        return {
+            "reply": "Check the preview below and confirm it to apply.",
+            "panels": [{"title": f"{name} preview", "commands": [{"type": "confirm"}]}],
+        }
+
+
+def grade_agent(case: Dict[str, Any], out: Dict[str, Any], calls: List[Dict[str, Any]]) -> List[str]:
+    """Outcome checks for one agent turn: tools used, cards shown, reply."""
+    expect = case["expect"]
+    failures: List[str] = []
+    used = [c["name"] for c in calls]
+    searches = [c["args"] for c in calls if c["name"] == "search_products"]
+    queries = [str(s.get("query", "")) for s in searches]
+    shown = [p.get("name", "") for p in out.get("products") or []]
+    reply = out.get("reply") or ""
+
+    wanted = set().union(*(INTENT_TOOLS.get(i, set()) for i in expect["intent"]))
+    chitchat_ok = "chitchat" in expect["intent"] and not set(used) - {"app_help"}
+    if not chitchat_ok and not wanted & set(used):
+        failures.append(f"tools {used or 'none'} want one of {sorted(wanted) or 'none'}")
+    for tool in expect.get("agent_tools_all", []):
+        if tool not in used:
+            failures.append(f"did not call {tool}")
+    if "lang" in expect and out.get("language") != expect["lang"]:
+        failures.append(f"lang={out.get('language')} want {expect['lang']}")
+    if expect.get("no_terms") and searches:
+        failures.append(f"searched {queries} but should not")
+    if "terms_any" in expect and not _hit(queries + shown, expect["terms_any"]):
+        failures.append(f"searches {queries} / cards {shown[:3]} miss {expect['terms_any']}")
+    if "terms_none" in expect and _hit(queries, expect["terms_none"]):
+        failures.append(f"searches {queries} contain forbidden {expect['terms_none']}")
+    for group in expect.get("terms_all", []):
+        if not _hit(queries + shown, group):
+            failures.append(f"searches {queries} miss one of {group}")
+    if "brand_any" in expect and not _hit(
+        [str(s.get("brand") or "") for s in searches] + queries, expect["brand_any"]
+    ):
+        failures.append(f"brand not searched, want {expect['brand_any']}")
+    if "max_price" in expect and not any(s.get("max_price") == expect["max_price"] for s in searches):
+        failures.append(f"max_price not used, want {expect['max_price']}")
+    refs = [c["args"].get("order_reference") for c in calls if c["name"] == "my_orders"]
+    if "order_reference" in expect and refs and expect["order_reference"] not in refs:
+        failures.append(f"order_reference={refs} want {expect['order_reference']}")
+    topics = [c["args"].get("topic") for c in calls if c["name"] == "app_help"]
+    if "target_any" in expect and "app_help" in wanted and topics and not set(topics) & set(expect["target_any"]):
+        failures.append(f"help topic={topics} want {expect['target_any']}")
+    if "shows_any" in expect and not _hit(shown, expect["shows_any"]):
+        failures.append(f"cards {shown[:4]} miss {expect['shows_any']}")
+    for phrase in expect.get("forbid_reply", []):
+        if phrase.casefold() in reply.casefold():
+            failures.append(f"reply contains forbidden {phrase!r}")
+    return failures
+
+
+async def agent_trial(case, history, fixed, fallback, harness: "AgentHarness") -> Dict[str, Any]:
+    import uuid
+
+    async def emit(stage, **detail):
+        return None
+
+    harness.calls.clear()
+    out = await asyncio.wait_for(
+        harness.agent.run(
+            db=None,
+            redis=None,
+            user_id=uuid.uuid4(),
+            branch_id=uuid.uuid4(),
+            message=case["message"],
+            image_base64=None,
+            image_mime_type=None,
+            history=history,
+            fixed_lang=fixed,
+            fallback_lang=fallback,
+            application_context=None,
+            briefing_prompt="",
+            emit=emit,
+        ),
+        timeout=45,
+    )
+    failures = grade_agent(case, out, harness.calls)
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "tools": [f"{c['name']}({json.dumps(c['args'], ensure_ascii=False)[:60]})" for c in harness.calls],
+        "reply": out.get("reply"),
+        "shown": [p.get("name") for p in out.get("products") or []][:6],
+    }
+
+
 async def run(args: argparse.Namespace) -> int:
     from app.config.settings import settings
     from app.services import chat_language
@@ -126,8 +313,13 @@ async def run(args: argparse.Namespace) -> int:
     ChatService._log_usage = staticmethod(_log)
 
     cases = [c for c in load_cases() if not args.flow or c["flow"] == args.flow]
+    if args.only:
+        wanted = set(args.only.split(","))
+        cases = [c for c in cases if c["id"] in wanted]
     cases = cases[: args.limit] if args.limit else cases
-    planned = len(cases) * args.k
+    # The agent makes about two model calls per message; budget for three.
+    planned = len(cases) * args.k * (3 if args.agent else 1)
+    harness = AgentHarness() if args.agent else None
     if planned > args.max_calls:
         print(f"{planned} calls planned, over --max-calls {args.max_calls}; lower --k or --limit")
         return 2
@@ -141,27 +333,31 @@ async def run(args: argparse.Namespace) -> int:
         trials = []
         for _ in range(args.k):
             t0 = time.monotonic()
+            n_calls_before = len(meter.calls)
             try:
-                plan = await asyncio.wait_for(
-                    ChatService._ask_gemini(
-                        case["message"], history, None, None, lang=fixed, fallback_lang=fallback
-                    ),
-                    timeout=30,
-                )
-                language = chat_language.final_language(
-                    fixed, plan.get("reply_language"), fallback, reply=plan.get("reply")
-                )
-                failures = grade(case, plan, language)
-                trials.append(
-                    {
+                if args.agent:
+                    trial = await agent_trial(case, history, fixed, fallback, harness)
+                else:
+                    plan = await asyncio.wait_for(
+                        ChatService._ask_gemini(
+                            case["message"], history, None, None, lang=fixed, fallback_lang=fallback
+                        ),
+                        timeout=30,
+                    )
+                    language = chat_language.final_language(
+                        fixed, plan.get("reply_language"), fallback, reply=plan.get("reply")
+                    )
+                    failures = grade(case, plan, language)
+                    trial = {
                         "ok": not failures,
                         "failures": failures,
                         "intent": plan.get("intent"),
                         "terms": plan.get("search_terms"),
                         "reply": plan.get("reply"),
-                        "seconds": round(time.monotonic() - t0, 2),
                     }
-                )
+                trial["seconds"] = round(time.monotonic() - t0, 2)
+                trial["model_calls"] = len(meter.calls) - n_calls_before
+                trials.append(trial)
             except (GeminiAPIError, asyncio.TimeoutError) as exc:
                 trials.append(
                     {
@@ -185,7 +381,11 @@ async def run(args: argparse.Namespace) -> int:
     price = {"input": args.price_in, "cached": args.price_cached, "output": args.price_out}
     n_calls = max(len(meter.calls), 1)
     summary = {
+        "mode": "agent" if args.agent else "planner",
         "model": settings.gemini_generation_model,
+        "avg_model_calls_per_message": round(
+            len(meter.calls) / max(sum(len(r["trials"]) for r in results), 1), 2
+        ),
         "cases": len(results),
         "k": args.k,
         "pass_hat_k": round(sum(r["passes"] == r["k"] for r in results) / max(len(results), 1), 3),
@@ -227,6 +427,12 @@ if __name__ == "__main__":
     parser.add_argument("--max-calls", type=int, default=60, help="refuse to run more calls than this")
     parser.add_argument("--delay", type=float, default=0.5, help="seconds between calls")
     parser.add_argument("--model", help="override GEMINI_GENERATION_MODEL for this run")
+    parser.add_argument(
+        "--agent",
+        action="store_true",
+        help="run the tool-using agent end to end against evals/assistant/catalog_snapshot.json",
+    )
+    parser.add_argument("--only", help="comma-separated case ids")
     parser.add_argument("--price-in", type=float, default=DEFAULT_PRICE["input"])
     parser.add_argument("--price-cached", type=float, default=DEFAULT_PRICE["cached"])
     parser.add_argument("--price-out", type=float, default=DEFAULT_PRICE["output"])
