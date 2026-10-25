@@ -93,6 +93,9 @@ def harness(monkeypatch):
     monkeypatch.setattr(ChatService, "_match_products", ChatService._match_products)
     for name in ("orders_result", "_feature", "_run_tool"):
         monkeypatch.setattr(assistant_agent, name, getattr(assistant_agent, name))
+    from app.services import assistant_shopping
+
+    monkeypatch.setattr(assistant_shopping, "catalog_product", assistant_shopping.catalog_product)
     return AgentHarness()
 
 

@@ -162,12 +162,28 @@ class AgentHarness:
 
         assistant_agent._run_tool = recorded
         self.vectors: Dict[str, List[float]] = {}
+        self.by_id = {p["product_id"]: p for p in data}
+        from app.services import assistant_shopping
+
+        assistant_shopping.catalog_product = self.catalog_product
+
+    async def catalog_product(self, db, branch_id, product_id, lang):
+        p = self.by_id.get(str(product_id))
+        return self.card(p, lang) if p else None
+
+    @staticmethod
+    def card(p, lang):
+        name = {"si": p.get("name_si"), "ta": p.get("name_ta")}.get(lang) or p["name"]
+        return {
+            "product_id": p["product_id"], "name": name, "price": p["price"],
+            "discount_price": p["discount_price"], "is_on_sale": p["is_on_sale"], "variants": [],
+        }
 
     async def enable_semantic(self) -> None:
         """Embed the snapshot with the real model and serve meaning lookups from it."""
         from types import SimpleNamespace
 
-        from app.services import assistant_shopping, semantic_search
+        from app.services import semantic_search
 
         docs = [
             semantic_search.document_text(
@@ -181,24 +197,12 @@ class AgentHarness:
         ]
         vectors = await semantic_search.embed(docs, "RETRIEVAL_DOCUMENT")
         self.vectors = {p["product_id"]: v for p, v in zip(self.products, vectors, strict=True)}
-        by_id = {p["product_id"]: p for p in self.products}
 
         async def related(db, query, limit=6):
             (qv,) = await semantic_search.embed([query], "RETRIEVAL_QUERY")
             return semantic_search.rank(qv, self.vectors, limit)
 
-        async def catalog_product(db, branch_id, product_id, lang):
-            p = by_id.get(str(product_id))
-            if not p:
-                return None
-            name = {"si": p.get("name_si"), "ta": p.get("name_ta")}.get(lang) or p["name"]
-            return {
-                "product_id": p["product_id"], "name": name, "price": p["price"],
-                "discount_price": p["discount_price"], "is_on_sale": p["is_on_sale"], "variants": [],
-            }
-
         semantic_search.related_product_ids = related
-        assistant_shopping.catalog_product = catalog_product
         self.agent.settings.semantic_search_enabled = True
 
     async def match(self, db, branch_id, terms, brand=None, variant=None, max_price=None, min_price=None, lang="si"):
@@ -229,14 +233,7 @@ class AgentHarness:
         size = (variant or "").casefold().replace(" ", "")
         strict = [p for p in broad if not size or size in p["name"].casefold().replace(" ", "")]
 
-        def card(p):
-            name = {"si": p.get("name_si"), "ta": p.get("name_ta")}.get(lang) or p["name"]
-            return {
-                "product_id": p["product_id"], "name": name, "price": p["price"],
-                "discount_price": p["discount_price"], "is_on_sale": p["is_on_sale"], "variants": [],
-            }
-
-        return [card(p) for p in strict], [card(p) for p in broad]
+        return [self.card(p, lang) for p in strict], [self.card(p, lang) for p in broad]
 
     async def orders(self, db, user_id, reference, lang, *, recent=False):
         return {

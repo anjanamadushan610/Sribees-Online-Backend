@@ -402,6 +402,22 @@ class ChatService:
                             f"Chat Gemini error (attempt {attempt + 1}/{MAX_RETRIES + 1}): "
                             f"{response.status_code}"
                         )
+                    elif (
+                        response.status_code == 400
+                        and "thinkingConfig" in payload.get("generationConfig", {})
+                    ):
+                        # Some models refuse a thinking budget they do not
+                        # support (gemini-3.5-flash-lite rejects 0 with a bare
+                        # "invalid argument"). Switching GEMINI_GENERATION_MODEL
+                        # must not take the chat down, so drop it and go again.
+                        logger.warning(
+                            "Chat Gemini 400 with thinkingConfig on {}; retrying without it",
+                            model,
+                        )
+                        generation = dict(payload["generationConfig"])
+                        generation.pop("thinkingConfig")
+                        payload = {**payload, "generationConfig": generation}
+                        continue
                     else:
                         raise GeminiAPIError(
                             f"Gemini returned {response.status_code}",

@@ -200,6 +200,49 @@ async def test_customers_own_numbers_may_be_repeated(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cards_follow_the_language_the_model_settled_on(monkeypatch):
+    """Romanised text: tools run in the fallback language, the reply ends up English."""
+    from app.services import assistant_shopping
+
+    monkeypatch.setattr(ChatService, "_match_products", staticmethod(fake_search(CATALOG)))
+    english = {**SUGAR, "name": "White Sugar 1kg"}
+    monkeypatch.setattr(assistant_shopping, "catalog_product", AsyncMock(return_value=english))
+    script = Script(
+        model_turn(("search_products", {"query": "seeni"})),
+        model_turn(("respond", {"text": "Here is the sugar.", "show_product_ids": ["p-sugar"], "reply_language": "en"})),
+    )
+    monkeypatch.setattr(ChatService, "_generate", staticmethod(script))
+    out = await assistant_agent.run(
+        db=AsyncMock(), redis=AsyncMock(), user_id=USER, branch_id=BRANCH, message="sugar please",
+        image_base64=None, image_mime_type=None, history=[], fixed_lang=None, fallback_lang="si",
+        application_context=None, briefing_prompt="", emit=AsyncMock(),
+    )
+    assert out["language"] == "en"
+    assert out["products"][0]["name"] == "White Sugar 1kg"
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_without_a_thinking_budget_the_model_refuses(monkeypatch):
+    import httpx
+
+    sent = []
+
+    async def post(self, url, json=None, headers=None):
+        sent.append(json)
+        if "thinkingConfig" in json["generationConfig"]:
+            return httpx.Response(400, json={"error": {"message": "Request contains an invalid argument."}})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "{}"}]}}]})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    monkeypatch.setattr(assistant_agent.settings, "gemini_api_key", "test-key")
+    data = await ChatService._generate(
+        {"contents": [], "generationConfig": {"temperature": 0.3, "thinkingConfig": {"thinkingBudget": 0}}}
+    )
+    assert data["candidates"]
+    assert len(sent) == 2 and "thinkingConfig" not in sent[1]["generationConfig"]
+
+
+@pytest.mark.asyncio
 async def test_chat_uses_the_agent_when_switched_on(monkeypatch):
     from app.services import assistant_briefings
 

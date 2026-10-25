@@ -483,6 +483,20 @@ def fallback_reply(turn: Turn, lang: str, showing_products: bool) -> str:
     )
 
 
+async def _relocalise(db, branch_id, shown: List[str], turn: Turn, language: str) -> None:
+    """Re-read the cards about to be shown in the reply's language (names, descriptions)."""
+    from app.services.assistant_shopping import catalog_product
+
+    for pid in shown:
+        try:
+            fresh = await catalog_product(db, branch_id, pid, language)
+        except Exception as exc:  # noqa: BLE001 - the old card is still correct, just in another language
+            logger.warning("Card re-localisation skipped: {}", exc)
+            return
+        if fresh:
+            turn.products[pid] = fresh
+
+
 # ---------------------------------------------------------------------------
 # The loop
 # ---------------------------------------------------------------------------
@@ -511,7 +525,8 @@ async def run(
     """
     from app.services.chat_service import ChatService
 
-    turn = Turn(fixed_lang or fallback_lang)
+    tool_lang = fixed_lang or fallback_lang
+    turn = Turn(tool_lang)
     # The customer's own numbers ("under 300") may be repeated back.
     turn.seen_text.append(message or "")
     ctx = {
@@ -615,6 +630,10 @@ async def run(
     if not shown and turn.search_order and not turn.auto_products:
         shown = turn.search_order[:MAX_TOOL_PRODUCTS]
     shown = list(dict.fromkeys(shown + turn.auto_products))[:MAX_SHOWN_PRODUCTS]
+    if language != tool_lang and branch_id:
+        # The tools ran before the model settled the language (romanised or
+        # mixed text), so their cards carry the fallback language's names.
+        await _relocalise(db, branch_id, shown, turn, language)
 
     text = check_reply(answer.text, language, turn) if answer else None
     if text is None:
