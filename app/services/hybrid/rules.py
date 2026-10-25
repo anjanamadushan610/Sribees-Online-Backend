@@ -153,6 +153,13 @@ def route(msg: Optional[Message], vocabulary, fallback_lang: str) -> Optional[Pl
             f"{'open' if opening else 'how'}|{topic}",
         )
 
+    # The customer's own wallet / points or offers: "mage wallet eke salli
+    # kiyada", "points kiyada", "offers monada thiyenne".
+    account_words = {"filler", "want", "price", "topic:wallet", "topic:offers"}
+    if len(topics) == 1 and topics[0] in ("wallet", "offers") and not products and all(k & account_words for k in kinds):
+        tool = "wallet_and_points" if topics[0] == "wallet" else "my_offers"
+        return plan([ToolCall(tool, {})], "account", f"account.{topics[0]}", f"account|{topics[0]}")
+
     # "How do I place an order": order + how + a placing verb ("danne").
     # Without the verb, "mage order eka kohomada" asks how the order is doing.
     if has("order") and has("how") and has("verb") and not topics and not products:

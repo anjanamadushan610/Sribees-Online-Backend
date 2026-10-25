@@ -21,11 +21,12 @@ def _fold(*phrases: str) -> frozenset:
 
 # Words that carry no meaning for routing: pronouns, counters, politeness.
 FILLER = _fold(
-    "mata mage mge api apita oya oyage ekak eka ekk ek ekath ekata ekta kiyak karanna karala",
+    "mata mage mge api apita oya oyage ekak eka ekk ek eke ekath ekata ekta kiyak karanna karala",
     "packet packets pakat pkt kilo kg grams bottle tin box",
     "please pls plz ane aney ah ow ok okay hari harida",
     "da d ne neh nam nm ko kho",
-    "i me my we a an the some any for please is are am do does you your can could of to in at lot",
+    "i me my we a an the some any for please is are am do does you your can could of to in at lot what which",
+    "monada mokakda monawada",
     "ekak dekak thunak hatarak pahak deka thuna hathara paha tika tikak dan thama",
     "babata lamainta lamayinta lamayata gedarata me mee app ap eken nana nanna",
     "මට මගේ අපිට එකක් එක පැකට් කිලෝ ද නේ අනේ තාම දැන් මේ ඇප් එකෙන්",
@@ -48,7 +49,7 @@ ENGLISH = _fold(
 # "I want / is there / how much" around a product: a shopping question.
 WANT = _fold(
     "one onee ona oni onei ganna gannawa ganna one gannada denna dennako dennda",
-    "thiyenawada thiyenwada thiyanawada thiyeda tiyenawada thiyenawa thiyena",
+    "thiyenawada thiyenwada thiyanawada thiyeda tiyenawada thiyenawa thiyena thiyenne",
     "need want buy have got available show pennanna pennapan balanna",
     "ඕන ඕනෙ ඕනේ ගන්න දෙන්න තියෙනවද තියනවද තියෙනවා පෙන්නන්න",
     "வேண்டும் வேணும் இருக்கா இருக்கிறதா வாங்க காட்டு",
@@ -90,7 +91,7 @@ TOPICS = {
     "cart": _fold("cart basket kart karta", "කරත්තය කාට්", "கூடை"),
     "checkout": _fold("checkout pay payment gewanna gewana gewanne", "ගෙවන්න ගෙවීම", "செலுத்த"),
     "addresses": _fold("address addresses lipinaya location", "ලිපිනය", "முகவரி"),
-    "wallet": _fold("wallet balance salli", "පසුම්බිය", "பணப்பை"),
+    "wallet": _fold("wallet balance salli points point loyalty cashback", "පසුම්බිය", "பணப்பை புள்ளிகள்"),
     "offers": _fold("offer offers coupon coupons discount deal deals", "වට්ටම් කූපන්", "தள்ளுபடி கூப்பன்"),
     "settings": _fold("settings setting language basha", "සැකසුම් භාෂාව", "அமைப்புகள் மொழி"),
     "profile": _fold("profile account gini", "ගිණුම", "சுயவிவரம்"),

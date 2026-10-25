@@ -162,10 +162,30 @@ class AgentHarness:
 
         assistant_agent._run_tool = recorded
         self.vectors: Dict[str, List[float]] = {}
+        self._fake_account_tools()
         self.by_id = {p["product_id"]: p for p in data}
         from app.services import assistant_shopping
 
         assistant_shopping.catalog_product = self.catalog_product
+
+    @staticmethod
+    def _fake_account_tools() -> None:
+        """Fixed account data, so the account tools run without a database."""
+        from app.services import assistant_account as acc
+
+        def fixed(reply, data):
+            async def tool(*args, **kwargs):
+                return {"ui": {"reply": reply}, "data": data}
+
+            return tool
+
+        acc.wallet_summary = fixed("Your wallet has Rs 450. Points: 120.", {"wallet_balance": 450, "points": 120})
+        acc.my_offers = fixed("2 offers are available for you now.", {"count": 2, "offers": [{"code": "SAVE10"}, {"code": "NEW50"}]})
+        acc.my_wishlist = fixed("You have 1 item in your wishlist.", {"count": 1})
+        acc.my_notifications = fixed("Your latest notifications are below.", {"total": 1})
+        acc.my_referrals = fixed("Your invite code is SB1234.", {"code": "SB1234"})
+        acc.reorder = fixed("Check the preview below and confirm it to apply.", {"needs_confirmation": True})
+        acc.stage_wishlist_add = fixed("Add it to your wishlist? Tap confirm below.", {"needs_confirmation": True})
 
     async def catalog_product(self, db, branch_id, product_id, lang):
         p = self.by_id.get(str(product_id))

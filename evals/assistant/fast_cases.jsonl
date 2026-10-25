@@ -52,3 +52,10 @@
 {"id": "trap_qty_no_add", "flow": "fast-trap", "message": "kiri packet 2k one", "expect": {"intent": ["__model__"]}}
 {"id": "fast_how_place_order", "flow": "fast", "message": "order ekak danne kohomada", "expect": {"intent": ["app_help"], "lang": "si", "target_any": ["checkout"]}}
 {"id": "fast_buy_ganna", "flow": "fast", "message": "chocolate cake ekak ganna one", "expect": {"intent": ["buy_product"], "lang": "si", "terms_any": ["cake"]}}
+{"id": "fast_wallet_si", "flow": "fast", "message": "mage wallet eke salli kiyada", "expect": {"intent": ["wallet_and_points"], "lang": "si"}}
+{"id": "fast_points_si", "flow": "fast", "message": "mage points kiyada", "expect": {"intent": ["wallet_and_points"], "lang": "si"}}
+{"id": "fast_wallet_en", "flow": "fast", "message": "what is my wallet balance", "expect": {"intent": ["wallet_and_points"], "lang": "en"}}
+{"id": "fast_offers_si", "flow": "fast", "message": "offers monada thiyenne", "expect": {"intent": ["my_offers"], "lang": "si"}}
+{"id": "fast_offers_en", "flow": "fast", "message": "any coupons for me", "expect": {"intent": ["my_offers"], "lang": "en"}}
+{"id": "trap_wallet_howto", "flow": "fast-trap", "message": "wallet salli use karanne kohomada", "expect": {"intent": ["app_help"], "target_any": ["wallet"]}, "note": "how-to, not the balance"}
+{"id": "trap_offer_apply", "flow": "fast-trap", "message": "me coupon eka wada karanne naththe ai", "expect": {"intent": ["__model__"]}}

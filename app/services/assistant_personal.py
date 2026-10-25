@@ -432,6 +432,28 @@ async def confirm_personal(db, user_id, token, kind, payload, lang):
             reminder.active = False
         else:
             reminder.next_due_at = next_morning(7)
+    elif kind == "wishlist_add":
+        # Inline rather than WishlistService.add_item, which commits on its
+        # own: the item and the receipt must land in this one transaction.
+        from decimal import Decimal
+
+        from app.models.wishlist import WishlistItem
+
+        product_id = UUID(payload["product_id"])
+        existing = (
+            await db.execute(
+                select(WishlistItem).where(
+                    WishlistItem.user_id == user_id,
+                    WishlistItem.product_id == product_id,
+                    WishlistItem.variant_id.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        watch = Decimal(str(payload["price"])) if payload.get("price") is not None else None
+        if existing:
+            existing.price_at_watch = watch
+        else:
+            db.add(WishlistItem(user_id=user_id, product_id=product_id, variant_id=None, price_at_watch=watch))
     else:
         raise HTTPException(400, "UNKNOWN_ASSISTANT_ACTION")
     reply = {
