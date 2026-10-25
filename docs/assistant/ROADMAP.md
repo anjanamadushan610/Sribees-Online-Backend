@@ -5,6 +5,10 @@ switch, is measured offline first (no model calls, no cost), and goes to
 production only when its acceptance numbers hold. Paid model runs for testing
 happen only when the owner approves them.
 
+Status (2026-10-26): P0, P1, P2, P3 and P4 are built; production runs the
+fast path in **shadow** (HYBRID_MODE=shadow) while live agreement data
+accumulates. Template patterns with slots (L3) and P5 remain.
+
 | Phase | What ships | Done when |
 |---|---|---|
 | **P0 Foundations** | `Plan` / executor / composer extracted from the agent so every layer speaks one language; `assistant_turns` log with scrubbing; per-turn layer, latency and cost recorded | all existing assistant tests pass; a turn writes one scrubbed row; no personal data in rows (tests) |
