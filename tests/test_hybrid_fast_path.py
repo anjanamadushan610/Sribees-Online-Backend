@@ -206,3 +206,30 @@ def test_offline_fast_path_eval_holds():
     summary = asyncio.run(run())["summary"]
     assert summary["precision"] == 1.0, summary
     assert summary["coverage"] >= 0.55, summary
+
+
+# --- agreement between a rule's shadow plan and the model (P2) --------------
+
+from app.services.hybrid.agreement import agree  # noqa: E402
+
+
+def _plan(*steps):
+    return {"rule": "x", "steps": [{"name": n, "args": a} for n, a in steps]}
+
+
+def test_agreement_judges_what_happened_not_the_bytes():
+    rule = _plan(("search_products", {"query": "kiri piti"}))
+    assert agree(rule, [{"name": "search_products", "args": {"query": "Kiri Piti 400g"}}]) is True
+    assert agree(rule, [{"name": "my_orders", "args": {}}]) is False
+    # different words, same products found -> the report passes same_products
+    assert agree(_plan(("search_products", {"query": "seeni"})), [{"name": "search_products", "args": {"query": "sugar"}}]) is False
+    assert agree(_plan(("search_products", {"query": "seeni"})), [{"name": "search_products", "args": {"query": "sugar"}}], same_products=True) is True
+
+
+def test_agreement_for_orders_help_and_social():
+    assert agree(_plan(("my_orders", {"recent": True})), [{"name": "my_orders", "args": {"recent": True}}]) is True
+    assert agree(_plan(("my_orders", {})), [{"name": "my_orders", "args": {"recent": True}}]) is False
+    assert agree(_plan(("app_help", {"topic": "wallet"})), [{"name": "app_help", "args": {"topic": "offers"}}]) is False
+    assert agree({"rule": "social.greeting", "steps": []}, []) is True
+    assert agree({"rule": "social.greeting", "steps": []}, [{"name": "search_products", "args": {}}]) is False
+    assert agree(None, []) is None
