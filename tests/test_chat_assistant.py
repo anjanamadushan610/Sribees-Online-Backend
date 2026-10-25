@@ -221,6 +221,53 @@ def test_no_match_replies_obey_application_language(lang, phrase):
     assert "We have everything" not in reply
 
 
+MATCH = [{"product_id": "p1", "name": "Munchee Marie 80g"}]
+
+
+@pytest.mark.parametrize(
+    "lang,written",
+    [
+        ("si", "තේ එක්ක කන්න සුදුසු රසවත් කෑම වර්ග කිහිපයක් මෙන්න."),
+        ("en", "Here are some remedies for a cold, and first-aid basics."),
+        ("ta", "தேநீருடன் சாப்பிட சில சுவையான பொருட்கள் இதோ."),
+    ],
+)
+def test_matched_products_keep_the_models_own_sentence(lang, written):
+    reply = ChatService._ground_reply(
+        written, "buy_product", ["biscuit"], None, None, MATCH, MATCH, lang
+    )
+    assert reply == written
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "ඔව් තියෙනවා! මෙන්න.",  # stock claim
+        "Munchee Marie රු. 150යි.",  # price
+        "Yes, we have it in stock.",  # stock claim
+        "Only Rs 150 today.",  # price
+        "Delivered in 30 minutes.",  # delivery promise
+        "50% off on these biscuits.",  # discount
+        "Ow kiyanna, me thiyenne.",  # Singlish where Sinhala script is due
+    ],
+)
+def test_matched_products_fall_back_when_the_sentence_claims_too_much(written):
+    lang = "en" if written.isascii() and "kiyanna" not in written else "si"
+    reply = ChatService._ground_reply(
+        written, "buy_product", ["biscuit"], None, None, MATCH, MATCH, lang
+    )
+    assert reply != written
+    assert reply.startswith(("Here are the matching products", "ගැළපෙන භාණ්ඩ මෙන්න"))
+
+
+def test_alternatives_reply_stays_server_written():
+    """A brand/size miss still names the real alternatives, never the model's words."""
+    reply = ChatService._ground_reply(
+        "Here you go", "buy_product", ["milk"], "Kotmale", None, [], MATCH, "en"
+    )
+    assert "Munchee Marie 80g" in reply and "Here you go" not in reply
+
+
 @pytest.mark.asyncio
 async def test_missing_branch_is_not_reported_as_out_of_stock():
     plan = ChatPlan(

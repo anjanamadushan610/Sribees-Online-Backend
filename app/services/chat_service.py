@@ -23,6 +23,7 @@ truncates the answer, not the reasoning.
 
 import asyncio
 import json
+import re
 import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -57,6 +58,24 @@ RETRY_DELAY = 1.5
 MAX_HISTORY_TURNS = settings.gemini_chat_history_turns
 MAX_SEARCH_TERMS = 6
 MAX_MATCHES_PER_TERM = 3
+
+# A product turn keeps the model's own sentence only when it is a short
+# introduction with none of these in it -- see ChatService._usable_product_reply.
+MAX_MODEL_PRODUCT_REPLY = 280
+# Latin words need word boundaries ("rs" is inside "first"); the Sinhala and
+# Tamil phrases below are matched as plain substrings.
+_PRICE_WORDS = re.compile(r"\b(?:rs|lkr|rupees?)\b|%")
+_UNVERIFIABLE_PRODUCT_CLAIMS = (
+    # prices
+    "රු", "රුපියල්", "ரூ", "ரூபாய்",
+    # stock and availability, either way
+    "in stock", "out of stock", "sold out", "not available", "available now",
+    "we have", "don't have", "do not have", "thiyenawa", "thiyenwa",
+    "තියෙනවා", "තිබේ", "නැහැ", "නැත", "තොග", "ඉවරයි", "හමු වුණේ",
+    "இருக்கிறது", "உள்ளது", "இல்லை", "கையிருப்பு",
+    # delivery and timing promises
+    "deliver", "minute", "බෙදාහැර", "විනාඩි", "விநியோக", "நிமிட",
+)
 
 _SYSTEM_PROMPT = """You are SRIBEES Online's grocery shopping assistant, chatting with a customer in a Sri Lankan grocery delivery app.
 
@@ -543,6 +562,11 @@ class ChatService:
         exactly what the reported hallucination ("Ow, thiyenawa!") and fake
         "podi delay ekakata" apology bugs came from: an LLM reply written
         with zero visibility into real stock.
+
+        When real matches exist the model's own sentence is kept if it makes
+        no claim the cards could contradict (see ``_usable_product_reply``):
+        replacing every reply with one fixed line is what made the assistant
+        sound like a machine.
         """
         if intent == "chitchat" or not search_terms:
             return llm_reply
@@ -571,12 +595,39 @@ class ChatService:
                 )
             return llm_reply
 
+        usable = ChatService._usable_product_reply(llm_reply, lang)
+        if usable:
+            return usable
         return tr(
             lang,
             "Here are the matching products. Check the cards for prices and available quantities.",
             "ගැළපෙන භාණ්ඩ මෙන්න 😊 මිල සහ ලබාගත හැකි ප්‍රමාණ පහළින් බලන්න.",
             "பொருத்தமான பொருட்கள் இதோ. விலைகளையும் கிடைக்கும் அளவுகளையும் கீழே பார்க்கவும்.",
         )
+
+    @staticmethod
+    def _usable_product_reply(text: str, lang: str) -> Optional[str]:
+        """
+        The model's sentence for a turn with real matching products, or None.
+
+        The model writes before the search runs, so it may introduce the
+        cards ("තේ එක්ක කන්න සුදුසු කෑම වර්ග මෙන්න") but must not state what
+        only the database knows. Any sign of that -- a price, a stock or
+        availability word, a delivery promise -- or a reply in the wrong
+        script falls back to the fixed sentence. A false alarm only costs the
+        old wording, so the lists err on the side of rejecting.
+        """
+        reply = (text or "").strip()
+        if not reply or len(reply) > MAX_MODEL_PRODUCT_REPLY:
+            return None
+        if not chat_language.written_in(reply, lang):
+            return None
+        folded = reply.casefold()
+        if _PRICE_WORDS.search(folded) or any(
+            phrase in folded for phrase in _UNVERIFIABLE_PRODUCT_CLAIMS
+        ):
+            return None
+        return reply
 
     # ------------------------------------------------------------------
     # Entry point
