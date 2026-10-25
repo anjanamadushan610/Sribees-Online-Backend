@@ -23,6 +23,14 @@ from app.schemas.chat import ChatPlan
 from app.services import assistant_briefings as ab
 from app.services.chat_service import ChatService
 
+
+@pytest.fixture(autouse=True)
+def _planner_path(monkeypatch):
+    """These tests drive the single-call planner (ASSISTANT_AGENT_V2=false)."""
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "assistant_agent_v2", False)
+
 NOW = datetime(2026, 4, 8, 6, 0, tzinfo=timezone.utc)
 ZWJ = chr(0x200D)
 RLO = chr(0x202E)

@@ -16,7 +16,7 @@ The assistant supports Sinhala Unicode, English and Tamil. Sinhala remains the p
 
 Native shortcuts for tracking, recent orders, app help, saved preferences, reminders, reminder suggestions and pantry recipes work without model classification. Natural-language requests use a validated Gemini JSON plan.
 
-## Tool-using agent (`ASSISTANT_AGENT_V2`, off by default)
+## Tool-using agent (`ASSISTANT_AGENT_V2`, on since 2026-10-25; `false` restores the planner)
 
 `app/services/assistant_agent.py` answers free-text messages as a loop instead
 of one classify-then-template call. The model calls tools -- `search_products`,

@@ -16,6 +16,14 @@ from app.services.chat_service import MAX_HISTORY_TURNS, ChatService
 from app.services.embedding_service import GeminiAPIError
 
 
+@pytest.fixture(autouse=True)
+def _planner_path(monkeypatch):
+    """These tests drive the single-call planner (ASSISTANT_AGENT_V2=false)."""
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "assistant_agent_v2", False)
+
+
 def rows(values):
     return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: values))
 

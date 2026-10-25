@@ -18,6 +18,14 @@ from app.services import chat_language
 from app.services.chat_service import ChatService
 from app.services.embedding_service import GeminiAPIError
 
+
+@pytest.fixture(autouse=True)
+def _planner_path(monkeypatch):
+    """These tests drive the single-call planner (ASSISTANT_AGENT_V2=false)."""
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "assistant_agent_v2", False)
+
 TAMIL = (chr(0x0B80), chr(0x0BFF))
 SINHALA = (chr(0x0D80), chr(0x0DFF))
 

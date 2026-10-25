@@ -535,12 +535,13 @@ class Settings(BaseSettings):
         ),
     )
     assistant_agent_v2: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Answer free-text chat with the tool-using agent "
             "(app/services/assistant_agent.py): the model calls catalogue, "
             "order, basket and help tools, sees their results and then writes "
-            "the reply. Off = the single-call planner in chat_service."
+            "the reply. False = the single-call planner in chat_service "
+            "(the way back if the agent misbehaves; on since 2026-10-25)."
         ),
     )
     assistant_agent_max_rounds: int = Field(
