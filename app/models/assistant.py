@@ -54,6 +54,26 @@ class AssistantTurn(Base):
     )
 
 
+class AssistantPattern(Base):
+    """A message plan learned from the model (migration 090); see hybrid/memory.py."""
+
+    __tablename__ = "assistant_patterns"
+    pattern_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    text_key = Column(Text, nullable=False, unique=True)
+    plan = Column(JSONB, nullable=False)
+    status = Column(String(12), nullable=False, default="shadow", server_default="shadow")
+    source = Column(String(20), nullable=False, default="model", server_default="model")
+    examples = Column(Integer, nullable=False, default=0, server_default="0")
+    shadow_agree = Column(Integer, nullable=False, default=0, server_default="0")
+    shadow_disagree = Column(Integer, nullable=False, default=0, server_default="0")
+    canary_agree = Column(Integer, nullable=False, default=0, server_default="0")
+    canary_disagree = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    promoted_at = Column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (Index("ix_assistant_patterns_status", "status"),)
+
+
 class AssistantProfile(Base):
     __tablename__ = "assistant_profiles"
     user_id = Column(

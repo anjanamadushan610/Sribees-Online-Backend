@@ -131,6 +131,24 @@ INTENT_TOOLS = {
 }
 
 
+def harness_targets():
+    """Every (object, attribute) AgentHarness replaces -- for tests to restore."""
+    from app.services import (
+        assistant_account,
+        assistant_agent,
+        assistant_shopping,
+        semantic_search,
+    )
+    from app.services.chat_service import ChatService
+
+    targets = [(ChatService, "_match_products"), (assistant_shopping, "catalog_product"),
+               (semantic_search, "related_product_ids")]
+    targets += [(assistant_agent, n) for n in ("orders_result", "_feature", "_run_tool")]
+    targets += [(assistant_account, n) for n in ("wallet_summary", "my_offers", "my_wishlist", "my_notifications",
+                                                  "my_referrals", "reorder", "stage_wishlist_add")]
+    return targets
+
+
 class AgentHarness:
     """
     Stands in for the database: catalogue search runs over the snapshot with

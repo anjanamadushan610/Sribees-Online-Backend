@@ -25,6 +25,8 @@ class Plan:
     signature: str
     language: Optional[str] = None
     confidence: float = 1.0
+    # Learned patterns (L1) only: 'shadow' plans are compared, never answered with.
+    pattern_status: Optional[str] = None
 
     def as_log(self) -> Dict[str, Any]:
         return {

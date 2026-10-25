@@ -69,6 +69,17 @@ async def _write(row: Dict[str, Any]) -> None:
         logger.warning("Assistant turn not recorded: {}", exc)
 
 
+def background(coro) -> None:
+    """Run a statistics coroutine after the reply, never blocking or failing it."""
+    try:
+        task = asyncio.get_running_loop().create_task(coro)
+    except RuntimeError:
+        coro.close()
+        return
+    _pending.add(task)
+    task.add_done_callback(_pending.discard)
+
+
 def record(
     *,
     message: str,

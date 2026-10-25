@@ -563,6 +563,16 @@ class Settings(BaseSettings):
         default="",
         description="Comma-separated fast-path rules or rule families to send to the model instead, e.g. 'cart,orders.track'.",
     )
+    hybrid_canary_rate: float = Field(
+        default=0.02,
+        ge=0,
+        le=1,
+        description=(
+            "Share of fast-path answers re-checked by the model in the background "
+            "(app/services/hybrid/canary.py); each check is one paid model turn. "
+            "0 = off. The owner chose 2 % (2026-10-25)."
+        ),
+    )
     assistant_turn_log_enabled: bool = Field(
         default=True,
         description="Record one scrubbed row per chat turn in assistant_turns (migration 089) for the learner.",

@@ -197,11 +197,15 @@ async def test_a_disabled_rule_sends_its_traffic_to_the_model(monkeypatch):
     assert agent.called and rows[0]["layer"] == "L4"
 
 
-def test_offline_fast_path_eval_holds():
+def test_offline_fast_path_eval_holds(monkeypatch):
     """Every case the fast path answers must be right; it must answer at least half."""
     import asyncio
 
     from scripts.hybrid_eval import run
+    from scripts.run_assistant_evals import harness_targets
+
+    for target, name in harness_targets():  # the harness swaps these; put them back after
+        monkeypatch.setattr(target, name, getattr(target, name))
 
     summary = asyncio.run(run())["summary"]
     assert summary["precision"] == 1.0, summary

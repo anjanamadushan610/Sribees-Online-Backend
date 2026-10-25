@@ -86,16 +86,12 @@ def test_order_reference_must_not_be_invented():
 
 @pytest.fixture
 def harness(monkeypatch):
-    from app.services import assistant_agent
-    from app.services.chat_service import ChatService
+
+    from scripts.run_assistant_evals import harness_targets
 
     # Recorded so monkeypatch restores what the harness replaces.
-    monkeypatch.setattr(ChatService, "_match_products", ChatService._match_products)
-    for name in ("orders_result", "_feature", "_run_tool"):
-        monkeypatch.setattr(assistant_agent, name, getattr(assistant_agent, name))
-    from app.services import assistant_shopping
-
-    monkeypatch.setattr(assistant_shopping, "catalog_product", assistant_shopping.catalog_product)
+    for target, name in harness_targets():
+        monkeypatch.setattr(target, name, getattr(target, name))
     return AgentHarness()
 
 

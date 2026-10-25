@@ -932,7 +932,8 @@ class ChatService:
         next to what the model did.
         """
         from app.services import assistant_agent
-        from app.services.hybrid import engine, recorder
+        from app.services.hybrid import canary, engine, memory, recorder
+        from app.services.hybrid.agreement import agree
 
         async def emit(stage: str, **detail: Any) -> None:
             await ChatService._emit(on_stage, stage, **detail)
@@ -947,38 +948,39 @@ class ChatService:
                 plan = await engine.plan_for(db, message, fixed_lang or fallback_lang)
             except Exception as exc:  # noqa: BLE001 - the model is always there to answer
                 logger.warning("Fast path planning failed: {}", exc)
-        record = {
+        base_record = {
             "message": message,
             "branch_id": branch_id,
             "identity": str(user_id) if user_id else session_id,
             "signature": plan.signature if plan else None,
             "reply_kind": plan.reply_kind if plan else None,
         }
+        record = dict(base_record)
+        agent_kwargs = {
+            "redis": redis,
+            "user_id": user_id,
+            "branch_id": branch_id,
+            "message": message,
+            "image_base64": image_base64,
+            "image_mime_type": image_mime_type,
+            "history": history,
+            "fixed_lang": fixed_lang,
+            "fallback_lang": fallback_lang,
+            "application_context": application_context,
+            "briefing_prompt": briefing_prompt,
+        }
         try:
             out = None
-            if plan is not None and hybrid == "active" and engine.rule_enabled(plan):
+            if plan is not None and hybrid == "active" and engine.answer_allowed(plan):
                 out = await engine.run_plan(
                     plan, db=db, redis=redis, user_id=user_id, branch_id=branch_id, history=history, emit=emit
                 )
                 if out is not None:
                     record.update(layer=plan.layer, plan=plan.as_log())
+                    canary.maybe_check(plan, agent_kwargs, base_record)
             if out is None:
                 out = await asyncio.wait_for(
-                    assistant_agent.run(
-                        db=db,
-                        redis=redis,
-                        user_id=user_id,
-                        branch_id=branch_id,
-                        message=message,
-                        image_base64=image_base64,
-                        image_mime_type=image_mime_type,
-                        history=history,
-                        fixed_lang=fixed_lang,
-                        fallback_lang=fallback_lang,
-                        application_context=application_context,
-                        briefing_prompt=briefing_prompt,
-                        emit=emit,
-                    ),
+                    assistant_agent.run(db=db, emit=emit, **agent_kwargs),
                     timeout=AGENT_TURN_TIMEOUT,
                 )
                 trace = out.get("plan_trace") or []
@@ -988,6 +990,12 @@ class ChatService:
                     model_trace=trace,
                     shadow_plan=plan.as_log() if plan else None,
                 )
+                if plan is not None and plan.layer == "L1":
+                    verdict = agree(plan.as_log(), trace)
+                    if verdict is not None:
+                        recorder.background(
+                            memory.count(plan.rule, "shadow_agree" if verdict else "shadow_disagree")
+                        )
         except (GeminiAPIError, asyncio.TimeoutError):
             recorder.record(
                 **record,

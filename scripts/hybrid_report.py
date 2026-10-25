@@ -66,13 +66,13 @@ async def report(days: int) -> dict:
             layers[r.layer].append(r.latency_ms or 0)
             prompt += r.prompt_tokens or 0
             output += r.output_tokens or 0
-            plan = r.shadow_plan if r.layer == "L4" else (r.plan if r.layer.startswith("L") and r.layer != "L4" else None)
+            plan = r.shadow_plan if r.layer == "L4" else (r.plan if r.layer in ("L1", "L2", "canary") else None)
             if not plan or not plan.get("rule"):
                 continue
             stats = rules[plan["rule"]]
-            stats["turns"] += 1
-            if r.layer != "L4":
-                continue  # answered by the rule itself: nothing to compare
+            stats["turns"] += r.layer != "canary"
+            if r.layer not in ("L4", "canary"):
+                continue  # answered by the rule itself with no model to compare
             verdict = agree(plan, r.model_trace)
             if verdict is False and "search_products" in {s.get("name") for s in plan.get("steps", [])}:
                 if await _same_products(db, r.branch_id, plan.get("steps", []), r.model_trace or []):

@@ -80,6 +80,7 @@ def _assistant_side_paths_off(monkeypatch):
         return
     monkeypatch.setattr(settings, "hybrid_mode", "off")
     monkeypatch.setattr(settings, "assistant_turn_log_enabled", False)
+    monkeypatch.setattr(settings, "hybrid_canary_rate", 0.0)
 
 
 @pytest.fixture

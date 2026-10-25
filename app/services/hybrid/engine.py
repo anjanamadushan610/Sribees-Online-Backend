@@ -31,14 +31,26 @@ def rule_enabled(plan: Plan) -> bool:
     return plan.rule not in disabled and plan.rule.split(".")[0] not in disabled
 
 
+def answer_allowed(plan: Plan) -> bool:
+    """Whether ``plan`` may answer by itself (HYBRID_MODE active is checked by the caller)."""
+    if plan.layer == "L1":
+        return plan.pattern_status == "active"
+    return rule_enabled(plan)
+
+
 async def plan_for(db, message: str, fallback_lang: str) -> Optional[Plan]:
-    """The fast path's plan for ``message``, or None when the model should answer."""
+    """The fast path's plan for ``message`` -- rules first, then learned memory -- or None."""
     from app.services.catalog_search_service import get_vocabulary
+    from app.services.hybrid import memory
+    from app.services.hybrid.rules import _language
 
     msg = parse(message)
     if msg is None:
         return None
-    return route(msg, await get_vocabulary(db), fallback_lang)
+    plan = route(msg, await get_vocabulary(db), fallback_lang)
+    if plan is not None:
+        return plan
+    return await memory.lookup(db, message, _language(msg, fallback_lang))
 
 
 async def run_plan(
