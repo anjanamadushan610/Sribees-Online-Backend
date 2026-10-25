@@ -161,6 +161,45 @@ class AgentHarness:
             return await original(name, raw_args, ctx, turn)
 
         assistant_agent._run_tool = recorded
+        self.vectors: Dict[str, List[float]] = {}
+
+    async def enable_semantic(self) -> None:
+        """Embed the snapshot with the real model and serve meaning lookups from it."""
+        from types import SimpleNamespace
+
+        from app.services import assistant_shopping, semantic_search
+
+        docs = [
+            semantic_search.document_text(
+                SimpleNamespace(
+                    name=p["name"], name_si=p.get("name_si"), name_ta=p.get("name_ta"),
+                    category=p.get("category"), subcategory=p.get("subcategory"),
+                    search_keywords=p.get("search_keywords"),
+                )
+            )
+            for p in self.products
+        ]
+        vectors = await semantic_search.embed(docs, "RETRIEVAL_DOCUMENT")
+        self.vectors = {p["product_id"]: v for p, v in zip(self.products, vectors, strict=True)}
+        by_id = {p["product_id"]: p for p in self.products}
+
+        async def related(db, query, limit=6):
+            (qv,) = await semantic_search.embed([query], "RETRIEVAL_QUERY")
+            return semantic_search.rank(qv, self.vectors, limit)
+
+        async def catalog_product(db, branch_id, product_id, lang):
+            p = by_id.get(str(product_id))
+            if not p:
+                return None
+            name = {"si": p.get("name_si"), "ta": p.get("name_ta")}.get(lang) or p["name"]
+            return {
+                "product_id": p["product_id"], "name": name, "price": p["price"],
+                "discount_price": p["discount_price"], "is_on_sale": p["is_on_sale"], "variants": [],
+            }
+
+        semantic_search.related_product_ids = related
+        assistant_shopping.catalog_product = catalog_product
+        self.agent.settings.semantic_search_enabled = True
 
     async def match(self, db, branch_id, terms, brand=None, variant=None, max_price=None, min_price=None, lang="si"):
         from app.services.search_text import parse_query
@@ -320,6 +359,8 @@ async def run(args: argparse.Namespace) -> int:
     # The agent makes about two model calls per message; budget for three.
     planned = len(cases) * args.k * (3 if args.agent else 1)
     harness = AgentHarness() if args.agent else None
+    if harness and args.semantic:
+        await harness.enable_semantic()
     if planned > args.max_calls:
         print(f"{planned} calls planned, over --max-calls {args.max_calls}; lower --k or --limit")
         return 2
@@ -381,7 +422,7 @@ async def run(args: argparse.Namespace) -> int:
     price = {"input": args.price_in, "cached": args.price_cached, "output": args.price_out}
     n_calls = max(len(meter.calls), 1)
     summary = {
-        "mode": "agent" if args.agent else "planner",
+        "mode": ("agent+semantic" if args.semantic else "agent") if args.agent else "planner",
         "model": settings.gemini_generation_model,
         "avg_model_calls_per_message": round(
             len(meter.calls) / max(sum(len(r["trials"]) for r in results), 1), 2
@@ -433,6 +474,11 @@ if __name__ == "__main__":
         help="run the tool-using agent end to end against evals/assistant/catalog_snapshot.json",
     )
     parser.add_argument("--only", help="comma-separated case ids")
+    parser.add_argument(
+        "--semantic",
+        action="store_true",
+        help="with --agent: embed the snapshot and turn on meaning-based lookup",
+    )
     parser.add_argument("--price-in", type=float, default=DEFAULT_PRICE["input"])
     parser.add_argument("--price-cached", type=float, default=DEFAULT_PRICE["cached"])
     parser.add_argument("--price-out", type=float, default=DEFAULT_PRICE["output"])
