@@ -248,6 +248,42 @@ def _lean_product(p: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+SEMANTIC_BELOW = 3  # keyword results under this count also ask the meaning index
+
+
+async def _related_by_meaning(db, branch_id, args: "SearchArgs", found: List[dict], lang: str) -> List[dict]:
+    """
+    Products close in meaning to the query, for when the keyword search came
+    back thin. Branch visibility and the price bounds still apply; a failure
+    here only means no extra suggestions.
+    """
+    if not settings.semantic_search_enabled or len(found) >= SEMANTIC_BELOW or args.brand:
+        return []
+    from app.services import semantic_search
+    from app.services.assistant_shopping import catalog_product, price
+
+    try:
+        ids = await semantic_search.related_product_ids(db, args.query, limit=MAX_TOOL_PRODUCTS)
+    except Exception as exc:  # noqa: BLE001 - suggestions are optional
+        logger.warning("Semantic lookup skipped: {}", exc)
+        return []
+    have = {str(p.get("product_id")) for p in found}
+    related: List[dict] = []
+    for pid in ids:
+        if pid in have or len(found) + len(related) >= MAX_TOOL_PRODUCTS:
+            continue
+        product = await catalog_product(db, branch_id, pid, lang)
+        if not product:
+            continue  # not sold at this branch
+        cost = price(product)
+        if (args.max_price is not None and cost > args.max_price) or (
+            args.min_price is not None and cost < args.min_price
+        ):
+            continue
+        related.append(product)
+    return related
+
+
 async def _run_tool(name: str, raw_args: dict, ctx: dict, turn: Turn) -> dict:
     """Run one tool call; the dict returned is what the model reads back."""
     spec = TOOLS.get(name)
@@ -284,7 +320,8 @@ async def _run_tool(name: str, raw_args: dict, ctx: dict, turn: Turn) -> dict:
             lang=lang,
         )
         found = (strict or broad)[:MAX_TOOL_PRODUCTS]
-        turn.register(found, from_search=True)
+        related = await _related_by_meaning(db, branch_id, args, found, lang)
+        turn.register(found + related, from_search=True)
         turn.search_context = {
             "search_terms": [args.query],
             "brand": args.brand,
@@ -293,7 +330,12 @@ async def _run_tool(name: str, raw_args: dict, ctx: dict, turn: Turn) -> dict:
             "min_price": args.min_price,
         }
         out: Dict[str, Any] = {"query": args.query, "products": [_lean_product(p) for p in found]}
-        if not found:
+        if related:
+            out["related_by_meaning"] = [_lean_product(p) for p in related]
+            out["related_note"] = (
+                "Found by meaning, not by name. Offer only those that really fit what the customer asked."
+            )
+        if not found and not related:
             out["note"] = (
                 "Nothing found. Try once more with a plainer or different name (category word, English or Sinhala name, no brand/size) before telling the customer it is not available."
             )

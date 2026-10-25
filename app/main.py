@@ -130,6 +130,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.order_reward_worker import run_order_reward_worker
     from app.services.referral_vesting_worker import run_referral_vesting_worker
     from app.services.return_settlement_worker import run_return_settlement_worker
+    from app.services.semantic_search import run_embedding_worker
 
     # Separate loops, not one. They fail for unrelated reasons -- reminders,
     # commissions and order rewards each need their own tables -- and sharing
@@ -146,6 +147,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         asyncio.create_task(run_content_watcher()),
         asyncio.create_task(run_payment_worker()),
         asyncio.create_task(run_postal_city_worker()),
+        asyncio.create_task(run_embedding_worker()),
     ]
     try:
         yield

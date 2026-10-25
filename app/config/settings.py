@@ -549,6 +549,19 @@ class Settings(BaseSettings):
         le=6,
         description="Model calls allowed per chat turn in the agent; the last one must answer.",
     )
+    semantic_search_enabled: bool = Field(
+        default=False,
+        description=(
+            "Embed products and let the assistant agent find them by meaning "
+            "when the keyword search comes back thin (app/services/semantic_search.py). "
+            "Needs migration 088. The customer search bar is unaffected."
+        ),
+    )
+    gemini_embedding_model: str = Field(
+        default="gemini-embedding-2",
+        description="Gemini embedding model; changing it re-embeds every product.",
+    )
+    gemini_embedding_dimensions: int = Field(default=256, ge=64, le=3072)
 
     # Circuit Breaker for AI Services
     ai_circuit_failure_threshold: int = Field(
