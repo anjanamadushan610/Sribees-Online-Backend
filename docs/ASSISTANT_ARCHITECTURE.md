@@ -16,6 +16,28 @@ The assistant supports Sinhala Unicode, English and Tamil. Sinhala remains the p
 
 Native shortcuts for tracking, recent orders, app help, saved preferences, reminders, reminder suggestions and pantry recipes work without model classification. Natural-language requests use a validated Gemini JSON plan.
 
+## Tool-using agent (`ASSISTANT_AGENT_V2`, off by default)
+
+`app/services/assistant_agent.py` answers free-text messages as a loop instead
+of one classify-then-template call. The model calls tools -- `search_products`,
+`my_orders`, `app_help`, `stage_basket_change`, `compare_products`,
+`saved_preferences`, `reminders`, `pantry_recipes` -- reads their results, may
+search again when nothing matched, can serve several requests in one message,
+and finishes with `respond(text, show_product_ids)`. At most
+`ASSISTANT_AGENT_MAX_ROUNDS` model calls (default 4); the last may only respond.
+
+Every tool is an existing server function, so writes are still previews the
+customer confirms. After the model answers, the server keeps only product IDs a
+tool returned this turn, rejects a price that no tool (or the customer) stated,
+rejects delivery-time promises and wrong-script replies, and otherwise falls
+back to server-written copy. A failing tool is reported to the model rather
+than failing the turn. Gemini 3 requires its `thoughtSignature` back, so model
+turns are echoed exactly as received.
+
+Measured 2026-10-25 on the live model with the production catalogue snapshot:
+about two model calls and 7-11 s per message, about Rs 1.8 per message
+(the single-call planner: Rs 0.7, 5 s). Tests: `tests/test_assistant_agent.py`.
+
 ## Trust and write boundaries
 
 The model can choose only a bounded intent and typed arguments. It cannot supply SQL, URLs, arbitrary routes, payment actions or executable instructions. The app rejects malformed IDs and command tokens on both server and client.

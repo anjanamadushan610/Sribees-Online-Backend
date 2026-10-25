@@ -534,6 +534,21 @@ class Settings(BaseSettings):
             "this is deliberately short."
         ),
     )
+    assistant_agent_v2: bool = Field(
+        default=False,
+        description=(
+            "Answer free-text chat with the tool-using agent "
+            "(app/services/assistant_agent.py): the model calls catalogue, "
+            "order, basket and help tools, sees their results and then writes "
+            "the reply. Off = the single-call planner in chat_service."
+        ),
+    )
+    assistant_agent_max_rounds: int = Field(
+        default=4,
+        ge=2,
+        le=6,
+        description="Model calls allowed per chat turn in the agent; the last one must answer.",
+    )
 
     # Circuit Breaker for AI Services
     ai_circuit_failure_threshold: int = Field(

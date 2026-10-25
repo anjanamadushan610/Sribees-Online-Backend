@@ -58,6 +58,8 @@ RETRY_DELAY = 1.5
 MAX_HISTORY_TURNS = settings.gemini_chat_history_turns
 MAX_SEARCH_TERMS = 6
 MAX_MATCHES_PER_TERM = 3
+# Several model calls plus catalogue lookups; the app's own timeout is 60 s.
+AGENT_TURN_TIMEOUT = 45
 
 # A product turn keeps the model's own sentence only when it is a short
 # introduction with none of these in it -- see ChatService._usable_product_reply.
@@ -266,31 +268,7 @@ class ChatService:
 
         # History as prior turns, then the new message (+ optional image) as
         # the final user turn — Gemini's multi-turn contents shape.
-        contents = []
-        for turn in history[-(MAX_HISTORY_TURNS * 2) :]:
-            role = "model" if turn.get("role") == "assistant" else "user"
-            text = turn.get("text", "")
-            if role == "model" and turn.get("products"):
-                text += "\nPreviously shown products (refresh prices): " + json.dumps(
-                    [
-                        {k: p.get(k) for k in ("product_id", "name", "variants")}
-                        for p in turn["products"][:6]
-                    ],
-                    ensure_ascii=False,
-                )
-            if role == "model" and turn.get("orders"):
-                # Only minimal, already authorized order references; no addresses,
-                # handover codes, payment tokens or phone numbers go to the model.
-                text += (
-                    "\nPreviously displayed orders (historical, refresh before answering): "
-                    + json.dumps(
-                        [
-                            {"order_reference": o.get("order_number")}
-                            for o in turn["orders"][:3]
-                        ]
-                    )
-                )
-            contents.append({"role": role, "parts": [{"text": text}]})
+        contents = ChatService._history_contents(history)
 
         parts: List[Dict[str, Any]] = [
             {"text": message or "Identify the products or dish in this photo."}
@@ -309,8 +287,6 @@ class ChatService:
             )
         contents.append({"role": "user", "parts": parts})
 
-        model = getattr(settings, "gemini_generation_model", "gemini-flash-latest")
-        url = f"{GEMINI_API_BASE_URL}/models/{model}:generateContent"
         payload = {
             "systemInstruction": {
                 "parts": [
@@ -346,6 +322,56 @@ class ChatService:
             },
         }
 
+        data = await ChatService._generate(payload)
+        try:
+            text = "".join(
+                part.get("text", "")
+                for part in data["candidates"][0]["content"]["parts"]
+                if not part.get("thought")
+            )
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise GeminiAPIError("Unexpected Gemini response shape")
+        return ChatService._parse_reply(text)
+
+    @staticmethod
+    def _history_contents(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Stored turns as Gemini contents, with what each assistant turn showed."""
+        contents = []
+        for turn in history[-(MAX_HISTORY_TURNS * 2) :]:
+            role = "model" if turn.get("role") == "assistant" else "user"
+            text = turn.get("text", "")
+            if role == "model" and turn.get("products"):
+                text += "\nPreviously shown products (refresh prices): " + json.dumps(
+                    [
+                        {k: p.get(k) for k in ("product_id", "name", "variants")}
+                        for p in turn["products"][:6]
+                    ],
+                    ensure_ascii=False,
+                )
+            if role == "model" and turn.get("orders"):
+                # Only minimal, already authorized order references; no addresses,
+                # handover codes, payment tokens or phone numbers go to the model.
+                text += (
+                    "\nPreviously displayed orders (historical, refresh before answering): "
+                    + json.dumps(
+                        [
+                            {"order_reference": o.get("order_number")}
+                            for o in turn["orders"][:3]
+                        ]
+                    )
+                )
+            contents.append({"role": role, "parts": [{"text": text}]})
+
+        return contents
+
+    @staticmethod
+    async def _generate(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """One generateContent call with the shared retry/timeout policy; the raw response."""
+        api_key = getattr(settings, "gemini_api_key", None)
+        if not api_key:
+            raise GeminiAPIError("GEMINI_API_KEY not configured")
+        model = getattr(settings, "gemini_generation_model", "gemini-flash-latest")
+        url = f"{GEMINI_API_BASE_URL}/models/{model}:generateContent"
         last_error: Optional[Exception] = None
 
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
@@ -361,15 +387,10 @@ class ChatService:
                     if response.status_code == 200:
                         try:
                             data = response.json()
-                            text = "".join(
-                                part.get("text", "")
-                                for part in data["candidates"][0]["content"]["parts"]
-                                if not part.get("thought")
-                            )
-                        except (KeyError, IndexError, TypeError, ValueError):
+                        except ValueError:
                             raise GeminiAPIError("Unexpected Gemini response shape")
                         ChatService._log_usage(data.get("usageMetadata"))
-                        return ChatService._parse_reply(text)
+                        return data
 
                     if response.status_code in (429, 500, 502, 503, 504):
                         last_error = GeminiAPIError(
@@ -716,21 +737,47 @@ class ChatService:
                         **(application_context or {}),
                         "customer_first_name": first_name,
                     }
-            await ChatService._emit(on_stage, "understanding")
+            agent: Optional[Dict[str, Any]] = None
             try:
-                result = await asyncio.wait_for(
-                    ChatService._ask_gemini(
-                        message,
-                        history,
-                        image_base64,
-                        image_mime_type,
-                        lang=fixed_lang,
-                        application_context=application_context,
-                        fallback_lang=fallback_lang,
-                        briefing_prompt=briefings.prompt() if briefings else "",
-                    ),
-                    timeout=30,
-                )
+                if settings.assistant_agent_v2:
+                    from app.services import assistant_agent
+
+                    async def emit(stage: str, **detail: Any) -> None:
+                        await ChatService._emit(on_stage, stage, **detail)
+
+                    agent = await asyncio.wait_for(
+                        assistant_agent.run(
+                            db=db,
+                            redis=redis,
+                            user_id=user_id,
+                            branch_id=branch_id,
+                            message=message,
+                            image_base64=image_base64,
+                            image_mime_type=image_mime_type,
+                            history=history,
+                            fixed_lang=fixed_lang,
+                            fallback_lang=fallback_lang,
+                            application_context=application_context,
+                            briefing_prompt=briefings.prompt() if briefings else "",
+                            emit=emit,
+                        ),
+                        timeout=AGENT_TURN_TIMEOUT,
+                    )
+                else:
+                    await ChatService._emit(on_stage, "understanding")
+                    result = await asyncio.wait_for(
+                        ChatService._ask_gemini(
+                            message,
+                            history,
+                            image_base64,
+                            image_mime_type,
+                            lang=fixed_lang,
+                            application_context=application_context,
+                            fallback_lang=fallback_lang,
+                            briefing_prompt=briefings.prompt() if briefings else "",
+                        ),
+                        timeout=30,
+                    )
             except (GeminiAPIError, asyncio.TimeoutError):
                 response.update(
                     {
@@ -754,15 +801,28 @@ class ChatService:
                     language=lang,
                 )
                 return response
-            lang = chat_language.final_language(
-                fixed_lang,
-                result.get("reply_language"),
-                fallback_lang,
-                reply=result.get("reply"),
-            )
+            if agent is not None:
+                # The agent already ran its tools and wrote the reply; only
+                # the briefing note and the history write remain.
+                lang = agent.pop("language")
+                result = {
+                    "intent": "agent",
+                    "briefing_note": agent.pop("briefing_note"),
+                    "briefing_ids": agent.pop("briefing_ids"),
+                }
+                response.update(agent)
+            else:
+                lang = chat_language.final_language(
+                    fixed_lang,
+                    result.get("reply_language"),
+                    fallback_lang,
+                    reply=result.get("reply"),
+                )
         response["language"] = lang
 
-        if result["intent"] in ("cart_edit", "compare_products", "alternatives"):
+        if result["intent"] == "agent":
+            pass
+        elif result["intent"] in ("cart_edit", "compare_products", "alternatives"):
             from app.services.assistant_shopping import cart_preview, comparison
 
             await ChatService._emit(on_stage, "preparing")
