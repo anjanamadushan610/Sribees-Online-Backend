@@ -1418,6 +1418,10 @@ class ProductService:
         limit: int = 20,
         offset: int = 0,
         search: Optional[str] = None,
+        category_id: Optional[UUID] = None,
+        subcategory_id: Optional[UUID] = None,
+        price_review_level: Optional[str] = None,
+        stock_state: Optional[str] = None,
         low_stock_only: bool = False,
     ) -> Tuple[List[Tuple[BranchInventory, Product, "Branch"]], int]:
         """
@@ -1436,14 +1440,34 @@ class ProductService:
             query = query.where(BranchInventory.branch_id == branch_id)
 
         if search:
-            pattern = f"%{search}%"
+            pattern = f"%{search.strip()}%"
             query = query.where(
-                or_(Product.name.ilike(pattern), Product.sku.ilike(pattern))
+                or_(
+                    Product.name.ilike(pattern),
+                    Product.name_si.ilike(pattern),
+                    Product.sku.ilike(pattern),
+                    Product.description.ilike(pattern),
+                )
             )
 
-        if low_stock_only:
+        if category_id:
+            query = query.where(Product.category_id == category_id)
+
+        if subcategory_id:
+            query = query.where(Product.subcategory_id == subcategory_id)
+
+        if price_review_level:
+            query = query.where(Product.price_review_level == price_review_level)
+
+        if stock_state == "low" or low_stock_only:
             query = query.where(
                 BranchInventory.stock_quantity <= BranchInventory.low_stock_threshold
+            )
+        elif stock_state == "out":
+            query = query.where(BranchInventory.stock_quantity <= 0)
+        elif stock_state == "in":
+            query = query.where(
+                BranchInventory.stock_quantity > BranchInventory.low_stock_threshold
             )
 
         count_q = select(func.count()).select_from(query.subquery())
