@@ -98,13 +98,15 @@ async def set_weight_option_price(
     db: AsyncSession = Depends(get_db),
     scope: BranchScope = Depends(inject_branch_filter),
 ):
-    """Set one option's global price."""
+    """Set one option's global price; the 1 kg option's is the product's price."""
     _super_admin_only(scope)
     product = await _product(db, product_id)
     option = await weight_options_service.get_option(db, product_id, variant_id)
     if option is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Weight option not found")
     option.price = body.price
+    if option.weight_grams == weight_options_service.KILO:
+        product.price = body.price
     await db.commit()
     return {"success": True, "data": await _payload(db, product, None)}
 
@@ -132,6 +134,6 @@ async def set_weight_option_branch_price(
     option = await weight_options_service.get_option(db, product_id, variant_id)
     if option is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Weight option not found")
-    await weight_options_service.set_branch_price(db, branch_id, variant_id, body.price)
+    await weight_options_service.set_branch_price(db, branch_id, option, body.price)
     await db.commit()
     return {"success": True, "data": await _payload(db, product, branch_id)}
