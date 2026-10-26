@@ -75,6 +75,9 @@ def _format_inventory_row(inv: BranchInventory, product: Product, branch: Branch
         "low_stock_threshold": threshold,
         "is_low_stock": stock <= threshold,
         "is_active": inv.is_active,
+        "category_id": str(product.category_id) if product.category_id else None,
+        "subcategory_id": str(product.subcategory_id) if product.subcategory_id else None,
+        "price_review_level": product.price_review_level,
     }
 
 
@@ -82,7 +85,19 @@ def _format_inventory_row(inv: BranchInventory, product: Product, branch: Branch
 async def list_inventory(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    search: Optional[str] = Query(None, description="Match product name or SKU"),
+    search: Optional[str] = Query(None, description="Match product name, SKU or Sinhala name"),
+    category_id: Optional[UUID] = Query(None, description="Filter by top-level category"),
+    subcategory_id: Optional[UUID] = Query(None, description="Filter by subcategory"),
+    price_review_level: Optional[str] = Query(
+        None,
+        pattern="^(daily|weekly|monthly|long)$",
+        description="Filter by price review cycle",
+    ),
+    stock_state: Optional[str] = Query(
+        None,
+        pattern="^(all|in|low|out)$",
+        description="Filter by stock state (all/in/low/out)",
+    ),
     low_stock_only: bool = Query(False, description="Only rows at/below threshold"),
     branch_id: Optional[UUID] = Query(
         None,
@@ -107,6 +122,10 @@ async def list_inventory(
         limit=limit,
         offset=offset,
         search=search,
+        category_id=category_id,
+        subcategory_id=subcategory_id,
+        price_review_level=price_review_level,
+        stock_state=stock_state,
         low_stock_only=low_stock_only,
     )
 
