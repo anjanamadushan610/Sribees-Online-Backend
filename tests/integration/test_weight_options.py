@@ -217,3 +217,126 @@ async def test_an_unknown_variant_is_charged_as_the_product_and_not_stored(
     ))).scalar_one()
     assert item.variant_id is None and item.variant_name is None
     assert item.unit_price == Decimal("300.00")
+
+
+# --- One price per kg -------------------------------------------------------
+# The product's price is its 1 kg price. The Price app changes that price, and
+# every weight has to follow it, or the card and the product page disagree
+# (White Sugar 1kg: Rs 1,050 on the card, Rs 1,000 for 1 kg, 2026-10-26).
+
+
+async def _inventory_id(db, world, product):
+    from app.models.product import BranchInventory
+
+    return (await db.execute(select(BranchInventory.inventory_id).where(
+        BranchInventory.product_id == product, BranchInventory.branch_id == world.branch_id
+    ))).scalar_one()
+
+
+async def test_every_weight_follows_a_new_global_price(api, world, make_admin, make_product):
+    boss = await make_admin("super_admin", api=api)
+    product = await _weighed(api, boss, make_product)
+    vid = (await _options(api, boss, product))["500g"]["variant_id"]
+    r = await api.patch(f"/api/v1/admin/products/{product}/weight-options/{vid}",
+                        json={"price": "520.00"}, headers=boss.headers)
+    assert r.status_code == 200, r.text
+
+    # What the Price app sends in Global mode.
+    r = await api.put(f"/api/v1/admin/products/{product}", json={"price": "1050.00"},
+                      headers=boss.headers)
+    assert r.status_code == 200, r.text
+    options = await _options(api, boss, product)
+    assert {k: o["price"] for k, o in options.items()} == {
+        "250g": 262.5, "500g": 546.0, "1kg": 1050.0, "2kg": 2100.0, "5kg": 5250.0,
+    }, "every weight moves by the same ratio, keeping the 500 g markup"
+
+    # An unrelated edit leaves the prices alone.
+    r = await api.put(f"/api/v1/admin/products/{product}", json={"price_review_level": "daily"},
+                      headers=boss.headers)
+    assert r.status_code == 200, r.text
+    assert (await _options(api, boss, product))["1kg"]["price"] == 1050.0
+
+
+async def test_the_1kg_option_is_the_product_price(api, world, make_admin, make_product):
+    boss = await make_admin("super_admin", api=api)
+    product = await _weighed(api, boss, make_product)
+    vid = (await _options(api, boss, product))["1kg"]["variant_id"]
+    r = await api.patch(f"/api/v1/admin/products/{product}/weight-options/{vid}",
+                        json={"price": "1100.00"}, headers=boss.headers)
+    assert r.status_code == 200, r.text
+    r = await api.get(f"/api/v1/admin/products/{product}", headers=boss.headers)
+    assert float(r.json()["data"]["price"]) == 1100.0
+
+    r = await api.put(
+        f"/api/v1/admin/products/{product}/weight-options",
+        json={"options": [{"weight_grams": 500, "price": "600"}, {"weight_grams": 1000, "price": "1150"}]},
+        headers=boss.headers,
+    )
+    assert r.status_code == 200, r.text
+    r = await api.get(f"/api/v1/admin/products/{product}", headers=boss.headers)
+    assert float(r.json()["data"]["price"]) == 1150.0
+
+
+async def test_every_weight_follows_a_branch_price(
+    api, db, app_redis, world, make_admin, make_product, make_customer
+):
+    boss = await make_admin("super_admin", api=api)
+    manager = await make_admin("branch_manager", api=api)
+    product = await _weighed(api, boss, make_product)
+    inventory_id = await _inventory_id(db, world, product)
+
+    # What the Price app sends in a branch.
+    r = await api.put(f"/api/v1/admin/inventory/{inventory_id}", json={"branch_price": "1100.00"},
+                      headers=manager.headers)
+    assert r.status_code == 200, r.text
+    mine = await _options(api, manager, product)
+    assert {k: o["original_price"] for k, o in mine.items()} == {
+        "250g": 275.0, "500g": 550.0, "1kg": 1100.0, "2kg": 2200.0, "5kg": 5500.0,
+    }
+    assert mine["1kg"]["global_price"] == 1000.0 and mine["1kg"]["branch_price"] is None
+
+    customer = await make_customer()
+    await _branch_context(app_redis, world, customer)
+    r = await api.get(f"/api/v1/products/{product}", headers=customer.headers)
+    assert r.status_code == 200, r.text
+    shown = {o["label"]: o["price"] for o in r.json()["data"]["weight_options"]}
+    assert shown["1kg"] == 1100.0 == float(r.json()["data"]["price"])
+    assert shown["250g"] == 275.0
+
+    # A weight the branch priced itself moves with the branch price too.
+    half = mine["500g"]["variant_id"]
+    r = await api.put(f"/api/v1/admin/products/{product}/weight-options/{half}/branch-price",
+                      json={"price": "600"}, headers=manager.headers)
+    assert r.status_code == 200, r.text
+    r = await api.put(f"/api/v1/admin/inventory/{inventory_id}", json={"branch_price": "1210.00"},
+                      headers=manager.headers)
+    assert r.status_code == 200, r.text
+    mine = await _options(api, manager, product)
+    assert mine["500g"]["price"] == 660.0 and mine["1kg"]["price"] == 1210.0
+
+    # Back to the global price.
+    r = await api.put(f"/api/v1/admin/inventory/{inventory_id}", json={"branch_price": None},
+                      headers=manager.headers)
+    assert r.status_code == 200, r.text
+    mine = await _options(api, manager, product)
+    assert mine["1kg"]["price"] == 1000.0 and mine["500g"]["price"] == 545.45
+
+
+async def test_the_branch_1kg_price_is_the_branch_price(api, db, world, make_admin, make_product):
+    from app.models.product import BranchInventory
+
+    boss = await make_admin("super_admin", api=api)
+    manager = await make_admin("branch_manager", api=api)
+    product = await _weighed(api, boss, make_product)
+    kilo = (await _options(api, boss, product))["1kg"]["variant_id"]
+
+    r = await api.put(f"/api/v1/admin/products/{product}/weight-options/{kilo}/branch-price",
+                      json={"price": "1080"}, headers=manager.headers)
+    assert r.status_code == 200, r.text
+    mine = await _options(api, manager, product)
+    assert mine["250g"]["price"] == 270.0, "the other weights follow the branch's 1 kg price"
+
+    inventory_id = await _inventory_id(db, world, product)
+    inv = await db.get(BranchInventory, inventory_id)
+    await db.refresh(inv)
+    assert inv.branch_price == Decimal("1080.00")

@@ -40,6 +40,7 @@ from app.schemas.product import (
     ProductVariantCreate,
 )
 from app.services import catalog_search_service as catalog_search
+from app.services import weight_options_service as weight_options
 from app.services.category_service import CategoryService
 from app.services.storage import get_storage
 
@@ -382,8 +383,12 @@ class ProductService:
             if not_null in update_data and update_data[not_null] is None:
                 update_data.pop(not_null)
 
+        old_price = product.price if "price" in update_data else None
         for field, value in update_data.items():
             setattr(product, field, value)
+        if "price" in update_data and product.sold_by_weight:
+            # The price is the price per kg: every weight follows it.
+            await weight_options.follow_product_price(db, product, old_price)
 
         await db.commit()
         await db.refresh(product)
@@ -1478,15 +1483,46 @@ class ProductService:
         override and falls the product back to the global price, so None must
         be written through rather than skipped.
         """
+        old_branch_price = inv.branch_price
         for key, value in fields.items():
             if hasattr(inv, key):
                 setattr(inv, key, value)
+        if "branch_price" in fields:
+            await ProductService._follow_branch_price(
+                db, inv.product_id, inv.branch_id, old_branch_price, inv.branch_price
+            )
         await db.commit()
         await db.refresh(inv)
         logger.info(
             f"Inventory row {inv.inventory_id} updated: fields={list(fields.keys())}"
         )
         return inv
+
+    @staticmethod
+    async def _follow_branch_price(
+        db: AsyncSession, product_id: UUID, branch_id: UUID, old, new
+    ) -> None:
+        """
+        A branch's price moved from *old* to *new* (None = the global price).
+        For a sold-by-weight product that is its price per kg, so the weights
+        the branch priced itself follow it. Caller commits.
+        """
+        row = (
+            await db.execute(
+                select(Product.price, Product.sold_by_weight).where(
+                    Product.product_id == product_id
+                )
+            )
+        ).first()
+        if row is None or not row.sold_by_weight:
+            return
+        await weight_options.follow_branch_price(
+            db,
+            product_id,
+            branch_id,
+            old if old is not None else row.price,
+            new if new is not None else row.price,
+        )
 
     @staticmethod
     async def upsert_branch_override(
@@ -1521,6 +1557,10 @@ class ProductService:
 
         inv = BranchInventory(product_id=product_id, branch_id=branch_id, **fields)
         db.add(inv)
+        if fields.get("branch_price") is not None:
+            await ProductService._follow_branch_price(
+                db, product_id, branch_id, None, fields["branch_price"]
+            )
         await db.commit()
         await db.refresh(inv)
         logger.info(
