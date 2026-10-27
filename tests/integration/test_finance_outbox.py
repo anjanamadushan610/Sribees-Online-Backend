@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 from decimal import Decimal
 
@@ -102,6 +103,9 @@ async def test_an_order_from_placing_to_refund(
     refunded = _for(events, oid, "order.status")[-1]["payload"]
     assert refunded["to_status"] == "refunded"
     assert refunded["returned"] == [{"order_item_id": line["order_item_id"], "quantity": 2}]
+    if os.environ.get("FINANCE_EVENTS_DUMP"):  # contract sample for Sribees Finance's tests
+        with open(os.environ["FINANCE_EVENTS_DUMP"], "w", encoding="utf-8") as fh:
+            json.dump([e for e in events if e["aggregate_id"] == oid], fh, indent=1)
     assert len({e["event_id"] for e in events}) == len(events)
     assert [e["seq"] for e in events] == sorted(e["seq"] for e in events)
 
