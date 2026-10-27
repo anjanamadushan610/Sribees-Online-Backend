@@ -16,6 +16,7 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.redis import RedisIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
+from app.api.finance_internal import router as finance_internal_router
 from app.api.legal import router as legal_router
 from app.api.share_links import router as share_links_router
 from app.api.v1.router import router as v1_router
@@ -198,6 +199,12 @@ app.add_middleware(RateLimitMiddleware)
 from app.services import live_sync
 
 live_sync.install()
+
+# Every money and stock change also writes a finance_outbox event in the same
+# transaction, when FINANCE_OUTBOX_ENABLED (Sribees Finance pulls them).
+from app.services import finance_outbox
+
+finance_outbox.install()
 live_sync.enabled = settings.app_env.strip().lower() != "testing"
 app.add_middleware(live_sync.LiveSyncMiddleware)
 
@@ -333,6 +340,8 @@ app.include_router(share_links_router)
 
 # Privacy policy (site root, see legal.py) — the store-listing URL
 app.include_router(legal_router)
+# Sribees Finance's event feed: service token, never through the edge.
+app.include_router(finance_internal_router)
 
 
 # ============================================================================

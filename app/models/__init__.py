@@ -23,6 +23,7 @@ from app.models.escalation import (
     EscalationStatus,
     OrderEscalation,
 )
+from app.models.finance_outbox import FinanceOutbox
 from app.models.location import LocationDistrict, LocationProvince
 from app.models.loyalty import (
     LoyaltyAccount,
@@ -87,6 +88,8 @@ __all__ = [
     "Banner",
     "BannerEvent",
     "BannerEventType",
+    # Sribees Finance event feed
+    "FinanceOutbox",
     # Online payment tries
     "PaymentAttempt",
     "PaymentAttemptStatus",

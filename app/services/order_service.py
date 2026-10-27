@@ -55,6 +55,7 @@ from app.services.courier_service import (
     CourierUnavailableError,
 )
 from app.services.delivery_verification_service import DeliveryVerificationService
+from app.services.finance_outbox import WalletReason
 from app.services.loyalty_service import LoyaltyService
 from app.services.notification_service import NotificationService
 from app.services.order_reward_service import OrderRewardService
@@ -772,6 +773,7 @@ class OrderService:
                 tx_type=WalletTransactionType.SPENT,
                 amount=wallet_deduction,
                 title="Wallet payment",
+                reason=WalletReason.WALLET_PAYMENT,
                 order_id=order.order_id,
                 order_number=order_number,
             )
@@ -1490,6 +1492,7 @@ class OrderService:
                 tx_type=WalletTransactionType.REFUND,
                 amount=wallet_deduction,
                 title="Order cancellation refund",
+                reason=WalletReason.CANCEL_REFUND,
                 order_id=order.order_id,
                 order_number=order.order_number,
                 notes="Wallet balance refunded on order cancellation",
@@ -2206,6 +2209,7 @@ class OrderService:
                 tx_type=WalletTransactionType.REFUND,
                 amount=gateway_refund,
                 title="Order cancellation refund",
+                reason=WalletReason.CANCEL_REFUND,
                 order_id=order.order_id,
                 order_number=order.order_number,
             )
@@ -2238,6 +2242,7 @@ class OrderService:
                 tx_type=WalletTransactionType.SPENT,
                 amount=fee,
                 title="Delivery charge on cancelled order",
+                reason=WalletReason.CANCEL_DELIVERY_CHARGE,
                 order_id=order.order_id,
                 order_number=order.order_number,
             )
@@ -2572,6 +2577,7 @@ class OrderService:
                 tx_type=WalletTransactionType.REFUND,
                 amount=refund,
                 title="Return refund",
+                reason=WalletReason.RETURN_REFUND,
                 order_id=order.order_id,
                 order_number=order.order_number,
                 notes="Wallet credited for approved return",

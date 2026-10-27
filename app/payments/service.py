@@ -56,6 +56,7 @@ from app.payments.gateways.base import (
     Payer,
     PayerDetailsMissing,
 )
+from app.services.finance_outbox import WalletReason
 
 COLOMBO = ZoneInfo("Asia/Colombo")
 
@@ -459,6 +460,7 @@ async def _give_back(db: AsyncSession, order: Order, attempt: PaymentAttempt, *,
         tx_type=WalletTransactionType.REFUND,
         amount=Decimal(str(attempt.amount)),
         title="Payment refund",
+        reason=WalletReason.PAYMENT_REFUND,
         order_id=order.order_id,
         order_number=order.order_number,
         notes=f"Refunded {why} ({attempt.reference})",

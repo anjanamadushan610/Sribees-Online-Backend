@@ -64,6 +64,10 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("POST", "/api/v1/payments/webhook"),  # Stripe signature, see test_webhooks
     ("GET", "/api/v1/payments/marx/return"),  # static "return to the app" page
     ("POST", "/api/v1/courier/webhooks/shipment-status"),  # HMAC, see test_webhooks
+    # Sribees Finance's feed: service token (SHA-256 compared), refused through
+    # the edge proxy, optional IP allow-list; 404 when no token is configured.
+    # See tests/integration/test_finance_outbox.py::test_the_feed_is_locked.
+    ("GET", "/internal/finance/events"),
     # --- app bootstrap -------------------------------------------------------
     ("GET", "/api/v1/app/splash-config"),
     ("GET", "/api/v1/app/support-info"),
