@@ -52,6 +52,7 @@ class WalletReason:
     CANCEL_REFUND = "cancel_refund"                  # order cancelled, money back
     CANCEL_DELIVERY_CHARGE = "cancel_delivery_charge"  # fee kept on a booked cancel
     RETURN_REFUND = "return_refund"                  # goods returned after delivery
+    RETURN_FEE = "return_fee"                        # courier's return fee, the customer's
     PAYMENT_REFUND = "payment_refund"                # late or double gateway money
     CASHBACK_CREDIT = "cashback_credit"              # held cashback released
     CASHBACK_REVERSAL = "cashback_reversal"          # released cashback taken back
@@ -59,7 +60,7 @@ class WalletReason:
     COMMISSION_REVERSAL = "commission_reversal"      # paid commission taken back
 
     ALL = frozenset({
-        WALLET_PAYMENT, CANCEL_REFUND, CANCEL_DELIVERY_CHARGE, RETURN_REFUND,
+        WALLET_PAYMENT, CANCEL_REFUND, CANCEL_DELIVERY_CHARGE, RETURN_REFUND, RETURN_FEE,
         PAYMENT_REFUND, CASHBACK_CREDIT, CASHBACK_REVERSAL, COMMISSION_CREDIT,
         COMMISSION_REVERSAL,
     })
@@ -216,7 +217,10 @@ def _order_event(session: Session, order: Order, old_status: Optional[str]) -> F
             # what SribeesExpress charges us for this parcel
             "courier_charge": _money(order.courier_quote_amount),
             "refund": _money(order.refund_amount),
+            # SribeesExpress's fee for the return leg, when a rider brought it back
+            "return_fee": _money(order.return_fee),
         },
+        "return_waybill": order.return_waybill_number,
         "courier_shipment_id": order.courier_shipment_id,
         "delivered_at": _iso(order.delivered_at),
         "return_received_at": _iso(order.return_received_at),

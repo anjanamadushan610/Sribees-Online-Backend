@@ -606,6 +606,16 @@ class CourierService:
         return await CourierService._request("POST", "/returns", json=payload)
 
     @staticmethod
+    async def quote_return(*, merchant_order_ref: str) -> dict:
+        """``GET /ecommerce/returns/quote`` -- what a return of this shipment would
+        cost, without booking it. Priced by the same function the booking uses,
+        so ``return_fee_lkr`` is the fee ``create_return`` will report (unless a
+        rate card changes in between). Null fee = the corridor is unpriced."""
+        return await CourierService._request(
+            "GET", "/returns/quote", params={"merchant_order_ref": merchant_order_ref}
+        )
+
+    @staticmethod
     async def get_return(return_id: str) -> dict:
         """``GET /ecommerce/returns/{id}`` (section 9a.2) — includes ``history``.
         ``handover_code`` is always null here; only the creating call has it."""

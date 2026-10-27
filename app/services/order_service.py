@@ -2338,6 +2338,21 @@ class OrderService:
         return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     @staticmethod
+    def return_fee_charge(order: Order, refund: Decimal) -> Decimal:
+        """What the customer pays toward the return: SribeesExpress's fee for the
+        rider who brought the goods back, capped at the refund.
+
+        Zero for a returnless refund or anything not collected by a booked
+        SribeesExpress return leg -- no rider, no fee.
+        """
+        if not getattr(order, "return_waybill_number", None) or                 getattr(order, "return_booking_status", None) != "booked":
+            return Decimal("0")
+        fee = Decimal(str(getattr(order, "return_fee", None) or 0))
+        if fee <= 0 or refund <= 0:
+            return Decimal("0")
+        return min(fee, refund).quantize(Decimal("0.01"))
+
+    @staticmethod
     def return_window_expires_at(order: Order) -> Optional[datetime]:
         """When this order stops being returnable, or None if it never started.
 
@@ -2581,6 +2596,24 @@ class OrderService:
                 order_id=order.order_id,
                 order_number=order.order_number,
                 notes="Wallet credited for approved return",
+            )
+
+        # The customer bears SribeesExpress's fee for bringing the goods back
+        # (owner, 2026-10-27) -- only when a rider actually did, and never more
+        # than this refund: the wallet does not go into debt over a return. Its
+        # own line rather than a smaller refund, like the cancellation charge.
+        fee = OrderService.return_fee_charge(order, refund)
+        if fee > 0:
+            await WalletService.apply_transaction(
+                db,
+                user_id=order.user_id,
+                tx_type=WalletTransactionType.SPENT,
+                amount=fee,
+                title="Return delivery charge",
+                reason=WalletReason.RETURN_FEE,
+                order_id=order.order_id,
+                order_number=order.order_number,
+                notes=f"SribeesExpress return pickup {order.return_waybill_number}",
             )
 
         # What the returned goods earned comes off the order's cashback, and
