@@ -27,12 +27,14 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.settings import settings
-from app.models.finance_outbox import FinanceOutbox
+from app.models.finance_outbox import FinanceOutbox, FinanceStockLevel
 from app.models.order import Order
 from app.models.payment import PaymentAttempt, PaymentAttemptStatus
 from app.models.wallet import WalletTransaction
@@ -161,3 +163,40 @@ async def finance_totals(
             for b, r in rows.items()
         },
     }
+
+
+class StockLevelIn(BaseModel):
+    branch_id: str = Field(min_length=36, max_length=36)
+    product_id: str = Field(min_length=36, max_length=36)
+    sellable_qty: Decimal = Field(ge=0, max_digits=14, decimal_places=3)
+    unit: str = Field(pattern="^(each|kg)$")
+    version: int = Field(ge=0)
+
+
+class StockLevelsIn(BaseModel):
+    levels: list[StockLevelIn] = Field(max_length=5000)
+
+
+@router.put("/stock-levels")
+async def finance_stock_levels(
+    body: StockLevelsIn,
+    _: None = Depends(require_finance_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Record Finance's sellable quantities (shadow only during the parallel run).
+    A push older than what is stored for that branch and product is ignored."""
+    stored = 0
+    for lv in body.levels:
+        stmt = insert(FinanceStockLevel).values(
+            branch_id=lv.branch_id, product_id=lv.product_id, sellable_qty=lv.sellable_qty,
+            unit=lv.unit, version=lv.version, received_at=func.now(),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[FinanceStockLevel.branch_id, FinanceStockLevel.product_id],
+            set_={"sellable_qty": stmt.excluded.sellable_qty, "unit": stmt.excluded.unit,
+                  "version": stmt.excluded.version, "received_at": func.now()},
+            where=FinanceStockLevel.version < stmt.excluded.version,
+        )
+        stored += (await db.execute(stmt)).rowcount or 0
+    await db.commit()
+    return {"received": len(body.levels), "stored": stored, "applied_to_shop": False}

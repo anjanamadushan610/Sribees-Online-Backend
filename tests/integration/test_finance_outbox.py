@@ -186,3 +186,33 @@ async def test_daily_totals_for_reconciliation(api, world, make_customer, make_p
     assert Decimal(after["delivered_total"]) - Decimal(before.get("delivered_total", "0")) == total
     assert Decimal(after["cod"]) - Decimal(before.get("cod", "0")) == total  # COD, no wallet
     assert (await api.get("/internal/finance/totals", params={"day": today})).status_code == 401
+
+
+async def test_stock_levels_are_recorded_but_change_nothing_in_the_shop(api, db, world, make_product):
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from app.models.finance_outbox import FinanceStockLevel
+    from app.models.product import BranchInventory
+
+    product = await make_product(stock=40)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+
+    def level(qty, version):
+        return {"levels": [{"branch_id": str(world.branch_id), "product_id": str(product),
+                            "sellable_qty": qty, "unit": "each", "version": version}]}
+
+    r = await api.put("/internal/finance/stock-levels", json=level("12", 5), headers=auth)
+    assert r.status_code == 200 and r.json() == {"received": 1, "stored": 1, "applied_to_shop": False}
+    stale = await api.put("/internal/finance/stock-levels", json=level("99", 4), headers=auth)
+    assert stale.json()["stored"] == 0, "an older push never overwrites a newer one"
+    assert (await api.put("/internal/finance/stock-levels", json=level("1", 9))).status_code == 401
+
+    row = (await db.execute(select(FinanceStockLevel).where(
+        FinanceStockLevel.product_id == _uuid.UUID(str(product))))).scalar_one()
+    assert row.sellable_qty == 12 and row.version == 5
+    shop = (await db.execute(select(BranchInventory.stock_quantity).where(
+        BranchInventory.product_id == _uuid.UUID(str(product)),
+        BranchInventory.branch_id == world.branch_id))).scalar_one_or_none()
+    assert shop in (None, 40), "the shop still sells from its own stock"
