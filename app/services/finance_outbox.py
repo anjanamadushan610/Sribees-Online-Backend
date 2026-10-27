@@ -37,10 +37,11 @@ from sqlalchemy.orm import Session
 
 from app.config.settings import settings
 from app.models.branch import Branch
+from app.models.category import Category
 from app.models.finance_outbox import FinanceOutbox
 from app.models.order import Order, OrderItem
 from app.models.payment import PaymentAttempt, PaymentAttemptStatus
-from app.models.product import ProductVariant
+from app.models.product import Product, ProductVariant
 from app.models.referral import ReferralCommission
 
 
@@ -146,9 +147,11 @@ def _order_lines(session: Session, order: Order) -> list[dict]:
             OrderItem.order_item_id, OrderItem.product_id, OrderItem.variant_id,
             OrderItem.product_name, OrderItem.product_sku, OrderItem.variant_name,
             OrderItem.quantity, OrderItem.unit_price, OrderItem.subtotal,
-            OrderItem.coupon_discount, ProductVariant.weight_grams,
+            OrderItem.coupon_discount, ProductVariant.weight_grams, Category.name.label("category"),
         )
         .outerjoin(ProductVariant, ProductVariant.variant_id == OrderItem.variant_id)
+        .outerjoin(Product, Product.product_id == OrderItem.product_id)
+        .outerjoin(Category, Category.category_id == Product.category_id)
         .where(OrderItem.order_id == order.order_id)
         .order_by(OrderItem.created_at, OrderItem.order_item_id)
     ).all()
@@ -166,6 +169,7 @@ def _order_lines(session: Session, order: Order) -> list[dict]:
             "unit_price": _money(r.unit_price),
             "subtotal": _money(r.subtotal),
             "coupon_discount": _money(r.coupon_discount),
+            "category": r.category,
         }
         for r in rows
     ]
