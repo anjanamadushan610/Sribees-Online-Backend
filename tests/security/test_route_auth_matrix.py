@@ -68,6 +68,7 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     # the edge proxy, optional IP allow-list; 404 when no token is configured.
     # See tests/integration/test_finance_outbox.py::test_the_feed_is_locked.
     ("GET", "/internal/finance/events"),
+    ("GET", "/internal/finance/totals"),
     # --- app bootstrap -------------------------------------------------------
     ("GET", "/api/v1/app/splash-config"),
     ("GET", "/api/v1/app/support-info"),

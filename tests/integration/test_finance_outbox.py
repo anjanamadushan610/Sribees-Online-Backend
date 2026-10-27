@@ -163,3 +163,26 @@ async def test_dispatch_snapshot_carries_lines(api, make_customer, make_product,
     handed = [e["payload"] for e in _for(await _events(api, start), order["order_id"], "order.status")
               if e["payload"]["to_status"] == "handed_to_courier"]
     assert handed and handed[0]["lines"][0]["quantity"] == 3
+
+
+async def test_daily_totals_for_reconciliation(api, world, make_customer, make_product, place_order,
+                                               make_admin, fake_courier):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("Asia/Colombo")).date().isoformat()
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+
+    async def totals():
+        r = await api.get("/internal/finance/totals", params={"day": today}, headers=auth)
+        assert r.status_code == 200, r.text
+        return r.json()["branches"].get(str(world.branch_id), {})
+
+    before = await totals()
+    _, order, _, _ = await _delivered(api, make_customer, make_product, place_order, make_admin, fake_courier)
+    after = await totals()
+    assert after["delivered_count"] == before.get("delivered_count", 0) + 1
+    total = Decimal(str(order["total_amount"]))
+    assert Decimal(after["delivered_total"]) - Decimal(before.get("delivered_total", "0")) == total
+    assert Decimal(after["cod"]) - Decimal(before.get("cod", "0")) == total  # COD, no wallet
+    assert (await api.get("/internal/finance/totals", params={"day": today})).status_code == 401

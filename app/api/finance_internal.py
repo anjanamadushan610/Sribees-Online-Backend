@@ -21,14 +21,21 @@ counted twice.
 import hashlib
 import hmac
 import ipaddress
+from collections import defaultdict
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.settings import settings
 from app.models.finance_outbox import FinanceOutbox
+from app.models.order import Order
+from app.models.payment import PaymentAttempt, PaymentAttemptStatus
+from app.models.wallet import WalletTransaction
 
 router = APIRouter(prefix="/internal/finance", tags=["Internal: Finance"], include_in_schema=False)
 
@@ -89,4 +96,68 @@ async def finance_events(
             for r in rows
         ],
         "enabled": bool(settings.finance_outbox_enabled),
+    }
+
+
+COLOMBO = ZoneInfo("Asia/Colombo")
+
+
+@router.get("/totals")
+async def finance_totals(
+    day: date = Query(description="the business day in Sri Lanka"),
+    _: None = Depends(require_finance_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """What Online says happened on one Sri Lankan day, per branch, for Finance's
+    daily reconciliation: delivered sales and their COD part, card money in, and
+    the net wallet movement. Read straight from the source tables, not the outbox,
+    so an event that never reached the outbox still shows up as a difference."""
+    start = datetime.combine(day, time.min, tzinfo=COLOMBO)
+    end = start + timedelta(days=1)
+    rows: dict[str, dict] = defaultdict(lambda: {
+        "delivered_count": 0, "delivered_total": Decimal("0"), "cod": Decimal("0"),
+        "card_received": Decimal("0"), "wallet_net": Decimal("0"), "wallet_count": 0,
+    })
+
+    def key(branch_id) -> str:
+        return str(branch_id) if branch_id else "none"
+
+    delivered = await db.execute(
+        select(Order.branch_id, Order.payment_method, Order.total_amount, Order.wallet_deduction)
+        .where(Order.delivered_at >= start, Order.delivered_at < end)
+    )
+    for branch_id, method, total, wallet in delivered:
+        r = rows[key(branch_id)]
+        r["delivered_count"] += 1
+        r["delivered_total"] += total or 0
+        if (method or "").upper() == "COD":
+            r["cod"] += (total or 0) - (wallet or 0)
+
+    paid = await db.execute(
+        select(Order.branch_id, func.sum(PaymentAttempt.amount))
+        .join(Order, Order.order_id == PaymentAttempt.order_id)
+        .where(PaymentAttempt.status == PaymentAttemptStatus.PAID.value,
+               PaymentAttempt.completed_at >= start, PaymentAttempt.completed_at < end)
+        .group_by(Order.branch_id)
+    )
+    for branch_id, amount in paid:
+        rows[key(branch_id)]["card_received"] += amount or 0
+
+    moves = await db.execute(
+        select(Order.branch_id, WalletTransaction.type, func.sum(WalletTransaction.amount), func.count())
+        .outerjoin(Order, Order.order_id == WalletTransaction.order_id)
+        .where(WalletTransaction.created_at >= start, WalletTransaction.created_at < end)
+        .group_by(Order.branch_id, WalletTransaction.type)
+    )
+    for branch_id, kind, amount, n in moves:
+        r = rows[key(branch_id)]
+        r["wallet_net"] += -(amount or 0) if kind == "spent" else (amount or 0)
+        r["wallet_count"] += n
+
+    return {
+        "day": day.isoformat(),
+        "branches": {
+            b: {k: (f"{v:.2f}" if isinstance(v, Decimal) else v) for k, v in r.items()}
+            for b, r in rows.items()
+        },
     }
