@@ -338,6 +338,13 @@ class Settings(BaseSettings):
     # for how a call resolves branch -> account -> environment.
     # Sribees Finance (separate accounting app) -- see app/services/finance_outbox.py
     # and app/api/finance_internal.py.
+    return_fee_charged_to_customer: bool = Field(
+        default=False,
+        description=(
+            "Deduct SribeesExpress's return fee from a courier-collected return's refund "
+            "(owner, 2026-10-27). Switch on once the app that shows the fee is in the stores."
+        ),
+    )
     finance_outbox_enabled: bool = Field(
         default=False,
         description="Write finance_outbox events with every money and stock change (ships dark).",

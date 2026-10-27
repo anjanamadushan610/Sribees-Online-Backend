@@ -14,6 +14,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config.settings import settings
 from app.core.request_language import current_language
 from app.models.order import (
     Order,
@@ -2343,8 +2344,11 @@ class OrderService:
         rider who brought the goods back, capped at the refund.
 
         Zero for a returnless refund or anything not collected by a booked
-        SribeesExpress return leg -- no rider, no fee.
+        SribeesExpress return leg -- no rider, no fee. Zero everywhere until
+        RETURN_FEE_CHARGED_TO_CUSTOMER is on: customers must have been told first.
         """
+        if not settings.return_fee_charged_to_customer:
+            return Decimal("0")
         if not getattr(order, "return_waybill_number", None) or                 getattr(order, "return_booking_status", None) != "booked":
             return Decimal("0")
         fee = Decimal(str(getattr(order, "return_fee", None) or 0))

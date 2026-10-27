@@ -16,6 +16,13 @@ from tests.integration.test_order_lifecycle import (  # noqa: F401 - _webhook_se
 )
 
 
+@pytest.fixture(autouse=True)
+def _return_fee_on(monkeypatch):
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "return_fee_charged_to_customer", True)
+
+
 async def _return_requested(api, make_customer, make_product, place_order, make_admin, fake_courier):
     customer, order, manager, _ = await _delivered(api, make_customer, make_product, place_order, make_admin,
                                                    fake_courier)
@@ -144,3 +151,24 @@ async def test_the_return_screen_names_the_fee_first(
     other = await make_customer()
     assert (await api.get(f"/api/v1/orders/{order['order_id']}/return/quote",
                           headers=other.headers)).status_code == 404
+
+
+async def test_no_fee_is_taken_until_the_switch_is_on(
+    api, world, make_customer, make_product, place_order, make_admin, fake_courier, monkeypatch
+):
+    from app.config.settings import settings
+
+    monkeypatch.setattr(settings, "return_fee_charged_to_customer", False)
+    customer, order, manager = await _return_requested(api, make_customer, make_product, place_order,
+                                                       make_admin, fake_courier)
+    oid = order["order_id"]
+    r = await api.post(f"/api/v1/admin/orders/{oid}/return/approve", json={"resolution": "reverse_pickup"},
+                       headers=manager.headers)
+    assert r.status_code == 200, r.text
+    rid = next(rid for rid, leg in fake_courier.returns.items()
+               if leg["merchant_order_ref"] == order["order_number"])
+    shipment_id = next(sid for sid, s in fake_courier.shipments.items()
+                       if order["order_number"] in s["merchant_order_ref"])
+    r, _ = await _push(api, shipment_id, "delivered", return_id=rid)
+    assert r.status_code == 200, r.text
+    assert _balance(await api.get("/api/v1/wallet", headers=customer.headers)) == pytest.approx(800.0)
