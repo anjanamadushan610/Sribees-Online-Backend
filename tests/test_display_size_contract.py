@@ -1,4 +1,5 @@
 """Dependency-free checks for customer display metadata."""
+
 import ast
 import asyncio
 import sys
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 from unittest.mock import patch
 from uuid import UUID
+
 ROOT = Path(__file__).resolve().parents[1]
 class DisplaySizeContract(unittest.TestCase):
     def test_checkout_uses_catalogue_display_fields_without_changing_weight(self):
