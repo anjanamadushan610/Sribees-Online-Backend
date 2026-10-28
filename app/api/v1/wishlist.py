@@ -53,6 +53,8 @@ def format_wishlist_item(
         data["product"] = {
             "product_id": str(item.product.product_id),
             "name": item.product.name,
+            "display_size": getattr(item.product, "display_size", None),
+            "display_size_unit": getattr(item.product, "display_size_unit", None),
             "slug": item.product.slug,
             "price": eff.get("effective_price") if eff.get("effective_price") is not None else (float(item.product.price) if item.product.price else 0),
             "global_price": float(item.product.price) if item.product.price else 0,
