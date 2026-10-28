@@ -99,6 +99,8 @@ class WalletTransaction(Base):
 
     order_number = Column(String(50), nullable=True)
     notes = Column(Text, nullable=True)
+    # Why it moved (app.services.finance_outbox.WalletReason); NULL before 093.
+    reason = Column(String(40), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

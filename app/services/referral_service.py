@@ -37,6 +37,7 @@ from app.models.referral import (
 )
 from app.models.user import User
 from app.models.wallet import WalletTransactionType
+from app.services.finance_outbox import WalletReason
 from app.services.referral_commission import (
     CommissionLine,
     LevelPolicy,
@@ -556,6 +557,7 @@ class ReferralService:
                     tx_type=WalletTransactionType.SPENT,
                     amount=difference,
                     title="Referral adjusted — items returned",
+                    reason=WalletReason.COMMISSION_REVERSAL,
                     order_id=row.order_id,
                     order_number=row.order_number,
                 )
@@ -660,6 +662,7 @@ class ReferralService:
                     tx_type=WalletTransactionType.SPENT,
                     amount=difference,
                     title="Referral adjusted — items returned",
+                    reason=WalletReason.COMMISSION_REVERSAL,
                     order_id=row.order_id,
                     order_number=row.order_number,
                 )
@@ -753,6 +756,7 @@ class ReferralService:
                     tx_type=WalletTransactionType.SPENT,
                     amount=Decimal(str(row.amount)),
                     title="Referral commission reversed",
+                    reason=WalletReason.COMMISSION_REVERSAL,
                     order_id=row.order_id,
                     order_number=row.order_number,
                     notes=reason,
@@ -809,6 +813,7 @@ class ReferralService:
             tx_type=WalletTransactionType.EARNED,
             amount=total,
             title="Referral commission",
+            reason=WalletReason.COMMISSION_CREDIT,
             notes=f"{len(rows)} order(s)",
         )
 

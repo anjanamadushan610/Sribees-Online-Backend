@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.loyalty import OrderReward, OrderRewardStatus
 from app.models.order import Order, OrderStatus
 from app.models.wallet import WalletTransactionType
+from app.services.finance_outbox import WalletReason
 from app.services.loyalty_service import IssuedReward, LoyaltyService
 from app.services.wallet_service import WalletService
 
@@ -221,6 +222,7 @@ class OrderRewardService:
                 tx_type=WalletTransactionType.SPENT,
                 amount=difference,
                 title="Cashback adjusted — items returned",
+                reason=WalletReason.CASHBACK_REVERSAL,
                 order_id=order.order_id,
                 order_number=order.order_number,
             )
@@ -259,6 +261,7 @@ class OrderRewardService:
                 tx_type=WalletTransactionType.SPENT,
                 amount=credited,
                 title="Order cancellation cashback reversal",
+                reason=WalletReason.CASHBACK_REVERSAL,
                 order_id=order.order_id,
                 order_number=order.order_number,
                 notes=f"{reason} (balance may go negative)",
@@ -299,6 +302,7 @@ class OrderRewardService:
                 tx_type=WalletTransactionType.EARNED,
                 amount=amount,
                 title="Order cashback",
+                reason=WalletReason.CASHBACK_CREDIT,
                 order_id=order.order_id,
                 order_number=order.order_number,
             )

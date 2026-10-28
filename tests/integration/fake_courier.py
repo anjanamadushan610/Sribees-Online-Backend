@@ -121,6 +121,13 @@ def build_app(state: CourierState) -> FastAPI:
             state.shipments[sid]["status"] = "cancelled"
         return {"shipment_id": sid, "status": "cancelled"}
 
+    @app.get(f"{prefix}/returns/quote")
+    async def quote_return(merchant_order_ref: str, x_api_key: str | None = Header(None)):
+        _auth(x_api_key)
+        # Priced as book_return reports it below.
+        return {"shipment_id": "SXP0", "merchant_order_ref": merchant_order_ref,
+                "returnable": True, "return_fee_lkr": "250.00", "pricing_basis": "lane"}
+
     @app.post(f"{prefix}/returns")
     async def book_return(payload: dict, x_api_key: str | None = Header(None)):
         _auth(x_api_key)

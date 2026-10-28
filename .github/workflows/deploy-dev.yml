@@ -23,6 +23,8 @@
 #   DEV_ENV_FILE              — the whole .env for the dev stack
 #   DEV_SMS_PROVIDER, DEV_TEXTLK_API_TOKEN, DEV_TEXTLK_SENDER_ID
 #                             — optional; override those keys of DEV_ENV_FILE
+#   DEV_FINANCE_OUTBOX_ENABLED, DEV_FINANCE_SERVICE_TOKEN_SHA256
+#                             — optional; Sribees Finance's event feed, same way
 #   DEV_DOMAIN                — e.g. dev-api.sribees.com
 # =============================================================================
 
@@ -239,6 +241,10 @@ jobs:
           # Same testers on both: these numbers sign in with the test code and
           # are never texted.
           OTP_TEST_PHONES: ${{ secrets.OTP_TEST_PHONES }}
+          # Sribees Finance's event feed: switched on, and the SHA-256 of the
+          # token the dev finance worker presents.
+          FINANCE_OUTBOX_ENABLED: ${{ secrets.DEV_FINANCE_OUTBOX_ENABLED }}
+          FINANCE_SERVICE_TOKEN_SHA256: ${{ secrets.DEV_FINANCE_SERVICE_TOKEN_SHA256 }}
         run: |
           if [ -z "$DEV_ENV_FILE" ]; then
             echo "::error::secret DEV_ENV_FILE is empty"
@@ -247,7 +253,7 @@ jobs:
           # The SMS gateway keys live as their own secrets, so they can be set
           # or rotated without rebuilding DEV_ENV_FILE. Each set one replaces
           # the same key in it; nothing is echoed.
-          for key in SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID APPLE_BUNDLE_ID APPLE_TEAM_ID APPLE_KEY_ID APPLE_PRIVATE_KEY OTP_TEST_PHONES; do
+          for key in SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID APPLE_BUNDLE_ID APPLE_TEAM_ID APPLE_KEY_ID APPLE_PRIVATE_KEY OTP_TEST_PHONES FINANCE_OUTBOX_ENABLED FINANCE_SERVICE_TOKEN_SHA256; do
             value=$(printenv "$key" || true)
             if [ "$key" = "APPLE_PRIVATE_KEY" ] && [ -n "$value" ]; then
               # A .p8 spans lines; the .env wants one. Settings unescape it.

@@ -1166,6 +1166,64 @@ async def upload_return_image(
     return {"success": True, "data": {"path": path, "url": media_url(path)}}
 
 
+_RETURN_FEE_NOTE = {
+    "en": "If a rider collects the items, SribeesExpress's return charge of Rs {fee} is deducted from your refund.",
+    "si": "භාණ්ඩ රැගෙන යාමට rider කෙනෙක් පැමිණියහොත්, SribeesExpress ආපසු ගෙන යාමේ ගාස්තුව රු. {fee} ඔබේ ආපසු ගෙවීමෙන් අඩු කෙරේ.",
+    "ta": "பொருட்களை எடுக்க ரைடர் வந்தால், SribeesExpress திருப்பி எடுக்கும் கட்டணம் ரூ. {fee} உங்கள் பணத்திருப்பத்திலிருந்து கழிக்கப்படும்.",
+}
+_RETURN_FEE_UNKNOWN = {
+    "en": "If a rider collects the items, SribeesExpress's return charge is deducted from your refund. We will show the amount when the return is approved.",
+    "si": "භාණ්ඩ රැගෙන යාමට rider කෙනෙක් පැමිණියහොත්, SribeesExpress ආපසු ගෙන යාමේ ගාස්තුව ඔබේ ආපසු ගෙවීමෙන් අඩු කෙරේ. Return එක අනුමත කළ විට මුදල පෙන්වනු ලැබේ.",
+    "ta": "பொருட்களை எடுக்க ரைடர் வந்தால், SribeesExpress திருப்பி எடுக்கும் கட்டணம் உங்கள் பணத்திருப்பத்திலிருந்து கழிக்கப்படும். திருப்பி அனுப்புதல் ஏற்கப்பட்டதும் தொகை காட்டப்படும்.",
+}
+
+
+@router.get("/{order_id}/return/quote", response_model=dict)
+async def quote_order_return(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    What a return would cost the customer, shown on the return screen BEFORE
+    they ask for one (owner, 2026-10-27): SribeesExpress's fee for the rider
+    who collects the goods, deducted from the refund (never below zero). The
+    app only draws ``note``; the figure is SribeesExpress's own return quote,
+    priced exactly as the booking will be.
+    """
+    from app.services import courier_credentials
+    from app.services.courier_service import CourierService
+
+    try:
+        order_uuid = UUID(order_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    order = await OrderService.get_by_id(db, order_uuid, current_user.user_id)
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    lang = current_language()
+    fee = None
+    if order.courier_shipment_id:
+        try:
+            async with courier_credentials.for_branch(db, order.branch_id):
+                quote = await CourierService.quote_return(merchant_order_ref=order.order_number)
+            if quote.get("return_fee_lkr") is not None:
+                fee = Decimal(str(quote["return_fee_lkr"])).quantize(Decimal("0.01"))
+        except Exception as exc:  # noqa: BLE001 -- the screen still says a fee applies
+            logger.warning(f"Return quote for {order.order_number} unavailable: {exc}")
+    note = (_RETURN_FEE_NOTE.get(lang) or _RETURN_FEE_NOTE["en"]).format(fee=f"{fee:,.2f}") \
+        if fee is not None else (_RETURN_FEE_UNKNOWN.get(lang) or _RETURN_FEE_UNKNOWN["en"])
+    return {
+        "success": True,
+        "data": {
+            "return_fee": f"{fee:.2f}" if fee is not None else None,
+            "deducted_from_refund": True,
+            "note": note,
+        },
+    }
+
+
 @router.post("/{order_id}/return", response_model=dict)
 async def request_order_return(
     order_id: str,

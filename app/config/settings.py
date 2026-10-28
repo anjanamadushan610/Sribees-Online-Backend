@@ -336,6 +336,30 @@ class Settings(BaseSettings):
     # The keys are encrypted at rest (app/core/crypto.py) with
     # CREDENTIAL_ENCRYPTION_KEY above; see app/services/courier_credentials.py
     # for how a call resolves branch -> account -> environment.
+    # Sribees Finance (separate accounting app) -- see app/services/finance_outbox.py
+    # and app/api/finance_internal.py.
+    return_fee_charged_to_customer: bool = Field(
+        default=False,
+        description=(
+            "Deduct SribeesExpress's return fee from a courier-collected return's refund "
+            "(owner, 2026-10-27). Switch on once the app that shows the fee is in the stores."
+        ),
+    )
+    finance_outbox_enabled: bool = Field(
+        default=False,
+        description="Write finance_outbox events with every money and stock change (ships dark).",
+    )
+    finance_service_token_sha256: str = Field(
+        default="",
+        description=(
+            "SHA-256 (hex) of the token Sribees Finance presents on /internal/finance/*. "
+            "Empty = those routes do not exist (404)."
+        ),
+    )
+    finance_allowed_ips: str = Field(
+        default="",
+        description="Comma-separated IPs/CIDRs allowed to call /internal/finance/* (empty = any peer).",
+    )
     courier_webhook_secret: str = Field(
         default="",
         description=(
