@@ -1,13 +1,13 @@
 """Dependency-free checks for customer display metadata."""
 import ast
 import asyncio
-from pathlib import Path
 import sys
 import types
 import unittest
+from pathlib import Path
 from typing import List, Optional
-from uuid import UUID
 from unittest.mock import patch
+from uuid import UUID
 ROOT = Path(__file__).resolve().parents[1]
 class DisplaySizeContract(unittest.TestCase):
     def test_checkout_uses_catalogue_display_fields_without_changing_weight(self):
@@ -20,7 +20,8 @@ class DisplaySizeContract(unittest.TestCase):
         class Options:
             @staticmethod
             async def price_map(db, ids, branch): return {}
-        module = types.ModuleType('app.services.product_service'); module.ProductService = Products
+        module = types.ModuleType('app.services.product_service')
+        module.ProductService = Products
         tree = ast.parse((ROOT / 'app/services/order_service.py').read_text())
         method = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == '_attach_server_prices')
         method.decorator_list = []
