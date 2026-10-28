@@ -1408,126 +1408,167 @@ POST /api/v1/orders/:id/reorder
 
 ## EPIC 6: Reviews & Ratings
 
-### Feature 6.1: Write Review
+> **Owner decision, 2026-10-28 (not built yet):** customers no longer review or
+> rate **products**. The only rating left in the customer app is a rating of the
+> **SribeesExpress rider** who delivered the order, and it is sent to
+> SribeesExpress through its e-commerce API. Feature 6.1 below replaces the old
+> product-review features (write review, view reviews, helpful votes, review
+> moderation), which are withdrawn by Feature 6.2.
 
-**Description**: Submit product reviews
+### Feature 6.1: Rate the Delivery Rider
+
+**Description**: After an order is delivered, the customer rates the rider who
+brought it. SRIBEESonline does not keep or judge rider ratings itself; it
+passes each one to SribeesExpress, which owns its riders.
 
 **Functional Requirements**:
-- Only verified purchases can review
-- Star rating (1-5)
-- Review title
-- Review text (min 20 chars)
-- Upload photos (max 5)
-- One review per product per user
-- Edit review within 48 hours
+- Only the customer who placed the order can rate, and only once per order.
+- Only a **delivered** order that SribeesExpress carried (it has a waybill)
+  can be rated. Branch pickup orders and orders with no waybill show no rating.
+- Only the forward delivery is rated, never a return pickup.
+- The rating stays open for **7 days** after delivery, then the prompt goes
+  away.
+- Star rating 1–5 (required).
+- Optional quick tags, chosen from a fixed list the server owns:
+  - good: `on_time`, `polite`, `careful_with_goods`, `called_before_arriving`
+  - bad: `late`, `rude`, `damaged_goods`, `did_not_call`
+- Optional comment, at most 500 characters.
+- A rating cannot be edited or deleted once sent.
+- The customer's name, phone and address are **never** sent to
+  SribeesExpress — only the waybill, the stars, the tags and the comment.
+- The app shows the result at once; delivery to SribeesExpress happens in the
+  background and is retried until it succeeds (see the flow below).
 
-**UI Components**:
-- Star rating selector
-- Review form (title, text)
-- Photo upload with preview
-- Submit button
-- Character counter
+**UI Components** (mobile, en/si/ta strings):
+- "Rate your rider" card on Order Details of a delivered order, while
+  `rider_rating.can_rate` is true.
+- Bottom sheet: five stars, tag chips (good tags for 4–5 stars, bad tags for
+  1–3), an optional comment box with a counter, and a Send button.
+- After sending: "Thanks for rating your rider" with the stars given, in place
+  of the card.
+- The app only draws what the server sends (`can_rate`, the tag list and its
+  labels). It has no rating rules of its own.
 
-**API Endpoints**:
+**API Endpoints** (SRIBEESonline, called by the app):
 ```
-POST /api/v1/products/:id/reviews
-PUT /api/v1/reviews/:id
+GET  /api/v1/orders/{order_id}            # now carries a rider_rating block
+POST /api/v1/orders/{order_id}/rider-rating
 ```
 
-**Request Body**:
+`rider_rating` block on the order details response:
 ```json
 {
-  "rating": 5,
-  "title": "Great product!",
-  "comment": "This product exceeded my expectations...",
-  "images": ["url1", "url2"]
+  "can_rate": true,
+  "rated": false,
+  "rating": null,
+  "rated_at": null,
+  "closes_at": "2026-11-04T10:15:00Z",
+  "tags": [
+    {"code": "on_time", "kind": "good", "label": "On time"},
+    {"code": "late", "kind": "bad", "label": "Late"}
+  ]
 }
 ```
 
-**Database Tables**:
-- `reviews` (review_id, product_id, user_id, order_id, rating, title, comment, images, helpful_count, created_at, updated_at)
+Request body:
+```json
+{
+  "rating": 5,
+  "tags": ["on_time", "polite"],
+  "comment": "Called before coming, goods were fine."
+}
+```
+
+Responses:
+- `201` — saved; returns the `rider_rating` block with `rated: true`.
+- `404` — not the caller's order.
+- `409` — already rated, not delivered, not a SribeesExpress delivery, or the
+  7-day window has closed (`detail` says which, in the request's language).
+- `422` — stars outside 1–5, an unknown tag, or a comment over 500 characters.
+
+**Flow**:
+1. The app posts the rating to SRIBEESonline.
+2. SRIBEESonline checks the rules above and saves a `rider_ratings` row with
+   `sync_status = 'pending'`, then answers `201`.
+3. A background job sends each pending row to SribeesExpress:
+   `POST /ecommerce/shipments/{waybill_id}/rider-rating` with header
+   `Idempotency-Key: <rider_rating_id>`.
+4. On `200`/`201` the row becomes `sent`. On a network error or a `5xx` it
+   stays `pending` and is retried with back-off. On a `4xx` it becomes
+   `failed` with the reason saved, for staff to look at; it is not retried.
+
+**Database Tables** (SRIBEESonline):
+- `rider_ratings` (rider_rating_id, order_id UNIQUE, user_id, waybill_id,
+  rating, tags, comment, sync_status `pending|sent|failed`, sync_attempts,
+  last_sync_error, sent_at, created_at)
+
+**SribeesExpress side** (new endpoint in its e-commerce API, API-key auth like
+every other `/ecommerce` route):
+```
+POST /ecommerce/shipments/{waybill_id}/rider-rating
+```
+```json
+{
+  "rating": 5,
+  "tags": ["on_time", "polite"],
+  "comment": "Called before coming, goods were fine."
+}
+```
+- The shipment must belong to the calling client and be delivered.
+- The rating goes to the rider who **marked the parcel delivered** (taken from
+  the delivery event), not to `current_rider_id`, which can change later.
+- One rating per shipment. A replay with the same `Idempotency-Key` returns the
+  first result with `200`. A different rating for an already rated shipment is
+  `409`.
+- Errors: `404` unknown waybill or another client's, `409` not delivered or
+  already rated, `422` bad stars, tags or comment.
+- Stored in an Express `rider_ratings` table (shipment_id UNIQUE, rider_id,
+  client_id, rating, tags, comment, idempotency_key, created_at).
+- The rider app shows the rider their own average and number of ratings, but
+  not individual comments or which customer gave them.
+- Express admin sees every rating, each rider's average, and a list of
+  low ratings (1–2 stars) to follow up.
+- `docs/ECOMMERCE_API.md` in the Express backend gets this endpoint as its own
+  section when it is built.
 
 ---
 
-### Feature 6.2: View Reviews
+### Feature 6.2: Withdraw Product Reviews
 
-**Description**: Display product reviews
+**Description**: Take product reviews and star ratings out of the customer
+experience without losing the reviews already written.
 
 **Functional Requirements**:
-- List all reviews for product
-- Sort by: Most Recent, Highest Rating, Lowest Rating, Most Helpful
-- Filter by rating (5 stars, 4 stars, etc.)
-- Pagination
-- Review summary (average rating, rating distribution)
-- Verified purchase badge
-- Helpful votes display
-
-**UI Components**:
-- Rating summary section
-- Rating distribution bars
-- Sort dropdown
-- Filter buttons
-- Review cards
-- Pagination controls
+- Mobile: remove the star rating and review count from product cards, the
+  product page, search, saved items and chat product cards; remove the
+  "All reviews" and "Write review" screens and the "Write review" /
+  "Reviewed" actions on order details.
+- Backend: `POST /api/v1/products/{product_id}/reviews` answers `410 Gone`
+  once the new app is in the stores. Until then it keeps working, so older
+  app versions do not show errors.
+- Backend: product, wishlist and order responses stop sending `rating`,
+  `review_count` and `is_reviewed` in the same release.
+- The shopping assistant stops quoting product ratings or reviews.
+- The `reviews` table and its rows stay in the database untouched (no delete,
+  no migration that drops it). Only new writes stop.
 
 **API Endpoints**:
 ```
-GET /api/v1/products/:id/reviews?sort=helpful&filter=5&page=1
-GET /api/v1/products/:id/reviews/summary
+POST /api/v1/products/{product_id}/reviews   # 410 Gone after the release
+GET  /api/v1/products/{product_id}/reviews   # removed with the same release
 ```
 
 ---
 
-### Feature 6.3: Helpful Votes
+### Open decisions (owner)
 
-**Description**: Mark reviews as helpful
-
-**Functional Requirements**:
-- "Was this helpful?" button
-- Yes/No voting
-- Vote count display
-- One vote per user per review
-- Update helpful count
-
-**UI Components**:
-- Helpful vote buttons
-- Vote count display
-- Voted state indication
-
-**API Endpoints**:
-```
-POST /api/v1/reviews/:id/helpful
-```
-
-**Database Tables**:
-- `review_votes` (review_id, user_id, is_helpful)
-
----
-
-### Feature 6.4: Review Moderation (Admin)
-
-**Description**: Admin review moderation
-
-**Functional Requirements**:
-- View pending reviews
-- Approve/reject reviews
-- Flag inappropriate reviews
-- Delete reviews
-- Respond to reviews (admin)
-
-**UI Components**:
-- Moderation queue
-- Approve/reject buttons
-- Flag button
-- Admin response form
-
-**API Endpoints**:
-```
-GET /api/v1/admin/reviews/pending
-PUT /api/v1/admin/reviews/:id/approve
-PUT /api/v1/admin/reviews/:id/reject
-POST /api/v1/admin/reviews/:id/respond
-```
+The defaults above are proposals. Confirm or change before building:
+1. The 7-day window for rating a rider.
+2. The tag list and its en/si/ta wording.
+3. Whether a push notification asks for the rating after delivery (default:
+   no push, only the card on Order Details).
+4. Whether old product reviews stay in the database or are exported and
+   deleted later (default: they stay).
 
 ---
 
@@ -2561,7 +2602,7 @@ POST /api/v1/admin/settings/splash-video # Admin: upload new splash video
 | EPIC 3: Shopping Cart | 6 features | High |
 | EPIC 4: Checkout & Payment | 7 features | High |
 | EPIC 5: Order Management | 7 features | High |
-| EPIC 6: Reviews & Ratings | 4 features | Medium |
+| EPIC 6: Reviews & Ratings | 2 features (rider rating, review withdrawal) | Medium |
 | EPIC 7: Admin Dashboard | 8 features | Medium |
 | EPIC 8: Notifications | 5 features | Medium |
 | EPIC 9: Advanced Watchlist | 3 features | Medium |
