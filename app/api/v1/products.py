@@ -127,6 +127,8 @@ def format_product(
         "sold_by_weight": bool(getattr(product, "sold_by_weight", False)),
         "weight": float(product.weight) if getattr(product, "weight", None) is not None else None,
         "weight_unit": getattr(product, "weight_unit", None) or "kg",
+        "display_size": getattr(product, "display_size", None),
+        "display_size_unit": getattr(product, "display_size_unit", None),
         "stock_quantity": eff.get("stock_quantity", product.stock_quantity),
         "is_active": eff.get("is_active", product.is_active),
         "is_featured": product.is_featured,

@@ -131,6 +131,8 @@ class ProductCreate(BaseModel):
     low_stock_threshold: int = Field(10, ge=0)
     weight: Optional[Decimal] = None
     weight_unit: str = "kg"
+    display_size: Optional[str] = Field(default=None, max_length=80)
+    display_size_unit: Optional[str] = Field(default=None, max_length=32)
     is_active: bool = True
     is_featured: bool = False
     is_perishable: bool = Field(
@@ -199,6 +201,8 @@ class ProductUpdate(BaseModel):
     low_stock_threshold: Optional[int] = Field(None, ge=0)
     weight: Optional[Decimal] = None
     weight_unit: Optional[str] = None
+    display_size: Optional[str] = Field(default=None, max_length=80)
+    display_size_unit: Optional[str] = Field(default=None, max_length=32)
     is_active: Optional[bool] = None
     is_featured: Optional[bool] = None
     is_perishable: Optional[bool] = Field(
