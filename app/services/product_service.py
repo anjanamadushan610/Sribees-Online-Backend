@@ -320,6 +320,8 @@ class ProductService:
             low_stock_threshold=data.low_stock_threshold,
             weight=data.weight,
             weight_unit=data.weight_unit,
+            display_size=data.display_size.strip() if data.display_size else None,
+            display_size_unit=data.display_size_unit.strip() if data.display_size_unit else None,
             is_active=data.is_active,
             is_featured=data.is_featured,
             is_perishable=data.is_perishable,
@@ -1304,6 +1306,13 @@ class ProductService:
             resolved.setdefault(str(pid), Decimal("0"))
 
         return resolved
+
+    @staticmethod
+    async def get_display_size_map(db: AsyncSession, product_ids: List[UUID]) -> dict:
+        rows = (await db.execute(select(
+            Product.product_id, Product.display_size, Product.display_size_unit
+        ).where(Product.product_id.in_(product_ids)))).all()
+        return {str(pid): (value, unit) for pid, value, unit in rows}
 
     # ================================================================
     # Quick Sale feed  (branch-aware)

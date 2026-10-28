@@ -173,6 +173,9 @@ class OrderService:
             db, [u for u in (_uuid(i.get("variant_id")) for i in items) if u], branch_id
         )
 
+        display_sizes = await ProductService.get_display_size_map(
+            db, [u for u in (_uuid(i.get("product_id")) for i in items) if u]
+        )
         repriced = []
         for item in items:
             line = dict(item)
@@ -186,6 +189,7 @@ class OrderService:
             elif strict:
                 name = item.get("name") or "An item in your cart"
                 raise ValueError(f"{name} is no longer available. Please remove it and try again.")
+            line["display_size"], line["display_size_unit"] = display_sizes.get(product_id, (None, None))
             repriced.append(line)
         return repriced
 
@@ -748,6 +752,8 @@ class OrderService:
                 ),
                 variant_name=item.get("variant_name"),
                 product_name=item.get("name") or item.get("product_name", ""),
+                display_size=item.get("display_size"),
+                display_size_unit=item.get("display_size_unit"),
                 product_sku=item.get("sku") or item.get("product_sku"),
                 product_image=item.get("image") or item.get("imageUrl") or item.get("product_image"),
                 quantity=item["quantity"],
@@ -1243,6 +1249,8 @@ class OrderService:
                 "variant_id": str(item.variant_id) if item.variant_id else None,
                 "variant_name": item.variant_name,
                 "name": (product.name if product else None) or item.product_name,
+                "display_size": getattr(product, "display_size", None),
+                "display_size_unit": getattr(product, "display_size_unit", None),
                 "image": item.product_image,
                 "ordered_quantity": item.quantity,
                 "quantity": min(item.quantity, stock),

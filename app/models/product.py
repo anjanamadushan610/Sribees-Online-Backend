@@ -89,6 +89,9 @@ class Product(Base):
     low_stock_threshold = Column(Integer, default=10)
     weight = Column(Numeric(10, 3), nullable=True)
     weight_unit = Column(String(10), default="kg")
+    # Customer-facing retail size, independent of courier weight above.
+    display_size = Column(String(80), nullable=True)
+    display_size_unit = Column(String(32), nullable=True)
     is_active = Column(Boolean, default=True)
     is_featured = Column(Boolean, default=False)
     is_perishable = Column(

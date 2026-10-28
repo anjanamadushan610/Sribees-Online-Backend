@@ -474,6 +474,8 @@ def format_order(
                 "product_id": str(item.product_id),
                 "variant_id": str(item.variant_id) if item.variant_id else None,
                 "product_name": item.product_name,
+                "display_size": getattr(item, "display_size", None),
+                "display_size_unit": getattr(item, "display_size_unit", None),
                 "variant_name": item.variant_name,
                 "product_sku": item.product_sku,
                 "product_image": item.product_image,
@@ -552,6 +554,8 @@ def format_order_summary(order) -> dict:
             {
                 "product_id": str(item.product_id),
                 "product_name": item.product_name,
+                "display_size": getattr(item, "display_size", None),
+                "display_size_unit": getattr(item, "display_size_unit", None),
                 "variant_name": item.variant_name,
                 "product_image": item.product_image,
                 "quantity": item.quantity,
