@@ -98,7 +98,7 @@ async def main():
         assert await conn.scalar(select(User.user_id).where(User.user_id == friend_id)) is None
     await engine.dispose()
     bundle['source_rolled_back'] = True
-    print(json.dumps(bundle))
+    print('SRIBEES_PROBE_BUNDLE=' + json.dumps(bundle))
 
 
 if __name__ == '__main__':

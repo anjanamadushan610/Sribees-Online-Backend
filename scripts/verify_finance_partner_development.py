@@ -19,7 +19,10 @@ from app.services.reconciliation import finance_totals
 async def main():
     if get_settings().environment != 'development':
         raise RuntimeError('This probe is permitted only in development')
-    bundle = json.load(sys.stdin)
+    lines = [line for line in sys.stdin.read().splitlines()
+             if line.startswith('SRIBEES_PROBE_BUNDLE=')]
+    assert len(lines) == 1, 'Expected exactly one completed, rolled-back source bundle'
+    bundle = json.loads(lines[0].split('=', 1)[1])
     assert bundle['source_rolled_back'] is True
     events = bundle['events']
     assert len(events) == 11
