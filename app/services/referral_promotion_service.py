@@ -151,6 +151,7 @@ class ReferralPromotionService:
         benefit.used_deliveries -= 1
         campaign.delivery_spent -= row.amount
         row.released = True
+        await db.flush()
 
     @staticmethod
     async def customer_summary(db, user_id):

@@ -16,7 +16,7 @@ from app.services.pricing_service import DeliveryQuote, PricingService
 from app.services.referral_promotion_service import ReferralPromotionService as Service
 from app.services.referral_promotion_service import enabled
 from tests.conftest import requires_db
-from tests.test_linked_partner_wallet import money_db  # noqa: F401 - shared rollback-only Postgres fixture
+from tests.test_linked_partner_wallet import money_db as money_db
 
 
 def test_rules_require_real_benefit_caps_dates_and_scoped_partner():

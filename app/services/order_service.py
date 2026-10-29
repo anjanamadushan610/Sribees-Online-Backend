@@ -344,6 +344,7 @@ class OrderService:
         """
         from app.services.referral_promotion_service import ReferralPromotionService
         from app.services.referral_promotion_service import enabled as promotions_enabled
+
         if promotions_enabled():
             # Same-customer checkouts cannot spend a final benefit twice.
             await db.execute(select(User.user_id).where(User.user_id == user_id).with_for_update())
