@@ -13,10 +13,15 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.core.security import hash_password
 from app.models.partner import Partner
-from app.models.partner_wallet import PartnerApplication, PartnerWallet, PartnerWalletEntry, PartnerWithdrawal
+from app.models.partner_wallet import (
+    PartnerApplication,
+    PartnerWallet,
+    PartnerWalletEntry,
+    PartnerWithdrawal,
+)
 from app.models.referral import ReferralCommission, ReferralCommissionStatus
 from app.models.user import User
-from app.models.wallet import Wallet, WalletTransactionType
+from app.models.wallet import WalletTransactionType
 from app.services.wallet_service import WalletService
 
 

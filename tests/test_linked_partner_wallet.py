@@ -15,7 +15,8 @@ from app.models.partner import Partner
 from app.models.partner_wallet import PartnerWallet, PartnerWalletEntry
 from app.models.user import User
 from app.models.wallet import Wallet
-from app.services.partner_wallet_service import PartnerWalletService as Service, money
+from app.services.partner_wallet_service import PartnerWalletService as Service
+from app.services.partner_wallet_service import money
 from app.services.referral_service import ReferralError, ReferralService
 from tests.conftest import requires_db
 
@@ -150,3 +151,21 @@ async def test_partner_clawback_never_debits_shopping_credit(money_db):
     assert await db.scalar(select(Wallet.balance).where(Wallet.user_id == user.user_id)) == Decimal('100.00')
     entries = (await db.execute(select(PartnerWalletEntry).where(PartnerWalletEntry.partner_id == partner.partner_id))).scalars().all()
     assert len(entries) == 2
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_failed_shopping_credit_rolls_back_partner_debit(money_db, monkeypatch):
+    from app.services.wallet_service import WalletService
+    db, user = money_db
+    partner = await linked_partner(db, user)
+
+    async def fail_credit(*args, **kwargs):
+        raise RuntimeError('Simulated shopping ledger failure')
+
+    monkeypatch.setattr(WalletService, 'apply_transaction', fail_credit)
+    with pytest.raises(RuntimeError):
+        async with db.begin_nested():
+            await Service.transfer_to_shopping(db, partner, Decimal('30.00'), uuid4())
+    assert await db.scalar(select(PartnerWallet.balance).where(PartnerWallet.partner_id == partner.partner_id)) == Decimal('100.00')
+    assert await db.scalar(select(Wallet.balance).where(Wallet.user_id == user.user_id)) == Decimal('100.00')

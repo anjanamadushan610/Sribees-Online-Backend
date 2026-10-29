@@ -63,12 +63,19 @@ async def get_my_referrals(
     code = await ReferralService.get_or_create_code(db, current_user)
     totals = await ReferralService.get_summary(db, current_user.user_id)
     friends = await ReferralService.list_friends(db, current_user.user_id)
+    from app.services.partner_wallet_service import PartnerWalletService
+    from app.services.partner_service import PartnerService
+    linked = await PartnerWalletService.linked(db, current_user.user_id, active=False)
+    if linked:
+        totals = (await PartnerService.get_summary(db, linked.partner_id))["totals"]
+        friends = await PartnerService.list_customers(db, linked.partner_id)
     highest = await CommissionRateResolver.highest_live_rate(db)
 
     return {
         "success": True,
         "data": {
             "referralCode": code,
+            "isPartner": linked is not None,
             # The best rate on offer today: rates are per product now. Kept
             # for app builds that still word the sentence themselves; newer
             # ones show commissionText, in the Accept-Language language.

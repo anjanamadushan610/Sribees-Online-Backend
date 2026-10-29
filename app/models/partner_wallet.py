@@ -1,8 +1,21 @@
 """Linked partner money is separate from non-withdrawable shopping credit."""
 import uuid
-from sqlalchemy import Column, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint, CheckConstraint, func
+
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
+
 from app.config.database import Base
+
 
 
 class PartnerApplication(Base):

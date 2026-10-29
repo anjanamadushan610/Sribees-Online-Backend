@@ -40,7 +40,12 @@ from app.models.notification import (
 )
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
-from app.models.partner_wallet import PartnerApplication, PartnerWallet, PartnerWalletEntry, PartnerWithdrawal
+from app.models.partner_wallet import (
+    PartnerApplication,
+    PartnerWallet,
+    PartnerWalletEntry,
+    PartnerWithdrawal,
+)
 from app.models.payment import PaymentAttempt, PaymentAttemptStatus
 from app.models.product import (
     BranchInventory,

@@ -48,6 +48,7 @@ from app.api.v1 import (
     coupons,
     courier_webhooks,
     delivery,
+    linked_partner_wallet,
     locations,
     marketing,
     notifications,
@@ -62,7 +63,6 @@ from app.api.v1 import (
     sync,
     user_addresses,
     wallet,
-    linked_partner_wallet,
     wishlist,
 )
 
