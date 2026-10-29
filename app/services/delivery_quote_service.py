@@ -48,6 +48,7 @@ from app.services.pricing_service import (
 )
 
 from app.services.referral_promotion_service import ReferralPromotionService
+from app.services.referral_promotion_service import enabled as promotions_enabled
 
 
 _CACHE_PREFIX = "courier:cart-quote:v1"
@@ -206,6 +207,10 @@ async def quote_for_cart(
 
     from app.services.order_service import OrderService
 
+    if promotions_enabled():
+        # Quote requests may carry stale/client-supplied prices. Eligibility
+        # must use the same catalogue subtotal order creation will charge.
+        items = await OrderService._attach_server_prices(db, items, destination.branch_id)
     weighted = await OrderService._attach_weights(db, items)
     async with courier_credentials.optional_for_branch(db, destination.branch_id) as target:
         outlet_id = await outlet_for(db, destination.branch_id)

@@ -147,6 +147,10 @@ class ReferralService:
         if not cleaned:
             raise ReferralError("INVALID_CODE", "Enter an invite code.")
 
+        # Bind is write-once even when two requests arrive together. Refresh
+        # after acquiring the lock so the loser observes the first binding.
+        user = (await db.execute(select(User).where(User.user_id == user.user_id)
+            .with_for_update().execution_options(populate_existing=True))).scalar_one()
         if user.referred_by_user_id is not None or user.referred_by_partner_id is not None:
             raise ReferralError(
                 "ALREADY_REFERRED",
