@@ -7,7 +7,6 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from app.config.database import Base
 
 
-
 class PartnerApplication(Base):
     __tablename__ = "partner_applications"
     application_id = sa.Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -52,7 +51,7 @@ class PartnerWithdrawal(Base):
     account_number = sa.Column(sa.String(40), nullable=False)
     decision_by = sa.Column(PG_UUID(as_uuid=True), nullable=True)
     payment_reference = sa.Column(sa.String(160), nullable=True)
-    decision_note = sa.Column(Text, nullable=True)
+    decision_note = sa.Column(sa.Text, nullable=True)
     created_at = sa.Column(sa.DateTime(timezone=True), server_default=sa.func.now())
     decided_at = sa.Column(sa.DateTime(timezone=True), nullable=True)
     __table_args__ = (sa.UniqueConstraint("partner_id", "request_id", name="uq_partner_withdrawal_request"), sa.CheckConstraint("amount > 0", name="chk_partner_withdrawal_amount"))
