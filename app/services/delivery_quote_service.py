@@ -49,7 +49,6 @@ from app.services.pricing_service import (
 from app.services.referral_promotion_service import ReferralPromotionService
 from app.services.referral_promotion_service import enabled as promotions_enabled
 
-
 _CACHE_PREFIX = "courier:cart-quote:v1"
 
 
