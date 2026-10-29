@@ -46,7 +46,6 @@ from app.services.pricing_service import (
     PricingService,
     cart_weight_kg,
 )
-
 from app.services.referral_promotion_service import ReferralPromotionService
 from app.services.referral_promotion_service import enabled as promotions_enabled
 

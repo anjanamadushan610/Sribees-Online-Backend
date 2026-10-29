@@ -6,24 +6,26 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.api.v1.referral_promotions import CampaignBody, Rules
 from app.models.coupon import Coupon
 from app.models.order import Order
 from app.models.partner import Partner
 from app.models.referral_promotion import ReferralBenefit, ReferralPromotion
+from app.models.user import User
 from app.services.pricing_service import DeliveryQuote, PricingService
 from app.services.referral_promotion_service import ReferralPromotionService as Service
 from app.services.referral_promotion_service import enabled
 from tests.conftest import requires_db
-from tests.test_linked_partner_wallet import money_db as money_db
 
 
 def test_rules_require_real_benefit_caps_dates_and_scoped_partner():
     with pytest.raises(ValidationError):
         Rules()
-    for values in [dict(coupon_value=101, coupon_type='percentage', coupon_cap=200),
-                   dict(coupon_value=100, coupon_cap=0), dict(free_delivery=True, delivery_uses=0)]:
+    for values in [{'coupon_value': 101, 'coupon_type': 'percentage', 'coupon_cap': 200},
+                   {'coupon_value': 100, 'coupon_cap': 0}, {'free_delivery': True, 'delivery_uses': 0}]:
         with pytest.raises(ValidationError):
             Rules(**values)
     assert Rules(free_delivery=True, delivery_uses=None, valid_days=30).delivery_uses is None
@@ -42,6 +44,23 @@ def test_rollout_defaults_off_and_requires_finance_confirmation(monkeypatch):
     assert not enabled()
     monkeypatch.setenv('REFERRAL_PROMOTIONS_FINANCE_READY', 'true')
     assert enabled()
+
+
+@pytest.fixture
+async def promo_db(db_schema):
+    from app.config.settings import settings
+
+    engine = create_async_engine(settings.async_database_url, poolclass=NullPool)
+    async with engine.connect() as connection:
+        outer = await connection.begin()
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode='create_savepoint') as db:
+            user = User(email=f'{uuid4().hex}@example.com', full_name='Promo Customer', is_active=True,
+                is_verified=True, is_blocked=False)
+            db.add(user)
+            await db.flush()
+            yield db, user
+        await outer.rollback()
+    await engine.dispose()
 
 
 async def setup_offer(db, user, monkeypatch, **overrides):
@@ -64,8 +83,8 @@ async def setup_offer(db, user, monkeypatch, **overrides):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_new_customer_grant_is_once_private_coupon_and_snapshot(money_db, monkeypatch):
-    db, user = money_db
+async def test_new_customer_grant_is_once_private_coupon_and_snapshot(promo_db, monkeypatch):
+    db, user = promo_db
     campaign, partner = await setup_offer(db, user, monkeypatch)
     benefit = await Service.enroll(db, user, partner)
     assert benefit is not None
@@ -81,8 +100,8 @@ async def test_new_customer_grant_is_once_private_coupon_and_snapshot(money_db, 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_old_customers_and_existing_buyers_do_not_get_acquisition_offer(money_db, monkeypatch):
-    db, user = money_db
+async def test_old_customers_and_existing_buyers_do_not_get_acquisition_offer(promo_db, monkeypatch):
+    db, user = promo_db
     _, partner = await setup_offer(db, user, monkeypatch)
     original = user.created_at
     user.created_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2)
@@ -96,8 +115,8 @@ async def test_old_customers_and_existing_buyers_do_not_get_acquisition_offer(mo
 
 @requires_db
 @pytest.mark.asyncio
-async def test_direct_offer_overrides_master_team_and_common_without_stacking(money_db, monkeypatch):
-    db, user = money_db
+async def test_direct_offer_overrides_master_team_and_common_without_stacking(promo_db, monkeypatch):
+    db, user = promo_db
     campaign, partner = await setup_offer(db, user, monkeypatch)
     master = Partner(email=f'{uuid4().hex}@example.com', full_name='Test Master', password_hash='unused', role='master_partner', is_active=True)
     db.add(master)
@@ -115,8 +134,8 @@ async def test_direct_offer_overrides_master_team_and_common_without_stacking(mo
 
 @requires_db
 @pytest.mark.asyncio
-async def test_quote_reservation_release_and_delivery_limits(money_db, monkeypatch):
-    db, user = money_db
+async def test_quote_reservation_release_and_delivery_limits(promo_db, monkeypatch):
+    db, user = promo_db
     campaign, partner = await setup_offer(db, user, monkeypatch)
     benefit = await Service.enroll(db, user, partner)
     raw = DeliveryQuote(status='quoted', fee=Decimal('250.00'), quote_id='courier-test')
@@ -142,8 +161,8 @@ async def test_quote_reservation_release_and_delivery_limits(money_db, monkeypat
 
 @requires_db
 @pytest.mark.asyncio
-async def test_expiry_budget_minimum_and_fee_cap_refuse_free_delivery(money_db, monkeypatch):
-    db, user = money_db
+async def test_expiry_budget_minimum_and_fee_cap_refuse_free_delivery(promo_db, monkeypatch):
+    db, user = promo_db
     campaign, partner = await setup_offer(db, user, monkeypatch)
     benefit = await Service.enroll(db, user, partner)
     benefit.rules = {**benefit.rules, 'min_order': '500', 'max_delivery_fee': '300', 'delivery_uses': None}
