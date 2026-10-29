@@ -49,7 +49,7 @@ class PartnerWalletService:
 
     @staticmethod
     async def user_lock(db, user_id):
-        user = (await db.execute(select(User).where(User.user_id == user_id).with_for_update())).scalar_one_or_none()
+        user = (await db.execute(select(User).where(User.user_id == user_id).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
         if user is None or not user.is_active or user.is_blocked or user.deleted_at is not None:
             fail('An active customer account is required.', 403)
         return user
@@ -57,7 +57,7 @@ class PartnerWalletService:
     @staticmethod
     async def wallet_lock(db, partner_id):
         await db.execute(insert(PartnerWallet).values(partner_id=partner_id, balance=0).on_conflict_do_nothing(index_elements=['partner_id']))
-        return (await db.execute(select(PartnerWallet).where(PartnerWallet.partner_id == partner_id).with_for_update())).scalar_one()
+        return (await db.execute(select(PartnerWallet).where(PartnerWallet.partner_id == partner_id).with_for_update().execution_options(populate_existing=True))).scalar_one()
 
     @staticmethod
     async def entry(db, wallet, reference, kind, amount):
@@ -86,7 +86,7 @@ class PartnerWalletService:
             fail('Add your email and full name to My Account before applying.')
         if await PartnerWalletService.linked(db, user_id, active=False):
             fail('Your customer account is already linked to a Partner account.', 409)
-        existing = (await db.execute(select(PartnerApplication).where(PartnerApplication.user_id == user_id).with_for_update())).scalar_one_or_none()
+        existing = (await db.execute(select(PartnerApplication).where(PartnerApplication.user_id == user_id).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
         if existing and existing.status == 'pending':
             return existing
         collision = (await db.execute(select(Partner.partner_id).where(func.lower(Partner.email) == user.email.lower()))).scalar_one_or_none()
@@ -107,7 +107,7 @@ class PartnerWalletService:
         if initial is None:
             fail('Application not found.', 404)
         user = await PartnerWalletService.user_lock(db, initial.user_id)
-        app = (await db.execute(select(PartnerApplication).where(PartnerApplication.application_id == application_id).with_for_update())).scalar_one()
+        app = (await db.execute(select(PartnerApplication).where(PartnerApplication.application_id == application_id).with_for_update().execution_options(populate_existing=True))).scalar_one()
         if app.status != 'pending':
             fail('This application has already been decided.', 409)
         partner = None
@@ -119,7 +119,7 @@ class PartnerWalletService:
                 fail('Partner email is already in use; resolve ownership first.', 409)
             if master_id:
                 master = await db.get(Partner, master_id)
-                if master is None or not master.is_active or master.role != 'master_partner' or master.user_id == user.user_id:
+                if master is None or not master.is_active or master.role != 'master_partner' or master.parent_partner_id is not None or master.user_id == user.user_id:
                     fail('Choose an active Master Partner.')
             code = user.referral_code
             if not code:
@@ -158,7 +158,7 @@ class PartnerWalletService:
             ReferralCommission.status == ReferralCommissionStatus.CLAIMABLE,
             ReferralCommission.claimable_at.isnot(None),
             ReferralCommission.claimable_at <= datetime.now(timezone.utc)
-        ).order_by(ReferralCommission.commission_id).with_for_update())).scalars().all()
+        ).order_by(ReferralCommission.commission_id).with_for_update().execution_options(populate_existing=True))).scalars().all()
         if not rows:
             return 0
         wallet = await PartnerWalletService.wallet_lock(db, partner_id)
@@ -226,7 +226,7 @@ class PartnerWalletService:
         if initial is None:
             fail('Withdrawal not found.', 404)
         wallet = await PartnerWalletService.wallet_lock(db, initial.partner_id)
-        row = (await db.execute(select(PartnerWithdrawal).where(PartnerWithdrawal.withdrawal_id == withdrawal_id).with_for_update())).scalar_one()
+        row = (await db.execute(select(PartnerWithdrawal).where(PartnerWithdrawal.withdrawal_id == withdrawal_id).with_for_update().execution_options(populate_existing=True))).scalar_one()
         if row.status != 'pending':
             fail('Withdrawal already decided.', 409)
         if paid and not (reference or '').strip():

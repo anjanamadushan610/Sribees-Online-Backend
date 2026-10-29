@@ -159,12 +159,13 @@ class ReferralService:
         partner_row = await db.execute(
             select(Partner).where(
                 Partner.referral_code == cleaned,
-                Partner.is_active.is_(True),
             )
         )
         partner = partner_row.scalar_one_or_none()
 
         if partner is not None:
+            if not partner.is_active:
+                raise ReferralError("INVALID_CODE", "That invite code is not valid.")
             if partner.user_id == user.user_id:
                 raise ReferralError("SELF_REFERRAL", "You cannot use your own invite code.")
             user.referred_by_partner_id = partner.partner_id

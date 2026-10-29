@@ -63,8 +63,8 @@ async def get_my_referrals(
     code = await ReferralService.get_or_create_code(db, current_user)
     totals = await ReferralService.get_summary(db, current_user.user_id)
     friends = await ReferralService.list_friends(db, current_user.user_id)
-    from app.services.partner_wallet_service import PartnerWalletService
     from app.services.partner_service import PartnerService
+    from app.services.partner_wallet_service import PartnerWalletService
     linked = await PartnerWalletService.linked(db, current_user.user_id, active=False)
     if linked:
         totals = (await PartnerService.get_summary(db, linked.partner_id))["totals"]

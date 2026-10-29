@@ -24,9 +24,9 @@ from app.services.partner_wallet_service import withdrawal_json
 def rollout_enabled():
     from app.services.finance_outbox import enabled as finance_enabled
     if os.getenv('LINKED_PARTNER_WALLET_ENABLED', 'false').lower() != 'true':
-        raise HTTPException(503, 'Partner Wallet is not available yet.')
+        raise HTTPException(404, 'Partner Wallet is not available yet.')
     if finance_enabled() and os.getenv('PARTNER_WALLET_FINANCE_READY', 'false').lower() != 'true':
-        raise HTTPException(503, 'Partner Wallet finance integration is awaiting approval.')
+        raise HTTPException(409, 'Partner Wallet finance integration is awaiting approval.')
 
 
 router = APIRouter(tags=['Partner Wallet'])

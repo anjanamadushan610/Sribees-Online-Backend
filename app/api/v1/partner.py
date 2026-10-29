@@ -326,7 +326,7 @@ async def recruit_partner(
     so credentials are handed over out of band, the same way the seed data's
     demo partner passwords are.
     """
-    if partner.role != "master_partner":
+    if partner.role != "master_partner" or partner.parent_partner_id is not None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={

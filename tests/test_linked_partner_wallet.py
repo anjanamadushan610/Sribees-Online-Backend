@@ -34,7 +34,7 @@ def test_rollout_is_closed_by_default(monkeypatch):
     monkeypatch.delenv('LINKED_PARTNER_WALLET_ENABLED', raising=False)
     with pytest.raises(HTTPException) as error:
         rollout_enabled()
-    assert error.value.status_code == 503
+    assert error.value.status_code == 404
 
 
 @pytest.fixture
@@ -169,3 +169,90 @@ async def test_failed_shopping_credit_rolls_back_partner_debit(money_db, monkeyp
             await Service.transfer_to_shopping(db, partner, Decimal('30.00'), uuid4())
     assert await db.scalar(select(PartnerWallet.balance).where(PartnerWallet.partner_id == partner.partner_id)) == Decimal('100.00')
     assert await db.scalar(select(Wallet.balance).where(Wallet.user_id == user.user_id)) == Decimal('100.00')
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_upgrade_moves_unpaid_commissions_but_never_paid_shopping_credit(money_db):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.order import Order
+    from app.models.referral import ReferralCommission
+    db, user = money_db
+    commissions = []
+    for status in ['pending', 'claimable', 'paid']:
+        order = Order(user_id=user.user_id, order_number=f'TEST-{uuid4().hex}', subtotal=1000, total_amount=1000)
+        db.add(order)
+        await db.flush()
+        row = ReferralCommission(order_id=order.order_id, beneficiary_user_id=user.user_id,
+            source_user_id=user.user_id, level=1, rate_percentage=3, order_subtotal=1000, amount=30,
+            status=status, claimable_at=datetime.now(timezone.utc) + timedelta(days=1 if status == 'pending' else -1))
+        db.add(row)
+        commissions.append(row)
+    await db.flush()
+    application = await Service.apply(db, user.user_id, 'test-password-for-application')
+    partner = await Service.decide_application(db, application.application_id, uuid4(), True)
+    for row in commissions:
+        await db.refresh(row)
+    assert commissions[0].beneficiary_partner_id == partner.partner_id
+    assert commissions[0].status == 'pending'
+    assert commissions[1].beneficiary_partner_id == partner.partner_id
+    assert commissions[1].status == 'paid'
+    assert commissions[2].beneficiary_user_id == user.user_id
+    assert await db.scalar(select(PartnerWallet.balance).where(PartnerWallet.partner_id == partner.partner_id)) == Decimal('30.00')
+    assert await db.scalar(select(Wallet.balance).where(Wallet.user_id == user.user_id)) == Decimal('100.00')
+    assert await Service.credit_available(db, partner.partner_id) == 0
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_two_concurrent_transfers_cannot_spend_same_balance(db_schema, monkeypatch):
+    import asyncio
+
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.config.settings import settings
+    from app.models.wallet import WalletTransaction
+    engine = create_async_engine(settings.async_database_url, poolclass=NullPool)
+    if 'test' not in (engine.url.database or '').lower():
+        await engine.dispose()
+        pytest.skip('Concurrent committed fixtures run only on an explicitly named test database')
+    monkeypatch.setattr(settings, 'finance_outbox_enabled', False)
+    session = async_sessionmaker(engine, expire_on_commit=False)
+    user_id, partner_id = uuid4(), uuid4()
+    try:
+        async with session() as db:
+            db.add(User(user_id=user_id, full_name='Concurrent Test', email=f'{user_id}@example.test', is_active=True))
+            await db.flush()
+            db.add(Partner(partner_id=partner_id, user_id=user_id, role='partner', email=f'{user_id}@example.test', full_name='Test', password_hash='unused'))
+            await db.flush()
+            db.add(PartnerWallet(partner_id=partner_id, balance=100))
+            db.add(Wallet(user_id=user_id, balance=100))
+            await db.commit()
+
+        async def transfer():
+            async with session() as db:
+                try:
+                    partner = await db.get(Partner, partner_id)
+                    await Service.transfer_to_shopping(db, partner, Decimal('70.00'), uuid4())
+                    await db.commit()
+                    return True
+                except HTTPException:
+                    await db.rollback()
+                    return False
+
+        assert sorted(await asyncio.gather(transfer(), transfer())) == [False, True]
+        async with session() as db:
+            assert await db.scalar(select(PartnerWallet.balance).where(PartnerWallet.partner_id == partner_id)) == Decimal('30.00')
+            assert await db.scalar(select(Wallet.balance).where(Wallet.user_id == user_id)) == Decimal('170.00')
+    finally:
+        async with session() as db:
+            await db.execute(delete(PartnerWalletEntry).where(PartnerWalletEntry.partner_id == partner_id))
+            await db.execute(delete(WalletTransaction).where(WalletTransaction.user_id == user_id))
+            await db.execute(delete(PartnerWallet).where(PartnerWallet.partner_id == partner_id))
+            await db.execute(delete(Partner).where(Partner.partner_id == partner_id))
+            await db.execute(delete(Wallet).where(Wallet.user_id == user_id))
+            await db.execute(delete(User).where(User.user_id == user_id))
+            await db.commit()
+        await engine.dispose()

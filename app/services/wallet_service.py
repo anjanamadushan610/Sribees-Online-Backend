@@ -9,7 +9,6 @@ from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
 
-from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession

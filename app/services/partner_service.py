@@ -201,7 +201,7 @@ class PartnerService:
             parent = parent_res.scalar_one_or_none()
             if parent is None:
                 raise ValueError("Recruiting partner not found")
-            if parent.role != "master_partner":
+            if parent.role != "master_partner" or parent.parent_partner_id is not None:
                 raise ValueError("Sub-partners cannot recruit further partners (2-tier limit)")
 
         referral_code = await PartnerService._generate_unique_code(db)
