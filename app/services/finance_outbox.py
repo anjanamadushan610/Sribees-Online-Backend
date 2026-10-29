@@ -231,6 +231,10 @@ def _order_event(session: Session, order: Order, old_status: Optional[str]) -> F
         "return_received_at": _iso(order.return_received_at),
         "lines": lines,
     }
+    # Preserve the old Finance contract for ordinary orders and while rollout
+    # is off. Only an actually subsidized order needs the reviewed extension.
+    if order.referral_delivery_discount:
+        payload["amounts"]["referral_delivery_subsidy"] = _money(order.referral_delivery_discount)
     if order.status == "refunded":
         payload["returned"] = _returned(order, lines)
     return _row("order.status", order.order_id, payload)

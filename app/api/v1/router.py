@@ -56,6 +56,7 @@ from app.api.v1 import (
     partner,
     payments,
     products,
+    referral_promotions,
     referrals,
     reviews,
     session,
@@ -503,3 +504,5 @@ router.include_router(
 
 # Static partner application routes precede no dynamic GET /{id} routes.
 router.include_router(linked_partner_wallet.router)
+
+router.include_router(referral_promotions.router)

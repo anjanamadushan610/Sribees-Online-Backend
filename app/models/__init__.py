@@ -64,6 +64,11 @@ from app.models.referral import (
     ReferralCommissionStatus,
     ReferralRateChange,
 )
+from app.models.referral_promotion import (
+    ReferralBenefit,
+    ReferralDeliveryRedemption,
+    ReferralPromotion,
+)
 from app.models.role import Permission, Role, RolePermission
 from app.models.search_miss import SearchMiss, SearchMissStatus
 from app.models.stock_transfer import StockTransfer, TransferStatus
@@ -80,6 +85,7 @@ from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.models.wishlist import WishlistItem
 
 __all__ = [
+    "ReferralBenefit", "ReferralDeliveryRedemption", "ReferralPromotion",
     "AssistantProfile",
     "AssistantReminder",
     "AssistantReceipt",

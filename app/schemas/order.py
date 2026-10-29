@@ -149,6 +149,7 @@ class CreateOrderRequest(BaseModel):
     # COD, WALLET, or one of the Marx IPG gateway methods (MARX_OTHER/MARX_AMEX/MARX_BANK).
     payment_method: str = "COD"
     coupon_code: Optional[str] = None
+    expected_referral_free_delivery: bool = False
     # When true, the wallet is applied to reduce the total. Defaults to the
     # full available balance (capped at the order total); wallet_amount
     # narrows that to a smaller customer-chosen amount — see
