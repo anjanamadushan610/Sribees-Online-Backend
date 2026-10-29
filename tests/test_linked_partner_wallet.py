@@ -360,7 +360,7 @@ async def test_finance_transfer_has_both_sides_and_stable_identity(money_db, mon
 
 @requires_db
 @pytest.mark.asyncio
-async def test_export_real_partner_lifecycle_for_finance_consumer(money_db, monkeypatch):
+async def test_export_real_partner_lifecycle_for_finance_consumer(money_db, monkeypatch, capsys):
     """Export synthetic, rolled-back producer events for the other service's CI."""
     import json
     from datetime import datetime, timedelta, timezone
@@ -417,3 +417,6 @@ async def test_export_real_partner_lifecycle_for_finance_consumer(money_db, monk
     target = Path('reports/online-partner-contract.json')
     target.parent.mkdir(exist_ok=True)
     target.write_text(json.dumps(bundle, indent=2) + '\n')
+    # Only this synthetic fixture: permit cross-service verification when artifact quota is full.
+    with capsys.disabled():
+        print('ONLINE_PARTNER_CONTRACT=' + json.dumps(bundle, separators=(',', ':')))
