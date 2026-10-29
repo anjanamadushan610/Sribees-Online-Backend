@@ -165,6 +165,8 @@ class ReferralService:
         partner = partner_row.scalar_one_or_none()
 
         if partner is not None:
+            if partner.user_id == user.user_id:
+                raise ReferralError("SELF_REFERRAL", "You cannot use your own invite code.")
             user.referred_by_partner_id = partner.partner_id
             user.referred_at = datetime.now(timezone.utc)
             if commit:
@@ -351,6 +353,15 @@ class ReferralService:
             policy = (await ReferralProgramConfig.load(db)).policy
         level1 = build_lines(sale_lines, policy.for_level(1))
         created: list[ReferralCommission] = []
+
+        if buyer.referred_by_user_id is not None:
+            from app.services.partner_wallet_service import PartnerWalletService
+            # Serialises upgrade with in-flight old-code accruals.
+            await db.execute(select(User.user_id).where(User.user_id == buyer.referred_by_user_id).with_for_update())
+            linked = await PartnerWalletService.linked(db, buyer.referred_by_user_id, active=False)
+            if linked:
+                buyer.referred_by_partner_id = linked.partner_id
+                buyer.referred_by_user_id = None
 
         # --- Referred by a professional partner ---------------------------
         if buyer.referred_by_partner_id is not None:
@@ -550,6 +561,9 @@ class ReferralService:
             row.amount = new_amount
             row.returned_subtotal = _money(returned_basis)
 
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_partner_id:
+                from app.services.partner_wallet_service import PartnerWalletService
+                await PartnerWalletService.adjust_commission(db, row, difference)
             if row.status == ReferralCommissionStatus.PAID and row.beneficiary_user_id:
                 await WalletService.apply_transaction(
                     db,
@@ -655,6 +669,9 @@ class ReferralService:
 
             # Money already in their wallet has to come back out. Only the
             # difference -- they keep what the delivered goods earned.
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_partner_id:
+                from app.services.partner_wallet_service import PartnerWalletService
+                await PartnerWalletService.adjust_commission(db, row, difference)
             if row.status == ReferralCommissionStatus.PAID and row.beneficiary_user_id:
                 await WalletService.apply_transaction(
                     db,
@@ -714,6 +731,10 @@ class ReferralService:
             row.status = ReferralCommissionStatus.CLAIMABLE
 
         if rows:
+            await db.flush()
+            from app.services.partner_wallet_service import PartnerWalletService
+            for partner_id in sorted({r.beneficiary_partner_id for r in rows if r.beneficiary_partner_id}, key=str):
+                await PartnerWalletService.credit_available(db, partner_id)
             await db.commit()
             logger.info(f"{len(rows)} referral commission(s) vested")
         return rows
@@ -749,7 +770,12 @@ class ReferralService:
         rows = result.scalars().all()
 
         for row in rows:
-            if row.status == ReferralCommissionStatus.PAID:
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_partner_id:
+                from app.services.partner_wallet_service import PartnerWalletService
+                amount = Decimal(str(row.amount))
+                row.amount = Decimal("0.00")
+                await PartnerWalletService.adjust_commission(db, row, amount)
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_user_id:
                 await WalletService.apply_transaction(
                     db,
                     user_id=row.beneficiary_user_id,
@@ -785,6 +811,13 @@ class ReferralService:
         claimable and pay it twice. Whichever request gets the lock pays; the
         other sees nothing left to claim.
         """
+        from app.services.partner_wallet_service import PartnerWalletService
+        await PartnerWalletService.user_lock(db, user_id)
+        linked = await PartnerWalletService.linked(db, user_id)
+        if linked:
+            count = await PartnerWalletService.credit_available(db, linked.partner_id)
+            await db.commit()
+            return {"claimed_count": count, "amount": Decimal("0.00"), "destination": "partner_wallet"}
         result = await db.execute(
             select(ReferralCommission)
             .where(

@@ -41,6 +41,8 @@ class Partner(Base):
 
     partner_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="RESTRICT"), nullable=True, unique=True, index=True)
+    role = Column(String(20), nullable=False, default="master_partner", server_default="master_partner")
     email = Column(String(255), nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(150), nullable=False)

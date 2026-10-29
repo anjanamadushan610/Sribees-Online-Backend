@@ -62,6 +62,7 @@ from app.api.v1 import (
     sync,
     user_addresses,
     wallet,
+    linked_partner_wallet,
     wishlist,
 )
 
@@ -499,3 +500,6 @@ router.include_router(
     prefix="/admin/support",
     tags=["Admin Support Tickets"],
 )
+
+# Static partner application routes precede no dynamic GET /{id} routes.
+router.include_router(linked_partner_wallet.router)

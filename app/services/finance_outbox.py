@@ -57,13 +57,14 @@ class WalletReason:
     PAYMENT_REFUND = "payment_refund"                # late or double gateway money
     CASHBACK_CREDIT = "cashback_credit"              # held cashback released
     CASHBACK_REVERSAL = "cashback_reversal"          # released cashback taken back
+    PARTNER_WALLET_TRANSFER = "partner_wallet_transfer"  # partner liability -> shopping wallet liability
     COMMISSION_CREDIT = "commission_credit"          # referral commission claimed
     COMMISSION_REVERSAL = "commission_reversal"      # paid commission taken back
 
     ALL = frozenset({
         WALLET_PAYMENT, CANCEL_REFUND, CANCEL_DELIVERY_CHARGE, RETURN_REFUND, RETURN_FEE,
         PAYMENT_REFUND, CASHBACK_CREDIT, CASHBACK_REVERSAL, COMMISSION_CREDIT,
-        COMMISSION_REVERSAL,
+        COMMISSION_REVERSAL, PARTNER_WALLET_TRANSFER,
     })
 
 
@@ -309,3 +310,21 @@ def install() -> None:
     """Hook every ORM session in the process. Idempotent."""
     if not event.contains(Session, "before_flush", _before_flush):
         event.listen(Session, "before_flush", _before_flush)
+
+
+async def partner_wallet_movement(db, entry):
+    """New finance contract; enable linked-wallet rollout only after consumer support."""
+    if enabled():
+        db.add(_row("partner.wallet.movement", entry.partner_id, {
+            "entry_id": str(entry.entry_id), "partner_id": str(entry.partner_id),
+            "kind": entry.kind, "reference": entry.reference,
+            "amount": _money(entry.amount), "balance_after": _money(entry.balance_after),
+        }))
+
+
+async def partner_withdrawal_paid(db, withdrawal):
+    if enabled():
+        db.add(_row("partner.withdrawal.paid", withdrawal.partner_id, {
+            "withdrawal_id": str(withdrawal.withdrawal_id), "partner_id": str(withdrawal.partner_id),
+            "amount": _money(withdrawal.amount), "payment_reference": withdrawal.payment_reference,
+        }))

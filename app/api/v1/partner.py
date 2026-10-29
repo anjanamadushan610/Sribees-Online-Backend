@@ -255,6 +255,9 @@ async def get_my_partner_profile(
             ),
             "currency": settings.wallet_currency,
             "hasUpline": partner.parent_partner_id is not None,
+            "role": partner.role,
+            "linkedUserId": str(partner.user_id) if partner.user_id else None,
+            "canRecruit": partner.role == "master_partner",
             "totals": {
                 "pending": float(summary["totals"]["pending"]),
                 "claimable": float(summary["totals"]["claimable"]),
@@ -323,13 +326,13 @@ async def recruit_partner(
     so credentials are handed over out of band, the same way the seed data's
     demo partner passwords are.
     """
-    if partner.parent_partner_id is not None:
+    if partner.role != "master_partner":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "success": False,
                 "error": {
-                    "message": "Only Lead partners can recruit sub-partners.",
+                    "message": "Only Master Partners can recruit Partners.",
                     "code": "RECRUIT_NOT_ALLOWED",
                 },
             },

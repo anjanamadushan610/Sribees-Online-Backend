@@ -49,6 +49,8 @@ def _format_partner(partner: Partner) -> dict:
     return {
         "partner_id": str(partner.partner_id),
         "email": partner.email,
+        "role": partner.role,
+        "linked_user_id": str(partner.user_id) if partner.user_id else None,
         "full_name": partner.full_name,
         "phone": partner.phone,
         "referral_code": partner.referral_code,

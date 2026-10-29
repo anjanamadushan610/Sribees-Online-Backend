@@ -240,6 +240,12 @@ async def get_current_partner(
     if not partner.is_active:
         raise AuthenticationError(message="Partner account is deactivated")
 
+    if partner.user_id:
+        from app.models.user import User
+        linked_user = await db.get(User, partner.user_id)
+        if linked_user is None or not linked_user.is_active or linked_user.is_blocked or linked_user.deleted_at is not None:
+            raise AuthenticationError(message="Linked customer account is inactive")
+
     # A password change (reset or admin edit) ends every earlier session: the
     # token carries the stamp of the password it was issued under.
     from app.services.partner_service import password_stamp

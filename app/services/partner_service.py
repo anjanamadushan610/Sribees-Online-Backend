@@ -201,7 +201,7 @@ class PartnerService:
             parent = parent_res.scalar_one_or_none()
             if parent is None:
                 raise ValueError("Recruiting partner not found")
-            if parent.parent_partner_id is not None:
+            if parent.role != "master_partner":
                 raise ValueError("Sub-partners cannot recruit further partners (2-tier limit)")
 
         referral_code = await PartnerService._generate_unique_code(db)
@@ -213,6 +213,7 @@ class PartnerService:
             full_name=full_name.strip(),
             phone=phone.strip() if phone else None,
             parent_partner_id=parent_partner_id,
+            role="partner" if parent_partner_id else "master_partner",
             referral_code=referral_code,
             is_active=True,
         )
@@ -284,6 +285,8 @@ class PartnerService:
         return [
             {
                 "partner_id": str(p.partner_id),
+                "role": p.role,
+                "linked_user_id": str(p.user_id) if p.user_id else None,
                 "email": p.email,
                 "full_name": p.full_name,
                 "phone": p.phone,
@@ -348,6 +351,9 @@ class PartnerService:
         ``ReferralService.claim`` locks a customer's rows, so two admins
         marking the same partner paid at once cannot double-count.
         """
+        partner = await db.get(Partner, partner_id)
+        if partner and partner.user_id:
+            raise ValueError("Linked Partner commissions are credited to Partner Wallet. Settle a withdrawal request instead.")
         stmt = select(ReferralCommission).where(
             ReferralCommission.beneficiary_partner_id == partner_id,
             ReferralCommission.status == ReferralCommissionStatus.CLAIMABLE,
