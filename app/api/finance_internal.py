@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.config.settings import settings
 from app.models.finance_outbox import FinanceOutbox, FinanceStockLevel
+from app.models.partner_wallet import PartnerWalletEntry, PartnerWithdrawal
 from app.models.order import Order
 from app.models.payment import PaymentAttempt, PaymentAttemptStatus
 from app.models.wallet import WalletTransaction
@@ -125,13 +126,15 @@ async def finance_totals(
         return str(branch_id) if branch_id else "none"
 
     delivered = await db.execute(
-        select(Order.branch_id, Order.payment_method, Order.total_amount, Order.wallet_deduction)
+        select(Order.branch_id, Order.payment_method, Order.total_amount, Order.wallet_deduction, Order.referral_delivery_discount)
         .where(Order.delivered_at >= start, Order.delivered_at < end)
     )
-    for branch_id, method, total, wallet in delivered:
+    for branch_id, method, total, wallet, subsidy in delivered:
         r = rows[key(branch_id)]
         r["delivered_count"] += 1
         r["delivered_total"] += total or 0
+        if subsidy:
+            r["referral_delivery_subsidy"] = r.get("referral_delivery_subsidy", Decimal("0")) + subsidy
         if (method or "").upper() == "COD":
             r["cod"] += (total or 0) - (wallet or 0)
 
@@ -155,6 +158,18 @@ async def finance_totals(
         r = rows[key(branch_id)]
         r["wallet_net"] += -(amount or 0) if kind == "spent" else (amount or 0)
         r["wallet_count"] += n
+
+    partner_moves = (await db.execute(select(func.sum(PartnerWalletEntry.amount), func.count())
+        .where(PartnerWalletEntry.created_at >= start, PartnerWalletEntry.created_at < end))).one()
+    if partner_moves[1]:
+        rows["none"]["partner_wallet_net"] = partner_moves[0]
+        rows["none"]["partner_wallet_count"] = partner_moves[1]
+    partner_paid = (await db.execute(select(func.sum(PartnerWithdrawal.amount), func.count())
+        .where(PartnerWithdrawal.status == "paid", PartnerWithdrawal.decided_at >= start,
+            PartnerWithdrawal.decided_at < end))).one()
+    if partner_paid[1]:
+        rows["none"]["partner_withdrawal_paid"] = partner_paid[0]
+        rows["none"]["partner_withdrawal_count"] = partner_paid[1]
 
     return {
         "day": day.isoformat(),

@@ -329,3 +329,30 @@ async def test_open_return_cannot_be_cashed_out_and_rejection_releases_it_once(m
     assert await Service.credit_available(db, partner.partner_id) == 1
     assert await Service.credit_available(db, partner.partner_id) == 0
     assert await db.scalar(select(PartnerWallet.balance).where(PartnerWallet.partner_id == partner.partner_id)) == Decimal('130.00')
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_finance_transfer_has_both_sides_and_stable_identity(money_db, monkeypatch):
+    from app.config.settings import settings
+    from app.models.finance_outbox import FinanceOutbox
+
+    monkeypatch.setattr(settings, 'finance_outbox_enabled', True)
+    db, user = money_db
+    partner = await linked_partner(db, user)
+    request_id = uuid4()
+    await Service.transfer_to_shopping(db, partner, Decimal('30.00'), request_id)
+    await db.flush()
+    events = list((await db.scalars(select(FinanceOutbox))).all())
+    shopping = [e.payload for e in events if e.event_type == 'wallet.movement'
+                and e.payload.get('partner_transfer_id') == str(request_id)]
+    assert len(shopping) == 1
+    assert shopping[0]['partner_id'] == str(partner.partner_id)
+    assert shopping[0]['amount'] == '30.00'
+    partner_side = [e.payload for e in events if e.event_type == 'partner.wallet.movement'
+                    and e.payload.get('reference') == f'shopping:{request_id}']
+    assert len(partner_side) == 1
+    assert partner_side[0]['amount'] == '-30.00'
+    await Service.transfer_to_shopping(db, partner, Decimal('30.00'), request_id)
+    await db.flush()
+    assert len(list((await db.scalars(select(FinanceOutbox))).all())) == len(events)
