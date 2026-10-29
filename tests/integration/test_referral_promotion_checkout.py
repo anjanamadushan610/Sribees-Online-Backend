@@ -36,8 +36,9 @@ async def test_free_delivery_quote_order_final_slot_and_cancellation(api, db, ap
     campaign_id, partner_id = campaign.promotion_id, partner.partner_id
     benefit_id = coupon_id = None
     try:
-        response = await api.post('/api/v1/referrals/redeem', json={'referral_code': partner.referral_code}, headers=customer.headers)
-        assert response.status_code == 200, response.text
+        bindings = await asyncio.gather(*(api.post('/api/v1/referrals/redeem',
+            json={'referral_code': partner.referral_code}, headers=customer.headers) for _ in range(2)))
+        assert sorted(r.status_code for r in bindings) == [200, 400], [r.text for r in bindings]
         benefit = (await db.execute(select(ReferralBenefit).where(ReferralBenefit.user_id == customer.user_id))).scalar_one()
         benefit_id, coupon_id = benefit.benefit_id, benefit.coupon_id
         response = await api.get('/api/v1/coupons/collected', headers=customer.headers)
@@ -48,6 +49,13 @@ async def test_free_delivery_quote_order_final_slot_and_cancellation(api, db, ap
         quote = response.json()['data']
         assert quote['delivery_fee'] == 0 and quote['delivery']['original_fee'] == 350
         assert quote['delivery']['promotion']
+        # A raw courier cache entry must never leak one customer's benefit.
+        other = await make_customer()
+        response = await api.post('/api/v1/orders/quote', json={
+            'payment_method': 'COD', 'delivery_address_id': str(other.address_id),
+            'items': [{'product_id': str(product), 'quantity': 2, 'price': 1}]}, headers=other.headers)
+        assert response.status_code == 200, response.text
+        assert response.json()['data']['delivery_fee'] == 350
         body = _order_body(customer, expected_referral_free_delivery=True, is_buy_now=True,
             items=[{'product_id': str(product), 'quantity': 2, 'price': 1, 'name': 'Test'}])
         responses = await asyncio.gather(*(api.post('/api/v1/orders', json=body, headers=customer.headers) for _ in range(2)))
