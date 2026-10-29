@@ -356,3 +356,64 @@ async def test_finance_transfer_has_both_sides_and_stable_identity(money_db, mon
     await Service.transfer_to_shopping(db, partner, Decimal('30.00'), request_id)
     await db.flush()
     assert len(list((await db.scalars(select(FinanceOutbox))).all())) == len(events)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_export_real_partner_lifecycle_for_finance_consumer(money_db, monkeypatch):
+    """Export synthetic, rolled-back producer events for the other service's CI."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    from app.config.settings import settings
+    from app.models.finance_outbox import FinanceOutbox
+    from app.models.order import Order
+    from app.models.referral import ReferralCommission
+
+    monkeypatch.setattr(settings, 'finance_outbox_enabled', True)
+    db, user = money_db
+    partner = await linked_partner(db, user)
+    wallet = await Service.wallet_lock(db, partner.partner_id)
+    wallet.balance = Decimal('0.00')
+    order = Order(user_id=user.user_id, order_number=f'CONTRACT-{uuid4().hex}',
+                  subtotal=1000, total_amount=1000, status='delivered')
+    db.add(order)
+    await db.flush()
+    commission = ReferralCommission(order_id=order.order_id, beneficiary_partner_id=partner.partner_id,
+        source_user_id=user.user_id, level=1, rate_percentage=10, order_subtotal=1000,
+        amount=100, status='claimable', claimable_at=datetime.now(timezone.utc) - timedelta(days=1))
+    db.add(commission)
+    await db.flush()
+    assert await Service.credit_available(db, partner.partner_id) == 1
+    transfer_id = uuid4()
+    await Service.transfer_to_shopping(db, partner, Decimal('30.00'), transfer_id)
+    rejected = await Service.withdraw(db, partner, WithdrawalBody(request_id=uuid4(), amount='20.00',
+        bank_name='Synthetic Test Bank', branch_name='Test', account_name='Test', account_number='000000'))
+    await Service.decide_withdrawal(db, rejected.withdrawal_id, uuid4(), False, None, 'Contract test')
+    paid = await Service.withdraw(db, partner, WithdrawalBody(request_id=uuid4(), amount='10.00',
+        bank_name='Synthetic Test Bank', branch_name='Test', account_name='Test', account_number='000000'))
+    await Service.decide_withdrawal(db, paid.withdrawal_id, uuid4(), True, 'CONTRACT-PAID-10', None)
+    commission.amount = Decimal('85.00')
+    await Service.adjust_commission(db, commission, Decimal('15.00'))
+    await db.flush()
+    all_events = list((await db.scalars(select(FinanceOutbox).order_by(FinanceOutbox.seq))).all())
+    events = [e for e in all_events if (
+        e.event_type.startswith('partner.') and e.aggregate_id == partner.partner_id
+        or e.event_type == 'commission.changed' and e.payload.get('commission_id') == str(commission.commission_id)
+        or e.event_type == 'wallet.movement' and e.payload.get('partner_transfer_id') == str(transfer_id))]
+    assert len(events) == 11
+    assert all(e.payload['settlement_mode'] == 'partner_wallet'
+               for e in events if e.event_type == 'commission.changed')
+    assert wallet.balance == Decimal('45.00')
+    assert await db.scalar(select(Wallet.balance).where(Wallet.user_id == user.user_id)) == Decimal('130.00')
+    bundle = {'description': 'Synthetic Online producer events; no real customers, bank details or secrets',
+        'partner_id': str(partner.partner_id), 'withdrawal_id': str(paid.withdrawal_id),
+        'events': [{'seq': e.seq, 'event_id': str(e.event_id), 'type': e.event_type,
+            'aggregate_id': str(e.aggregate_id) if e.aggregate_id else None,
+            'occurred_at': e.occurred_at.isoformat(), 'payload': e.payload} for e in events],
+        'expected': {'available': '45.00', 'reserved': '0.00', 'shopping_credit': '30.00',
+                     'commission_expense': '85.00', 'bank_clearing': '10.00', 'transfer_clearing': '0.00'}}
+    target = Path('reports/online-partner-contract.json')
+    target.parent.mkdir(exist_ok=True)
+    target.write_text(json.dumps(bundle, indent=2) + '\n')
