@@ -84,8 +84,7 @@ backup_database() {
     < /dev/null | gzip -9 > "$file.part" || die "backup failed - refusing to migrate"
   mv "$file.part" "$file"
   chmod 0600 "$file"
-  find "$BACKUP_DIR" -name 'pre-deploy-*.sql.gz' -mtime "+$BACKUP_RETENTION_DAYS" -delete 2>/dev/null || true
-  find "$BACKUP_DIR" -name 'pre-deploy-*.part'   -mtime +1 -delete 2>/dev/null || true
+  # Retain all previous backups during the Partner test rollout.
   log "backup written to $(basename "$file")"
 }
 
@@ -132,9 +131,9 @@ start_infrastructure() {
 
 run_migrations() {
   local image="$1"
-  local work="$DIR/.migrations"
+  local work="$DIR/.migration-runs/$(date -u +%Y%m%dT%H%M%SZ)-$$/content"
+  mkdir -p "$(dirname "$work")"
   log "extracting migrations from the image"
-  rm -rf "$work"
   local cid
   cid="$(docker create "$image")"
   docker cp "${cid}:/app/migrations" "$work" >/dev/null
@@ -184,8 +183,8 @@ seed_development() {
   # The seeds are extracted from the IMAGE, like the migrations, so a rollout
   # always applies the pair that shipped together.
   local image="$1"
-  local work="$DIR/.seeds"
-  rm -rf "$work"
+  local work="$DIR/.seed-runs/$(date -u +%Y%m%dT%H%M%SZ)-$$/content"
+  mkdir -p "$(dirname "$work")"
   local cid
   cid="$(docker create "$image")"
   # The directory is optional: a release that ships none is not a failure.
@@ -220,13 +219,17 @@ cmd_deploy() {
   [ -n "$image" ] || image="$(cat "$IMAGE_FILE" 2>/dev/null || true)"
   [ -n "$image" ] || die "no APP_IMAGE given and no .image recorded"
   log "deploying $image"
+  local free_kb
+  free_kb=$(df -Pk "$DIR" | awk 'NR==2 {print $4}')
+  [ "$free_kb" -ge 5242880 ] || die "less than 5 GiB free on development server"
+  [ -n "$(compose ps -q postgres)" ] || die "expected existing development database; refusing replacement"
 
   log "pulling"
   APP_IMAGE="$image" compose pull --quiet app || die "could not pull $image"
 
   start_infrastructure
-  create_base_tables "$image"
   backup_database
+  create_base_tables "$image"
   run_migrations "$image"
   seed_development "$image"
 
