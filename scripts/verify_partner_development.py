@@ -34,7 +34,7 @@ async def main():
     finance_outbox.install()
     engine = create_async_engine(settings.async_database_url, poolclass=NullPool)
     uid, friend_id, transfer_id = uuid4(), uuid4(), uuid4()
-    code = 'PROBE' + uuid4().hex[:10]
+    code = 'PRB' + uuid4().hex[:9]  # users.referral_code is VARCHAR(12)
     bundle = None
     async with engine.connect() as conn:
         outer = await conn.begin()
