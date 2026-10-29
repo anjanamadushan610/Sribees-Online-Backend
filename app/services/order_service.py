@@ -534,6 +534,8 @@ class OrderService:
         original_delivery_fee = breakdown.delivery_fee
         delivery_benefit = await ReferralPromotionService.delivery(
             db, user_id, breakdown.subtotal, original_delivery_fee, lock=True)
+        if data.expected_referral_free_delivery and not delivery_benefit:
+            raise ValueError('Your free delivery offer is no longer available. Refresh checkout to review the delivery charge.')
         if delivery_benefit:
             breakdown = await PricingService.quote(
                 items=priced_items, coupon=coupon_for_pricing, use_wallet=data.use_wallet,
