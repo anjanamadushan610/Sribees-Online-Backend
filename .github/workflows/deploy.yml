@@ -31,6 +31,11 @@ on:
     branches: [main, development]
   workflow_call:
   workflow_dispatch:
+    inputs:
+      development_probe:
+        description: Run the synthetic Partner lifecycle on deployed development services with rollback
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -325,3 +330,56 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
           format: table
+
+  development_partner_probe:
+    name: Development Partner lifecycle (rollback only)
+    if: github.event_name == 'workflow_dispatch' && inputs.development_probe
+    needs: [lint, sast, deps, secrets, test, rehearsal]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: partner-development-probe
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure existing development access
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          {
+            echo "Host target"
+            echo "  HostName $SSH_HOST"
+            echo "  User $SSH_USER"
+            echo "  Port $SSH_PORT"
+            echo "  IdentityFile ~/.ssh/id_deploy"
+            echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking yes"
+            echo "  BatchMode yes"
+          } > ~/.ssh/config
+      - name: Run synthetic services and prove both rollbacks
+        run: |
+          path="/opt/sribees-online-dev/partner-probes/$GITHUB_RUN_ID"
+          ssh target "umask 077 && mkdir -p '$path'"
+          scp scripts/verify_partner_development.py scripts/verify_finance_partner_development.py "target:$path/"
+          ssh target "PROBE_PATH='$path' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          cd "$PROBE_PATH"
+          free_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+          [ "$free_kb" -ge 5242880 ] || { echo "less than 5 GiB free"; exit 1; }
+          mapfile -t online < <(docker ps --filter label=com.docker.compose.project=sribees-online-dev --filter label=com.docker.compose.service=app --format '{{.ID}}')
+          mapfile -t finance < <(docker ps --filter label=com.docker.compose.project=sribees-finance-dev --filter label=com.docker.compose.service=api --format '{{.ID}}')
+          [ "${#online[@]}" -eq 1 ] && [ "${#finance[@]}" -eq 1 ] || { echo "expected development containers only"; exit 1; }
+          docker exec -i "${online[0]}" python - < verify_partner_development.py > synthetic-events.json
+          docker exec -i "${finance[0]}" python -c "$(cat verify_finance_partner_development.py)" < synthetic-events.json
+          REMOTE
