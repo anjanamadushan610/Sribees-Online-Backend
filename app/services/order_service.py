@@ -66,6 +66,8 @@ from app.services.pricing_service import (
     PricingService,
     cart_weight_kg,
 )
+from app.services.referral_promotion_service import ReferralPromotionService
+from app.services.referral_promotion_service import enabled as promotions_enabled
 from app.services.wallet_service import WalletService
 
 
@@ -342,9 +344,6 @@ class OrderService:
         (``None`` for COD/WALLET/wallet-fully-covered-gateway orders, which
         complete or stay pending exactly as before).
         """
-        from app.services.referral_promotion_service import ReferralPromotionService
-        from app.services.referral_promotion_service import enabled as promotions_enabled
-
         if promotions_enabled():
             # Same-customer checkouts cannot spend a final benefit twice.
             await db.execute(select(User.user_id).where(User.user_id == user_id).with_for_update())
@@ -1551,7 +1550,6 @@ class OrderService:
             order.order_id,
             reason=f"Order {order.order_number} cancelled",
         )
-        from app.services.referral_promotion_service import ReferralPromotionService
         await ReferralPromotionService.release(db, order)
 
     @staticmethod

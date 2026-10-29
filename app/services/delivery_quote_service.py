@@ -47,6 +47,9 @@ from app.services.pricing_service import (
     cart_weight_kg,
 )
 
+from app.services.referral_promotion_service import ReferralPromotionService
+
+
 _CACHE_PREFIX = "courier:cart-quote:v1"
 
 
@@ -214,8 +217,6 @@ async def quote_for_cart(
         if key is not None:
             cached = await _read_cached(redis, key)
             if cached is not None:
-                from app.services.referral_promotion_service import ReferralPromotionService
-
                 subtotal = sum(Decimal(str(i.get('price', 0))) * Decimal(str(i['quantity'])) for i in weighted)
                 return await ReferralPromotionService.quote(db, user_id, subtotal, cached), destination
         quote = await PricingService.quote_delivery(
@@ -226,8 +227,6 @@ async def quote_for_cart(
         )
         if key is not None:
             await _write_cached(redis, key, quote)
-    from app.services.referral_promotion_service import ReferralPromotionService
-
     subtotal = sum(Decimal(str(i.get('price', 0))) * Decimal(str(i['quantity'])) for i in weighted)
     return await ReferralPromotionService.quote(db, user_id, subtotal, quote), destination
 
