@@ -12,6 +12,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core.security import hash_password
+from app.models.order import Order, OrderStatus
 from app.models.partner import Partner
 from app.models.partner_wallet import (
     PartnerApplication,
@@ -153,18 +154,20 @@ class PartnerWalletService:
         partner = await db.get(Partner, partner_id)
         if not partner or not partner.user_id:
             return 0
-        rows = (await db.execute(select(ReferralCommission).where(
+        rows = (await db.execute(select(ReferralCommission).join(Order, Order.order_id == ReferralCommission.order_id).where(
+            Order.status.in_([OrderStatus.DELIVERED.value, OrderStatus.REFUNDED.value, OrderStatus.RETURN_REJECTED.value]),
             ReferralCommission.beneficiary_partner_id == partner_id,
             ReferralCommission.status == ReferralCommissionStatus.CLAIMABLE,
             ReferralCommission.claimable_at.isnot(None),
             ReferralCommission.claimable_at <= datetime.now(timezone.utc)
-        ).order_by(ReferralCommission.commission_id).with_for_update().execution_options(populate_existing=True))).scalars().all()
+        ).order_by(ReferralCommission.commission_id).with_for_update(of=ReferralCommission).execution_options(populate_existing=True))).scalars().all()
         if not rows:
             return 0
         wallet = await PartnerWalletService.wallet_lock(db, partner_id)
         for row in rows:
             await PartnerWalletService.entry(db, wallet, f'commission:{row.commission_id}', 'commission', Decimal(str(row.amount)))
             row.status, row.claimed_at = ReferralCommissionStatus.PAID, datetime.now(timezone.utc)
+        await db.flush()
         return len(rows)
 
     @staticmethod
@@ -250,7 +253,7 @@ class PartnerWalletService:
         withdrawals = (await db.execute(select(PartnerWithdrawal).where(PartnerWithdrawal.partner_id == partner.partner_id)
             .order_by(PartnerWithdrawal.created_at.desc()).limit(100))).scalars().all()
         pending = (await db.execute(select(func.coalesce(func.sum(ReferralCommission.amount), 0)).where(
-            ReferralCommission.beneficiary_partner_id == partner.partner_id, ReferralCommission.status == 'pending'))).scalar_one()
+            ReferralCommission.beneficiary_partner_id == partner.partner_id, ReferralCommission.status.in_(['pending', 'claimable'])))).scalar_one()
         return {'balance': str(wallet.balance), 'pendingCommission': str(pending), 'currency': 'LKR',
             'entries': [{'id': str(r.entry_id), 'kind': r.kind, 'amount': str(r.amount), 'balanceAfter': str(r.balance_after), 'date': r.created_at.isoformat()} for r in entries],
             'withdrawals': [withdrawal_json(r) for r in withdrawals]}

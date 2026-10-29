@@ -740,13 +740,23 @@ class ReferralService:
         for row in rows:
             row.status = ReferralCommissionStatus.CLAIMABLE
 
-        if rows:
-            await db.flush()
-            from app.services.partner_wallet_service import PartnerWalletService
-            for partner_id in sorted({r.beneficiary_partner_id for r in rows if r.beneficiary_partner_id}, key=str):
-                await PartnerWalletService.credit_available(db, partner_id)
+        await db.flush()
+        from app.models.order import Order, OrderStatus
+        from app.services.partner_wallet_service import PartnerWalletService
+        # Also release previously held Partner credits after a return resolves.
+        ready_partners = (await db.execute(select(ReferralCommission.beneficiary_partner_id)
+            .join(Partner, Partner.partner_id == ReferralCommission.beneficiary_partner_id)
+            .join(Order, Order.order_id == ReferralCommission.order_id)
+            .where(Partner.user_id.isnot(None), ReferralCommission.status == ReferralCommissionStatus.CLAIMABLE,
+                ReferralCommission.claimable_at <= now,
+                Order.status.in_([OrderStatus.DELIVERED.value, OrderStatus.REFUNDED.value, OrderStatus.RETURN_REJECTED.value]))
+            .distinct().order_by(ReferralCommission.beneficiary_partner_id).limit(limit))).scalars().all()
+        credited = 0
+        for partner_id in ready_partners:
+            credited += await PartnerWalletService.credit_available(db, partner_id)
+        if rows or credited:
             await db.commit()
-            logger.info(f"{len(rows)} referral commission(s) vested")
+            logger.info(f"{len(rows)} referral commission(s) vested; {credited} credited to Partner Wallet")
         return rows
 
     @staticmethod

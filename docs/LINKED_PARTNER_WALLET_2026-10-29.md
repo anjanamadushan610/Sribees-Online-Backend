@@ -9,6 +9,7 @@
 - The existing customer invite code becomes the linked Partner code. Existing links continue to work.
 - Existing referred customers move to the linked Partner with their original referral dates.
 - Unpaid pending/claimable customer commissions move to the Partner. Already-paid customer credits stay in Sribees Wallet and are never credited twice.
+- Open return requests keep commission unavailable until the return resolves. The vesting worker releases resolved held commissions automatically.
 - Mature linked-Partner commission credits Partner Wallet automatically; pending amounts remain unavailable until the existing return window ends.
 - Partner Wallet -> Sribees Wallet is atomic and one-way. Shopping credit cannot be withdrawn or transferred back.
 - Bank withdrawal requests reserve funds immediately. Finance pays externally, then a Super Admin records the payment reference. Rejection releases funds once.

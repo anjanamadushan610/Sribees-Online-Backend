@@ -181,7 +181,7 @@ async def test_upgrade_moves_unpaid_commissions_but_never_paid_shopping_credit(m
     db, user = money_db
     commissions = []
     for status in ['pending', 'claimable', 'paid']:
-        order = Order(user_id=user.user_id, order_number=f'TEST-{uuid4().hex}', subtotal=1000, total_amount=1000)
+        order = Order(user_id=user.user_id, order_number=f'TEST-{uuid4().hex}', subtotal=1000, total_amount=1000, status='delivered')
         db.add(order)
         await db.flush()
         row = ReferralCommission(order_id=order.order_id, beneficiary_user_id=user.user_id,
@@ -290,7 +290,7 @@ async def test_old_order_replay_after_upgrade_cannot_generate_a_second_cash_comm
     friend = User(email=f'{uuid4().hex}@example.test', full_name='Old Customer', referred_by_user_id=user.user_id)
     db.add(friend)
     await db.flush()
-    order = Order(user_id=friend.user_id, order_number=f'TEST-{uuid4().hex}', subtotal=1000, total_amount=1000)
+    order = Order(user_id=friend.user_id, order_number=f'TEST-{uuid4().hex}', subtotal=1000, total_amount=1000, status='delivered')
     db.add(order)
     await db.flush()
     db.add(ReferralCommission(order_id=order.order_id, source_user_id=friend.user_id, beneficiary_user_id=user.user_id,
@@ -303,3 +303,29 @@ async def test_old_order_replay_after_upgrade_cannot_generate_a_second_cash_comm
     assert await ReferralService.accrue_for_order(db, order) == []
     sale_lines.assert_not_called()
     assert await db.scalar(select(Wallet.balance).where(Wallet.user_id == user.user_id)) == Decimal('100.00')
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_open_return_cannot_be_cashed_out_and_rejection_releases_it_once(money_db):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.order import Order
+    from app.models.referral import ReferralCommission
+    db, user = money_db
+    partner = await linked_partner(db, user)
+    order = Order(user_id=user.user_id, order_number=f'TEST-{uuid4().hex}', subtotal=1000,
+                  total_amount=1000, status='return_requested')
+    db.add(order)
+    await db.flush()
+    db.add(ReferralCommission(order_id=order.order_id, beneficiary_partner_id=partner.partner_id,
+        source_user_id=user.user_id, level=1, rate_percentage=3, order_subtotal=1000, amount=30,
+        status='claimable', claimable_at=datetime.now(timezone.utc) - timedelta(days=1)))
+    await db.flush()
+    assert await Service.credit_available(db, partner.partner_id) == 0
+    assert (await Service.snapshot(db, partner))['pendingCommission'] == '30.00'
+    order.status = 'return_rejected'
+    await db.flush()
+    assert await Service.credit_available(db, partner.partner_id) == 1
+    assert await Service.credit_available(db, partner.partner_id) == 0
+    assert await db.scalar(select(PartnerWallet.balance).where(PartnerWallet.partner_id == partner.partner_id)) == Decimal('130.00')

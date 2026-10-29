@@ -1,7 +1,10 @@
 -- Additive only. Existing shopping wallets and historical paid commissions stay intact.
+BEGIN;
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(user_id) ON DELETE RESTRICT;
 ALTER TABLE partners ADD COLUMN IF NOT EXISTS role VARCHAR(20);
 UPDATE partners SET role = CASE WHEN parent_partner_id IS NULL THEN 'master_partner' ELSE 'partner' END WHERE role IS NULL;
+-- Fresh-schema legacy seed rows may have inherited the ORM default.
+UPDATE partners SET role = 'partner' WHERE parent_partner_id IS NOT NULL AND role = 'master_partner';
 ALTER TABLE partners ALTER COLUMN role SET DEFAULT 'master_partner';
 ALTER TABLE partners ALTER COLUMN role SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_partner_linked_user ON partners(user_id) WHERE user_id IS NOT NULL;
@@ -31,3 +34,5 @@ CREATE TABLE IF NOT EXISTS partner_withdrawals (
 );
 CREATE INDEX IF NOT EXISTS ix_partner_wallet_entries_partner ON partner_wallet_entries(partner_id);
 CREATE INDEX IF NOT EXISTS ix_partner_withdrawals_partner ON partner_withdrawals(partner_id);
+
+COMMIT;
