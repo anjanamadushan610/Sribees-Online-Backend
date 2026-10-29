@@ -170,6 +170,9 @@ class ReferralService:
                 raise ReferralError("SELF_REFERRAL", "You cannot use your own invite code.")
             user.referred_by_partner_id = partner.partner_id
             user.referred_at = datetime.now(timezone.utc)
+            from app.services.referral_promotion_service import ReferralPromotionService
+            await db.flush()
+            await ReferralPromotionService.enroll(db, user, partner)
             if commit:
                 await db.commit()
                 await db.refresh(user)

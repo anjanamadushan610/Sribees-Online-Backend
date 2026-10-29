@@ -62,6 +62,7 @@ from app.services.notification_service import NotificationService
 from app.services.order_reward_service import OrderRewardService
 from app.services.pricing_service import (
     DELIVERY_MESSAGES,
+    DeliveryQuote,
     PricingService,
     cart_weight_kg,
 )
@@ -341,6 +342,11 @@ class OrderService:
         (``None`` for COD/WALLET/wallet-fully-covered-gateway orders, which
         complete or stay pending exactly as before).
         """
+        from app.services.referral_promotion_service import ReferralPromotionService
+        from app.services.referral_promotion_service import enabled as promotions_enabled
+        if promotions_enabled():
+            # Same-customer checkouts cannot spend a final benefit twice.
+            await db.execute(select(User.user_id).where(User.user_id == user_id).with_for_update())
         # Get cart or custom order items
         cart = await CartService.get_cart(str(user_id))
         order_items = (
@@ -524,6 +530,16 @@ class OrderService:
                 )
             confirmed_quote = await OrderService._confirm_courier_quote(breakdown.courier_quote_id)
 
+        original_delivery_fee = breakdown.delivery_fee
+        delivery_benefit = await ReferralPromotionService.delivery(
+            db, user_id, breakdown.subtotal, original_delivery_fee, lock=True)
+        if delivery_benefit:
+            breakdown = await PricingService.quote(
+                items=priced_items, coupon=coupon_for_pricing, use_wallet=data.use_wallet,
+                wallet_balance=wallet_balance, wallet_amount=data.wallet_amount, tax_rate=pricing_config["tax_rate"],
+                delivery=DeliveryQuote(status=breakdown.delivery_status, fee=Decimal('0.00'),
+                    quote_id=breakdown.courier_quote_id, expires_at=breakdown.courier_quote_expires_at))
+
         wallet_deduction = breakdown.wallet_deduction
         cashback_earned = breakdown.cashback_earned
         order_number = OrderService.generate_order_number()
@@ -606,12 +622,15 @@ class OrderService:
             gateway_tr_id=gateway_tr_id,
             courier_quote_id=confirmed_quote.quote_id,
             courier_quote_expires_at=confirmed_quote.expires_at,
-            courier_quote_amount=breakdown.delivery_fee,
+            courier_quote_amount=original_delivery_fee,
+            referral_delivery_discount=original_delivery_fee if delivery_benefit else Decimal('0.00'),
             courier_quote_confirmed_at=datetime.now(timezone.utc),
         )
 
         db.add(order)
         await db.flush()  # Get order_id
+        if delivery_benefit:
+            await ReferralPromotionService.reserve(db, order, delivery_benefit[0].benefit_id, original_delivery_fee)
 
         history = OrderStatusHistory(
             order_id=order.order_id,
@@ -1529,6 +1548,8 @@ class OrderService:
             order.order_id,
             reason=f"Order {order.order_number} cancelled",
         )
+        from app.services.referral_promotion_service import ReferralPromotionService
+        await ReferralPromotionService.release(db, order)
 
     @staticmethod
     async def update_status(

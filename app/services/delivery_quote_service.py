@@ -214,7 +214,9 @@ async def quote_for_cart(
         if key is not None:
             cached = await _read_cached(redis, key)
             if cached is not None:
-                return cached, destination
+                from app.services.referral_promotion_service import ReferralPromotionService
+                subtotal = sum(Decimal(str(i.get('price', 0))) * Decimal(str(i['quantity'])) for i in weighted)
+                return await ReferralPromotionService.quote(db, user_id, subtotal, cached), destination
         quote = await PricingService.quote_delivery(
             weighted,
             postal_city_id=destination.postal_city_id,
@@ -223,7 +225,9 @@ async def quote_for_cart(
         )
         if key is not None:
             await _write_cached(redis, key, quote)
-    return quote, destination
+    from app.services.referral_promotion_service import ReferralPromotionService
+    subtotal = sum(Decimal(str(i.get('price', 0))) * Decimal(str(i['quantity'])) for i in weighted)
+    return await ReferralPromotionService.quote(db, user_id, subtotal, quote), destination
 
 
 def delivery_payload(quote: DeliveryQuote, destination: DeliveryDestination) -> dict:
@@ -233,6 +237,8 @@ def delivery_payload(quote: DeliveryQuote, destination: DeliveryDestination) -> 
         "available": quote.available,
         "fee": float(quote.fee) if quote.fee is not None else None,
         "message": quote.message,
+        "original_fee": float(quote.original_fee) if quote.original_fee is not None else None,
+        "promotion": quote.promotion,
         "address_id": str(destination.address.address_id) if destination.address is not None else None,
         "postal_city": destination.postal_city,
     }

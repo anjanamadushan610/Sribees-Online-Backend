@@ -221,6 +221,7 @@ def _order_event(session: Session, order: Order, old_status: Optional[str]) -> F
             "cashback_earned": _money(order.cashback_earned),
             # what SribeesExpress charges us for this parcel
             "courier_charge": _money(order.courier_quote_amount),
+            "referral_delivery_subsidy": _money(order.referral_delivery_discount),
             "refund": _money(order.refund_amount),
             # SribeesExpress's fee for the return leg, when a rider brought it back
             "return_fee": _money(order.return_fee),

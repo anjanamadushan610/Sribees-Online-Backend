@@ -70,6 +70,8 @@ class DeliveryQuote:
     quote_id: Optional[str] = None
     expires_at: Optional[datetime] = None
     reason: Optional[str] = None
+    original_fee: Optional[Decimal] = None
+    promotion: Optional[str] = None
 
     @property
     def available(self) -> bool:
