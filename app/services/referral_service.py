@@ -346,6 +346,15 @@ class ReferralService:
         if buyer.referred_by_partner_id is None and buyer.referred_by_user_id is None:
             return []
 
+        # An upgrade changes the referrer identity store, not what an old
+        # order earned. A retried webhook must never pay that order again or
+        # introduce a retrospective level-2 reward after the upgrade.
+        prior_direct = (await db.execute(select(ReferralCommission.commission_id).where(
+            ReferralCommission.order_id == order.order_id, ReferralCommission.level == 1
+        ).limit(1))).scalar_one_or_none()
+        if prior_direct is not None:
+            return []
+
         sale_lines = await ReferralService._sale_lines(db, order)
         if not sale_lines:
             return []

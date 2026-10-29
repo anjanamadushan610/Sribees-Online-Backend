@@ -277,3 +277,29 @@ async def test_master_cannot_bypass_super_admin_approval_when_rollout_enabled(mo
     with pytest.raises(HTTPException) as error:
         await recruit_partner(body, db=None, partner=SimpleNamespace(role='master_partner', parent_partner_id=None))
     assert error.value.status_code == 409
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_old_order_replay_after_upgrade_cannot_generate_a_second_cash_commission(money_db, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.models.order import Order
+    from app.models.referral import ReferralCommission
+    db, user = money_db
+    friend = User(email=f'{uuid4().hex}@example.test', full_name='Old Customer', referred_by_user_id=user.user_id)
+    db.add(friend)
+    await db.flush()
+    order = Order(user_id=friend.user_id, order_number=f'TEST-{uuid4().hex}', subtotal=1000, total_amount=1000)
+    db.add(order)
+    await db.flush()
+    db.add(ReferralCommission(order_id=order.order_id, source_user_id=friend.user_id, beneficiary_user_id=user.user_id,
+        level=1, rate_percentage=3, order_subtotal=1000, amount=30, status='paid'))
+    await db.flush()
+    application = await Service.apply(db, user.user_id, 'test-password-for-application')
+    await Service.decide_application(db, application.application_id, uuid4(), True)
+    sale_lines = AsyncMock(side_effect=AssertionError('An old order must not be re-priced or re-accrued'))
+    monkeypatch.setattr(ReferralService, '_sale_lines', sale_lines)
+    assert await ReferralService.accrue_for_order(db, order) == []
+    sale_lines.assert_not_called()
+    assert await db.scalar(select(Wallet.balance).where(Wallet.user_id == user.user_id)) == Decimal('100.00')
