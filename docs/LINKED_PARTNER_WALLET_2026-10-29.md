@@ -4,6 +4,7 @@
 
 - A signed-in customer submits an application; only a Super Admin approves it.
 - Approval creates a Partner linked uniquely to that exact customer UUID. Email matching never links accounts automatically.
+- When the linked-wallet rollout is enabled, Masters invite customers to apply instead of creating unrelated Partner identities directly. Existing customer emails cannot bypass linking through the legacy creation form.
 - Partner is an explicit role, even with no Master Partner assigned. Only Master Partners may recruit.
 - The existing customer invite code becomes the linked Partner code. Existing links continue to work.
 - Existing referred customers move to the linked Partner with their original referral dates.

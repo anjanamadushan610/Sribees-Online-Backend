@@ -256,3 +256,24 @@ async def test_two_concurrent_transfers_cannot_spend_same_balance(db_schema, mon
             await db.execute(delete(User).where(User.user_id == user_id))
             await db.commit()
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_normal_partner_without_a_master_still_cannot_recruit():
+    from app.api.v1.partner import recruit_partner
+    from app.schemas.partner import PartnerCreateRequest
+    body = PartnerCreateRequest(email='new@example.test', password='test-password', full_name='Test Recruit')
+    with pytest.raises(HTTPException) as error:
+        await recruit_partner(body, db=None, partner=SimpleNamespace(role='partner', parent_partner_id=None))
+    assert error.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_master_cannot_bypass_super_admin_approval_when_rollout_enabled(monkeypatch):
+    from app.api.v1.partner import recruit_partner
+    from app.schemas.partner import PartnerCreateRequest
+    monkeypatch.setenv('LINKED_PARTNER_WALLET_ENABLED', 'true')
+    body = PartnerCreateRequest(email='new@example.test', password='test-password', full_name='Test Recruit')
+    with pytest.raises(HTTPException) as error:
+        await recruit_partner(body, db=None, partner=SimpleNamespace(role='master_partner', parent_partner_id=None))
+    assert error.value.status_code == 409

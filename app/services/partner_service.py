@@ -14,6 +14,7 @@ Commission attribution, both levels:
 Rates come from settings and are snapshotted onto each commission row by
 ``ReferralService``, so changing them never rewrites history.
 """
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -199,6 +200,11 @@ class PartnerService:
         )
         if existing.scalar_one_or_none() is not None:
             raise PartnerEmailTakenError("A partner with this email already exists")
+
+        if os.getenv("LINKED_PARTNER_WALLET_ENABLED", "false").lower() == "true":
+            customer = (await db.execute(select(User.user_id).where(func.lower(User.email) == email.strip().lower()))).scalar_one_or_none()
+            if parent_partner_id is not None or customer is not None:
+                raise PartnerEmailTakenError("Existing customers must apply for a linked Partner account and receive Super Admin approval.")
 
         if parent_partner_id is not None:
             parent_res = await db.execute(
