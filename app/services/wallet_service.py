@@ -9,8 +9,8 @@ from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
 
-from loguru import logger
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import settings
@@ -24,20 +24,13 @@ class WalletService:
     @staticmethod
     async def get_or_create_wallet(db: AsyncSession, user_id: UUID) -> Wallet:
         """Return the user's wallet, creating an empty one on first access."""
-        result = await db.execute(
-            select(Wallet).where(Wallet.user_id == user_id)
-        )
-        wallet = result.scalar_one_or_none()
-
-        if wallet is None:
-            wallet = Wallet(
-                user_id=user_id,
-                balance=Decimal("0"),
-                currency=settings.wallet_currency,
-            )
-            db.add(wallet)
-            await db.flush()
-            logger.info(f"Wallet created for user {user_id}")
+        # All shopping-credit writers share this lock, including Partner transfers.
+        # UPSERT avoids duplicate first-wallet creation under concurrent requests.
+        await db.execute(insert(Wallet).values(user_id=user_id, balance=Decimal("0"),
+            currency=settings.wallet_currency).on_conflict_do_nothing(index_elements=["user_id"]))
+        result = await db.execute(select(Wallet).where(Wallet.user_id == user_id)
+            .with_for_update().execution_options(populate_existing=True))
+        wallet = result.scalar_one()
 
         return wallet
 

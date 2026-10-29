@@ -48,6 +48,7 @@ from app.api.v1 import (
     coupons,
     courier_webhooks,
     delivery,
+    linked_partner_wallet,
     locations,
     marketing,
     notifications,
@@ -55,6 +56,7 @@ from app.api.v1 import (
     partner,
     payments,
     products,
+    referral_promotions,
     referrals,
     reviews,
     session,
@@ -499,3 +501,8 @@ router.include_router(
     prefix="/admin/support",
     tags=["Admin Support Tickets"],
 )
+
+# Static partner application routes precede no dynamic GET /{id} routes.
+router.include_router(linked_partner_wallet.router)
+
+router.include_router(referral_promotions.router)

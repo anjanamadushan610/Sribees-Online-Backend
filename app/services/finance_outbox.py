@@ -57,13 +57,14 @@ class WalletReason:
     PAYMENT_REFUND = "payment_refund"                # late or double gateway money
     CASHBACK_CREDIT = "cashback_credit"              # held cashback released
     CASHBACK_REVERSAL = "cashback_reversal"          # released cashback taken back
+    PARTNER_WALLET_TRANSFER = "partner_wallet_transfer"  # partner liability -> shopping wallet liability
     COMMISSION_CREDIT = "commission_credit"          # referral commission claimed
     COMMISSION_REVERSAL = "commission_reversal"      # paid commission taken back
 
     ALL = frozenset({
         WALLET_PAYMENT, CANCEL_REFUND, CANCEL_DELIVERY_CHARGE, RETURN_REFUND, RETURN_FEE,
         PAYMENT_REFUND, CASHBACK_CREDIT, CASHBACK_REVERSAL, COMMISSION_CREDIT,
-        COMMISSION_REVERSAL,
+        COMMISSION_REVERSAL, PARTNER_WALLET_TRANSFER,
     })
 
 
@@ -110,7 +111,7 @@ async def wallet_movement(db, transaction, reason: Optional[str]) -> None:
             ).scalar_one_or_none()
         if reason not in WalletReason.ALL:
             logger.warning(f"finance_outbox: wallet movement {transaction.transaction_id} has no known reason ({reason})")
-        db.add(_row("wallet.movement", transaction.order_id, {
+        payload = {
             "transaction_id": str(transaction.transaction_id),
             "user_id": str(transaction.user_id),
             "order_id": str(transaction.order_id) if transaction.order_id else None,
@@ -121,8 +122,17 @@ async def wallet_movement(db, transaction, reason: Optional[str]) -> None:
             "amount": _money(transaction.amount),
             "balance_after": _money(transaction.balance_after),
             "title": transaction.title,
-        }))
-    except Exception as exc:  # noqa: BLE001 -- the wallet write must go ahead
+        }
+        if reason == WalletReason.PARTNER_WALLET_TRANSFER:
+            from app.models.partner import Partner
+
+            partner_id = (await db.execute(select(Partner.partner_id).where(
+                Partner.user_id == transaction.user_id))).scalar_one()
+            payload.update(partner_id=str(partner_id), partner_transfer_id=transaction.notes)
+        db.add(_row("wallet.movement", transaction.order_id, payload))
+    except Exception as exc:  # noqa: BLE001 -- ordinary historical writes remain best-effort
+        if reason == WalletReason.PARTNER_WALLET_TRANSFER:
+            raise
         logger.error(f"finance_outbox: wallet movement not recorded: {exc}")
 
 
@@ -230,6 +240,10 @@ def _order_event(session: Session, order: Order, old_status: Optional[str]) -> F
         "return_received_at": _iso(order.return_received_at),
         "lines": lines,
     }
+    # Preserve the old Finance contract for ordinary orders and while rollout
+    # is off. Only an actually subsidized order needs the reviewed extension.
+    if order.referral_delivery_discount:
+        payload["amounts"]["referral_delivery_subsidy"] = _money(order.referral_delivery_discount)
     if order.status == "refunded":
         payload["returned"] = _returned(order, lines)
     return _row("order.status", order.order_id, payload)
@@ -257,7 +271,7 @@ def _commission_event(session: Session, row: ReferralCommission, new: bool) -> F
     ).scalar_one_or_none()
     old_status = None if new else (_old(row, "status") or row.status)
     old_amount = None if new else (_old(row, "amount") if _changed(row, "amount") else row.amount)
-    return _row("commission.changed", row.order_id, {
+    payload = {
         "commission_id": str(row.commission_id),
         "order_id": str(row.order_id) if row.order_id else None,
         "order_number": row.order_number,
@@ -268,7 +282,15 @@ def _commission_event(session: Session, row: ReferralCommission, new: bool) -> F
         "to_status": row.status,
         "from_amount": _money(old_amount) if old_amount is not None else None,
         "to_amount": _money(row.amount),
-    })
+    }
+    if row.beneficiary_partner_id:
+        from app.models.partner import Partner
+
+        linked_user = session.connection().execute(select(Partner.user_id).where(
+            Partner.partner_id == row.beneficiary_partner_id)).scalar_one_or_none()
+        if linked_user:
+            payload["settlement_mode"] = "partner_wallet"
+    return _row("commission.changed", row.order_id, payload)
 
 
 def _before_flush(session: Session, flush_context, instances) -> None:
@@ -309,3 +331,21 @@ def install() -> None:
     """Hook every ORM session in the process. Idempotent."""
     if not event.contains(Session, "before_flush", _before_flush):
         event.listen(Session, "before_flush", _before_flush)
+
+
+async def partner_wallet_movement(db, entry):
+    """New finance contract; enable linked-wallet rollout only after consumer support."""
+    if enabled():
+        db.add(_row("partner.wallet.movement", entry.partner_id, {
+            "entry_id": str(entry.entry_id), "partner_id": str(entry.partner_id),
+            "kind": entry.kind, "reference": entry.reference,
+            "amount": _money(entry.amount), "balance_after": _money(entry.balance_after),
+        }))
+
+
+async def partner_withdrawal_paid(db, withdrawal):
+    if enabled():
+        db.add(_row("partner.withdrawal.paid", withdrawal.partner_id, {
+            "withdrawal_id": str(withdrawal.withdrawal_id), "partner_id": str(withdrawal.partner_id),
+            "amount": _money(withdrawal.amount), "payment_reference": withdrawal.payment_reference,
+        }))

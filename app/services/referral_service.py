@@ -147,6 +147,10 @@ class ReferralService:
         if not cleaned:
             raise ReferralError("INVALID_CODE", "Enter an invite code.")
 
+        # Bind is write-once even when two requests arrive together. Refresh
+        # after acquiring the lock so the loser observes the first binding.
+        user = (await db.execute(select(User).where(User.user_id == user.user_id)
+            .with_for_update().execution_options(populate_existing=True))).scalar_one()
         if user.referred_by_user_id is not None or user.referred_by_partner_id is not None:
             raise ReferralError(
                 "ALREADY_REFERRED",
@@ -159,14 +163,20 @@ class ReferralService:
         partner_row = await db.execute(
             select(Partner).where(
                 Partner.referral_code == cleaned,
-                Partner.is_active.is_(True),
             )
         )
         partner = partner_row.scalar_one_or_none()
 
         if partner is not None:
+            if not partner.is_active:
+                raise ReferralError("INVALID_CODE", "That invite code is not valid.")
+            if partner.user_id == user.user_id:
+                raise ReferralError("SELF_REFERRAL", "You cannot use your own invite code.")
             user.referred_by_partner_id = partner.partner_id
             user.referred_at = datetime.now(timezone.utc)
+            from app.services.referral_promotion_service import ReferralPromotionService
+            await db.flush()
+            await ReferralPromotionService.enroll(db, user, partner)
             if commit:
                 await db.commit()
                 await db.refresh(user)
@@ -343,6 +353,15 @@ class ReferralService:
         if buyer.referred_by_partner_id is None and buyer.referred_by_user_id is None:
             return []
 
+        # An upgrade changes the referrer identity store, not what an old
+        # order earned. A retried webhook must never pay that order again or
+        # introduce a retrospective level-2 reward after the upgrade.
+        prior_direct = (await db.execute(select(ReferralCommission.commission_id).where(
+            ReferralCommission.order_id == order.order_id, ReferralCommission.level == 1
+        ).limit(1))).scalar_one_or_none()
+        if prior_direct is not None:
+            return []
+
         sale_lines = await ReferralService._sale_lines(db, order)
         if not sale_lines:
             return []
@@ -351,6 +370,15 @@ class ReferralService:
             policy = (await ReferralProgramConfig.load(db)).policy
         level1 = build_lines(sale_lines, policy.for_level(1))
         created: list[ReferralCommission] = []
+
+        if buyer.referred_by_user_id is not None:
+            from app.services.partner_wallet_service import PartnerWalletService
+            # Serialises upgrade with in-flight old-code accruals.
+            await db.execute(select(User.user_id).where(User.user_id == buyer.referred_by_user_id).with_for_update())
+            linked = await PartnerWalletService.linked(db, buyer.referred_by_user_id, active=False)
+            if linked:
+                buyer.referred_by_partner_id = linked.partner_id
+                buyer.referred_by_user_id = None
 
         # --- Referred by a professional partner ---------------------------
         if buyer.referred_by_partner_id is not None:
@@ -550,6 +578,9 @@ class ReferralService:
             row.amount = new_amount
             row.returned_subtotal = _money(returned_basis)
 
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_partner_id:
+                from app.services.partner_wallet_service import PartnerWalletService
+                await PartnerWalletService.adjust_commission(db, row, difference)
             if row.status == ReferralCommissionStatus.PAID and row.beneficiary_user_id:
                 await WalletService.apply_transaction(
                     db,
@@ -655,6 +686,9 @@ class ReferralService:
 
             # Money already in their wallet has to come back out. Only the
             # difference -- they keep what the delivered goods earned.
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_partner_id:
+                from app.services.partner_wallet_service import PartnerWalletService
+                await PartnerWalletService.adjust_commission(db, row, difference)
             if row.status == ReferralCommissionStatus.PAID and row.beneficiary_user_id:
                 await WalletService.apply_transaction(
                     db,
@@ -713,9 +747,23 @@ class ReferralService:
         for row in rows:
             row.status = ReferralCommissionStatus.CLAIMABLE
 
-        if rows:
+        await db.flush()
+        from app.models.order import Order, OrderStatus
+        from app.services.partner_wallet_service import PartnerWalletService
+        # Also release previously held Partner credits after a return resolves.
+        ready_partners = (await db.execute(select(ReferralCommission.beneficiary_partner_id)
+            .join(Partner, Partner.partner_id == ReferralCommission.beneficiary_partner_id)
+            .join(Order, Order.order_id == ReferralCommission.order_id)
+            .where(Partner.user_id.isnot(None), ReferralCommission.status == ReferralCommissionStatus.CLAIMABLE,
+                ReferralCommission.claimable_at <= now,
+                Order.status.in_([OrderStatus.DELIVERED.value, OrderStatus.REFUNDED.value, OrderStatus.RETURN_REJECTED.value]))
+            .distinct().order_by(ReferralCommission.beneficiary_partner_id).limit(limit))).scalars().all()
+        credited = 0
+        for partner_id in ready_partners:
+            credited += await PartnerWalletService.credit_available(db, partner_id)
+        if rows or credited:
             await db.commit()
-            logger.info(f"{len(rows)} referral commission(s) vested")
+            logger.info(f"{len(rows)} referral commission(s) vested; {credited} credited to Partner Wallet")
         return rows
 
     @staticmethod
@@ -749,7 +797,12 @@ class ReferralService:
         rows = result.scalars().all()
 
         for row in rows:
-            if row.status == ReferralCommissionStatus.PAID:
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_partner_id:
+                from app.services.partner_wallet_service import PartnerWalletService
+                amount = Decimal(str(row.amount))
+                row.amount = Decimal("0.00")
+                await PartnerWalletService.adjust_commission(db, row, amount)
+            if row.status == ReferralCommissionStatus.PAID and row.beneficiary_user_id:
                 await WalletService.apply_transaction(
                     db,
                     user_id=row.beneficiary_user_id,
@@ -785,6 +838,13 @@ class ReferralService:
         claimable and pay it twice. Whichever request gets the lock pays; the
         other sees nothing left to claim.
         """
+        from app.services.partner_wallet_service import PartnerWalletService
+        await PartnerWalletService.user_lock(db, user_id)
+        linked = await PartnerWalletService.linked(db, user_id)
+        if linked:
+            count = await PartnerWalletService.credit_available(db, linked.partner_id)
+            await db.commit()
+            return {"claimed_count": count, "amount": Decimal("0.00"), "destination": "partner_wallet"}
         result = await db.execute(
             select(ReferralCommission)
             .where(

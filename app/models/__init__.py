@@ -40,6 +40,12 @@ from app.models.notification import (
 )
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
+from app.models.partner_wallet import (
+    PartnerApplication,
+    PartnerWallet,
+    PartnerWalletEntry,
+    PartnerWithdrawal,
+)
 from app.models.payment import PaymentAttempt, PaymentAttemptStatus
 from app.models.product import (
     BranchInventory,
@@ -58,6 +64,11 @@ from app.models.referral import (
     ReferralCommissionStatus,
     ReferralRateChange,
 )
+from app.models.referral_promotion import (
+    ReferralBenefit,
+    ReferralDeliveryRedemption,
+    ReferralPromotion,
+)
 from app.models.role import Permission, Role, RolePermission
 from app.models.search_miss import SearchMiss, SearchMissStatus
 from app.models.stock_transfer import StockTransfer, TransferStatus
@@ -74,6 +85,7 @@ from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.models.wishlist import WishlistItem
 
 __all__ = [
+    "ReferralBenefit", "ReferralDeliveryRedemption", "ReferralPromotion",
     "AssistantProfile",
     "AssistantReminder",
     "AssistantReceipt",
@@ -96,6 +108,10 @@ __all__ = [
     "PaymentAttemptStatus",
     # Referrals
     "Partner",
+    "PartnerApplication",
+    "PartnerWallet",
+    "PartnerWalletEntry",
+    "PartnerWithdrawal",
     "ReferralCommission",
     "ReferralCommissionLine",
     # Loyalty

@@ -14,6 +14,7 @@ Commission attribution, both levels:
 Rates come from settings and are snapshotted onto each commission row by
 ``ReferralService``, so changing them never rewrites history.
 """
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -93,6 +94,12 @@ class PartnerService:
         if partner is None or not partner.is_active:
             verify_password(password, _DUMMY_HASH)
             return None
+
+        if partner.user_id:
+            owner = await db.get(User, partner.user_id)
+            if owner is None or not owner.is_active or owner.is_blocked or owner.deleted_at is not None:
+                verify_password(password, _DUMMY_HASH)
+                return None
 
         if not verify_password(password, partner.password_hash):
             return None
@@ -194,6 +201,11 @@ class PartnerService:
         if existing.scalar_one_or_none() is not None:
             raise PartnerEmailTakenError("A partner with this email already exists")
 
+        if os.getenv("LINKED_PARTNER_WALLET_ENABLED", "false").lower() == "true":
+            customer = (await db.execute(select(User.user_id).where(func.lower(User.email) == email.strip().lower()))).scalar_one_or_none()
+            if parent_partner_id is not None or customer is not None:
+                raise PartnerEmailTakenError("Existing customers must apply for a linked Partner account and receive Super Admin approval.")
+
         if parent_partner_id is not None:
             parent_res = await db.execute(
                 select(Partner).where(Partner.partner_id == parent_partner_id)
@@ -201,7 +213,7 @@ class PartnerService:
             parent = parent_res.scalar_one_or_none()
             if parent is None:
                 raise ValueError("Recruiting partner not found")
-            if parent.parent_partner_id is not None:
+            if parent.role != "master_partner" or parent.parent_partner_id is not None:
                 raise ValueError("Sub-partners cannot recruit further partners (2-tier limit)")
 
         referral_code = await PartnerService._generate_unique_code(db)
@@ -213,6 +225,7 @@ class PartnerService:
             full_name=full_name.strip(),
             phone=phone.strip() if phone else None,
             parent_partner_id=parent_partner_id,
+            role="partner" if parent_partner_id else "master_partner",
             referral_code=referral_code,
             is_active=True,
         )
@@ -284,6 +297,8 @@ class PartnerService:
         return [
             {
                 "partner_id": str(p.partner_id),
+                "role": p.role,
+                "linked_user_id": str(p.user_id) if p.user_id else None,
                 "email": p.email,
                 "full_name": p.full_name,
                 "phone": p.phone,
@@ -348,6 +363,10 @@ class PartnerService:
         ``ReferralService.claim`` locks a customer's rows, so two admins
         marking the same partner paid at once cannot double-count.
         """
+        partner = await db.get(Partner, partner_id)
+        if partner and partner.user_id:
+            from app.services.partner_wallet_service import fail
+            fail("Linked Partner commissions are credited to Partner Wallet. Settle a withdrawal request instead.", 409)
         stmt = select(ReferralCommission).where(
             ReferralCommission.beneficiary_partner_id == partner_id,
             ReferralCommission.status == ReferralCommissionStatus.CLAIMABLE,
