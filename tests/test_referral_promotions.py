@@ -176,3 +176,18 @@ async def test_expiry_budget_minimum_and_fee_cap_refuse_free_delivery(promo_db, 
     benefit.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
     await db.flush()
     assert await Service.delivery(db, user.user_id, Decimal(1000), Decimal(250)) is None
+
+
+def test_finance_contract_is_unchanged_for_orders_without_subsidy(monkeypatch):
+    from app.services import finance_outbox
+
+    monkeypatch.setattr(finance_outbox, '_order_lines', lambda session, order: [])
+    order = Order(order_id=uuid4(), user_id=uuid4(), subtotal=1000, total_amount=1350,
+        shipping_amount=350, courier_quote_amount=350, referral_delivery_discount=0)
+    ordinary = finance_outbox._order_event(None, order, None).payload['amounts']
+    assert 'referral_delivery_subsidy' not in ordinary
+    order.shipping_amount = 0
+    order.referral_delivery_discount = 350
+    subsidized = finance_outbox._order_event(None, order, None).payload['amounts']
+    assert subsidized['shipping'] == '0.00'
+    assert subsidized['courier_charge'] == subsidized['referral_delivery_subsidy'] == '350.00'
