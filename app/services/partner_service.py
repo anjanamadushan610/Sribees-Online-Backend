@@ -94,6 +94,12 @@ class PartnerService:
             verify_password(password, _DUMMY_HASH)
             return None
 
+        if partner.user_id:
+            owner = await db.get(User, partner.user_id)
+            if owner is None or not owner.is_active or owner.is_blocked or owner.deleted_at is not None:
+                verify_password(password, _DUMMY_HASH)
+                return None
+
         if not verify_password(password, partner.password_hash):
             return None
 
@@ -353,7 +359,8 @@ class PartnerService:
         """
         partner = await db.get(Partner, partner_id)
         if partner and partner.user_id:
-            raise ValueError("Linked Partner commissions are credited to Partner Wallet. Settle a withdrawal request instead.")
+            from app.services.partner_wallet_service import fail
+            fail("Linked Partner commissions are credited to Partner Wallet. Settle a withdrawal request instead.", 409)
         stmt = select(ReferralCommission).where(
             ReferralCommission.beneficiary_partner_id == partner_id,
             ReferralCommission.status == ReferralCommissionStatus.CLAIMABLE,

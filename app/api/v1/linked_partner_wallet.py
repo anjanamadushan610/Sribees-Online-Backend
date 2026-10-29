@@ -39,6 +39,13 @@ class Body(BaseModel):
 class ApplicationBody(Body):
     password: SecretStr = Field(min_length=8, max_length=128)
 
+    @field_validator('password')
+    @classmethod
+    def nonblank_password(cls, value):
+        if not value.get_secret_value().strip():
+            raise ValueError('Password cannot be blank.')
+        return value
+
 
 class ApplicationDecision(Body):
     decision: Literal['approve', 'reject']
@@ -60,7 +67,7 @@ class WithdrawalBody(AmountBody):
     @field_validator('account_number')
     @classmethod
     def account_characters(cls, value):
-        if not all(c.isdigit() or c in ' -' for c in value):
+        if sum(c.isdigit() for c in value) < 3 or not all(c.isdigit() or c in ' -' for c in value):
             raise ValueError('Enter a valid account number.')
         return value
 
