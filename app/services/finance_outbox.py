@@ -111,7 +111,7 @@ async def wallet_movement(db, transaction, reason: Optional[str]) -> None:
             ).scalar_one_or_none()
         if reason not in WalletReason.ALL:
             logger.warning(f"finance_outbox: wallet movement {transaction.transaction_id} has no known reason ({reason})")
-        db.add(_row("wallet.movement", transaction.order_id, {
+        payload = {
             "transaction_id": str(transaction.transaction_id),
             "user_id": str(transaction.user_id),
             "order_id": str(transaction.order_id) if transaction.order_id else None,
@@ -122,8 +122,17 @@ async def wallet_movement(db, transaction, reason: Optional[str]) -> None:
             "amount": _money(transaction.amount),
             "balance_after": _money(transaction.balance_after),
             "title": transaction.title,
-        }))
-    except Exception as exc:  # noqa: BLE001 -- the wallet write must go ahead
+        }
+        if reason == WalletReason.PARTNER_WALLET_TRANSFER:
+            from app.models.partner import Partner
+
+            partner_id = (await db.execute(select(Partner.partner_id).where(
+                Partner.user_id == transaction.user_id))).scalar_one()
+            payload.update(partner_id=str(partner_id), partner_transfer_id=transaction.notes)
+        db.add(_row("wallet.movement", transaction.order_id, payload))
+    except Exception as exc:  # noqa: BLE001 -- ordinary historical writes remain best-effort
+        if reason == WalletReason.PARTNER_WALLET_TRANSFER:
+            raise
         logger.error(f"finance_outbox: wallet movement not recorded: {exc}")
 
 
@@ -262,7 +271,7 @@ def _commission_event(session: Session, row: ReferralCommission, new: bool) -> F
     ).scalar_one_or_none()
     old_status = None if new else (_old(row, "status") or row.status)
     old_amount = None if new else (_old(row, "amount") if _changed(row, "amount") else row.amount)
-    return _row("commission.changed", row.order_id, {
+    payload = {
         "commission_id": str(row.commission_id),
         "order_id": str(row.order_id) if row.order_id else None,
         "order_number": row.order_number,
@@ -273,7 +282,15 @@ def _commission_event(session: Session, row: ReferralCommission, new: bool) -> F
         "to_status": row.status,
         "from_amount": _money(old_amount) if old_amount is not None else None,
         "to_amount": _money(row.amount),
-    })
+    }
+    if row.beneficiary_partner_id:
+        from app.models.partner import Partner
+
+        linked_user = session.connection().execute(select(Partner.user_id).where(
+            Partner.partner_id == row.beneficiary_partner_id)).scalar_one_or_none()
+        if linked_user:
+            payload["settlement_mode"] = "partner_wallet"
+    return _row("commission.changed", row.order_id, payload)
 
 
 def _before_flush(session: Session, flush_context, instances) -> None:
