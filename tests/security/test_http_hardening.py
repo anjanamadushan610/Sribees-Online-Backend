@@ -55,6 +55,10 @@ async def test_health_answers_without_storage(client):
         "https://sribees.com.evil.example",
         "http://api.sribees.com",  # plain http must not match the https rule
         "https://evilsribees.com",
+        "https://evilsribeesonline.com",
+        "https://sribeesonline.com.evil.example",
+        "https://shop.sribeesonline.com",
+        "http://sribeesonline.com",
         # Only the development server takes Netlify previews, and only because
         # its environment says so (CORS_ORIGIN_REGEX).
         "https://some-preview.netlify.app",
@@ -69,7 +73,15 @@ async def test_cors_does_not_reflect_untrusted_origins(client, origin):
     assert r.headers.get("access-control-allow-origin") not in {origin, "*"}, origin
 
 
-@pytest.mark.parametrize("origin", ["https://admin.sribees.com", "https://sribees.com"])
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://admin.sribees.com",
+        "https://sribees.com",
+        "https://sribeesonline.com",
+        "https://www.sribeesonline.com",
+    ],
+)
 async def test_cors_allows_our_own_origins(client, origin):
     r = await client.options(
         "/api/v1/products",

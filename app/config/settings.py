@@ -455,7 +455,10 @@ class Settings(BaseSettings):
     # developer's own Vercel and Netlify previews (CORS_ORIGIN_REGEX in its
     # environment) while production keeps to this default.
     cors_origin_regex: str = Field(
-        default=r"https://.*\.vercel\.app|https://([a-z0-9-]+\.)*sribees\.com",
+        default=(
+            r"https://.*\.vercel\.app|https://([a-z0-9-]+\.)*sribees\.com"
+            r"|https://(www\.)?sribeesonline\.com"
+        ),
         description="Pattern an allowed CORS origin must match in full",
     )
     cors_allow_credentials: bool = Field(default=True, description="Allow credentials")
