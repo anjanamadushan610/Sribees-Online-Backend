@@ -583,6 +583,7 @@ async def create_order(
     """
     from app.services import coupon_presenter
     from app.services.coupon_service import CouponValidationError
+    from app.services.hybrid import chat_log
     from app.utils.i18n import resolve_language
 
     try:
@@ -594,6 +595,7 @@ async def create_order(
 
         # Reload with relationships
         order = await OrderService.get_by_id(db, order.order_id)
+        chat_log.note_ordered(current_user.user_id, [item.product_id for item in order.items])
 
         message = (
             "Redirect the customer to payment_redirect_url to complete payment"

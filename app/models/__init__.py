@@ -8,7 +8,12 @@ from app.models.admin import Admin, AdminRole, AdminSession
 from app.models.app_content import AppContent
 from app.models.app_settings import AppSetting
 from app.models.app_usage import AppInstall, AppUsageDay
-from app.models.assistant import AssistantProfile, AssistantReceipt, AssistantReminder
+from app.models.assistant import (
+    AssistantChatLog,
+    AssistantProfile,
+    AssistantReceipt,
+    AssistantReminder,
+)
 from app.models.banner import Banner, BannerEvent, BannerEventType
 from app.models.branch import Branch, PostalCityBranchMapping, PostalCityDirectory
 from app.models.category import Category
@@ -86,6 +91,7 @@ from app.models.wishlist import WishlistItem
 
 __all__ = [
     "ReferralBenefit", "ReferralDeliveryRedemption", "ReferralPromotion",
+    "AssistantChatLog",
     "AssistantProfile",
     "AssistantReminder",
     "AssistantReceipt",

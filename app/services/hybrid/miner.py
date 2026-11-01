@@ -2,8 +2,8 @@
 The learner (roadmap P2): turn the model's repeated decisions into patterns,
 and promote or demote them on evidence. No model calls.
 
-1. **Mine.** Model-answered turns (layer L4) that no rule claimed are grouped
-   by their scrubbed text key. A key seen at least ``MIN_EXAMPLES`` times
+1. **Mine.** All model-answered turns (layer L4) that no rule claimed, however
+   old, are grouped by their scrubbed text key. A key seen at least ``MIN_EXAMPLES`` times
    whose plans share one shape at least ``CONSISTENCY`` of the time becomes a
    pattern in 'shadow', with the most common plan. Only replayable reads are
    learned (memory.REPLAYABLE); writes and anything tied to one person's
@@ -18,7 +18,7 @@ and promote or demote them on evidence. No model calls.
 
 import asyncio
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
 from loguru import logger
@@ -29,11 +29,10 @@ from app.services.search_text import tokenize
 
 MIN_EXAMPLES = 3
 CONSISTENCY = 0.95
-PROMOTE_MIN = 20
+PROMOTE_MIN = 5
 PROMOTE_RATE = 0.98
 DEMOTE_MIN = 5
 DEMOTE_RATE = 0.05
-WINDOW_DAYS = 30
 WORKER_INTERVAL_SECONDS = 6 * 3600
 
 
@@ -64,7 +63,6 @@ async def mine(session_maker, now: datetime = None) -> Dict[str, int]:
                 select(AssistantTurn.text_key, AssistantTurn.model_trace).where(
                     AssistantTurn.layer == "L4",
                     AssistantTurn.shadow_plan.is_(None),
-                    AssistantTurn.created_at >= now - timedelta(days=WINDOW_DAYS),
                 )
             )
         ).all()

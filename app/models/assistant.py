@@ -54,6 +54,33 @@ class AssistantTurn(Base):
     )
 
 
+class AssistantChatLog(Base):
+    """
+    One chat turn in full, and what the customer did next (migration 097).
+    Unlike ``assistant_turns`` this names the customer and keeps the real
+    words, so it stays out of every customer-facing API.
+    """
+
+    __tablename__ = "assistant_chat_log"
+    log_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    session_id = Column(String(200), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), nullable=True)
+    language = Column(String(2), nullable=True)
+    answered_by = Column(String(12), nullable=True)
+    message = Column(Text, nullable=False)
+    reply = Column(Text, nullable=False)
+    had_image = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    product_ids = Column(JSONB, nullable=False, default=list, server_default="[]")
+    added_to_cart = Column(JSONB, nullable=False, default=list, server_default="[]")
+    ordered = Column(JSONB, nullable=False, default=list, server_default="[]")
+    __table_args__ = (
+        Index("ix_assistant_chat_log_user", "user_id", "created_at"),
+        Index("ix_assistant_chat_log_created", "created_at"),
+    )
+
+
 class AssistantPattern(Base):
     """A message plan learned from the model (migration 090); see hybrid/memory.py."""
 
