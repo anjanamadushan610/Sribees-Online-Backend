@@ -24,6 +24,14 @@ CATALOG = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _every_word_found(monkeypatch):
+    """No database here; the coverage check has its own tests below."""
+    from app.services import catalog_search_service
+
+    monkeypatch.setattr(catalog_search_service, "any_covers_all", AsyncMock(return_value=True))
+
+
 @pytest.fixture(scope="module")
 def vocab():
     counts = Counter()
@@ -237,3 +245,78 @@ def test_agreement_for_orders_help_and_social():
     assert agree({"rule": "social.greeting", "steps": []}, []) is True
     assert agree({"rule": "social.greeting", "steps": []}, [{"name": "search_products", "args": {}}]) is False
     assert agree(None, []) is None
+
+
+# --- search first, the model only after it ---------------------------------
+
+
+def test_a_product_must_match_every_word_for_the_fast_path_to_answer(vocab):
+    from app.services.catalog_search_service import covers_all_words, make_plan
+
+    tokens = index_tokens("White Sugar 1kg", "සුදු සීනි 1kg", None, "seeni, sugar")[0]
+    assert covers_all_words(tokens, make_plan(vocab, "seeni"))
+    assert not covers_all_words(tokens, make_plan(vocab, "parippu seeni"))
+
+
+@pytest.mark.asyncio
+async def test_a_partial_match_goes_to_the_model(monkeypatch):
+    from app.services import catalog_search_service
+
+    monkeypatch.setattr(catalog_search_service, "any_covers_all", AsyncMock(return_value=False))
+    monkeypatch.setattr(assistant_agent, "_run_tool", _turn_tool({"seeni kiri": [SUGAR]}))
+    plan = Plan([ToolCall("search_products", {"query": "seeni kiri"})], "list", "L2", "products.list", "list|<P>", language="si")
+    assert await engine.run_plan(plan, db=None, redis=None, user_id=None, branch_id=uuid.uuid4(), history=[], emit=AsyncMock()) is None
+
+
+@pytest.mark.parametrize(
+    "text,query",
+    [
+        ("seeni one", "seeni"),
+        ("mata seeni kilo ekak one", "seeni"),
+        ("mokak hari seeni", "seeni"),
+        ("mage order eka koheda", None),
+        ("seeni epa", None),
+        ("cart eka open karanna", None),
+        ("SB-10423", None),
+    ],
+)
+def test_rescue_finds_product_words_and_leaves_everything_else(vocab, text, query):
+    from app.services.hybrid.rules import rescue_query
+
+    assert rescue_query(parse(text), vocab) == query
+
+
+@pytest.mark.asyncio
+async def test_a_dead_model_still_shows_the_product(monkeypatch, vocab):
+    from app.services import assistant_briefings, catalog_search_service
+    from app.services.chat_service import GeminiAPIError
+
+    monkeypatch.setattr(assistant_agent.settings, "assistant_agent_v2", True)
+    monkeypatch.setattr(assistant_briefings, "live_for", AsyncMock(return_value=[]))
+    monkeypatch.setattr(assistant_agent, "_run_tool", _turn_tool({"seeni": [SUGAR]}))
+    monkeypatch.setattr(assistant_agent, "run", AsyncMock(side_effect=GeminiAPIError("quota")))
+    monkeypatch.setattr(assistant_agent.settings, "hybrid_mode", "off")
+    monkeypatch.setattr(recorder, "record", lambda **kwargs: None)
+    monkeypatch.setattr(catalog_search_service, "get_vocabulary", AsyncMock(return_value=vocab))
+    redis = AsyncMock()
+    redis.get.return_value = None
+    out = await ChatService.chat(AsyncMock(), redis, "guest:x", uuid.uuid4(), "mokak hari seeni", lang="si")
+    assert out["products"][0]["product_id"] == "p-sugar"
+    assert not out.get("degraded")
+    assert "නමුත්" in out["reply"]
+
+
+def test_catalogue_is_gzipped_and_private_paths_are_not():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.core.catalog_gzip import CatalogGZipMiddleware
+
+    app = FastAPI()
+    app.add_middleware(CatalogGZipMiddleware)
+    body = {"x": "y" * 5000}
+    app.get("/api/v1/products/search")(lambda: body)
+    app.get("/api/v1/users/me")(lambda: body)
+    client = TestClient(app)
+    assert client.get("/api/v1/products/search").headers.get("content-encoding") == "gzip"
+    assert "content-encoding" not in client.get("/api/v1/users/me").headers

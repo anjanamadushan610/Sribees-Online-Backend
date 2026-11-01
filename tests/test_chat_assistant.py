@@ -529,6 +529,25 @@ async def test_sinhala_catalog_matches_survive_relevance_filter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_keyword_and_singlish_matches_survive(monkeypatch):
+    """Search matched "seeni" through the keywords; the word is in no name."""
+    from app.api.v1 import products
+    from app.services.product_service import ProductService
+
+    product = SimpleNamespace(
+        product_id=uuid4(), name="White Sugar 1kg", name_si="සුදු සීනි 1kg", name_ta=None,
+        category=None, subcategory=None,
+    )
+    monkeypatch.setattr(products, "format_product", lambda product, **kwargs: {"name": product.name})
+    monkeypatch.setattr(
+        ProductService, "get_all_for_branch",
+        AsyncMock(return_value=([{"product": product, "effective": {}}], 1)),
+    )
+    strict, _ = await ChatService._match_products(AsyncMock(), uuid4(), ["seeni"], lang="si")
+    assert strict == [{"name": "White Sugar 1kg"}]
+
+
+@pytest.mark.asyncio
 async def test_api_passes_authenticated_identity_and_full_canvas(monkeypatch):
     from starlette.requests import Request
 

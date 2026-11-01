@@ -12,11 +12,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from app.config.settings import settings
-from app.services import assistant_agent
+from app.services import assistant_agent, catalog_search_service
 from app.services.hybrid import compose
 from app.services.hybrid.normalize import parse
 from app.services.hybrid.plan import Plan, ToolCall
-from app.services.hybrid.rules import route
+from app.services.hybrid.rules import rescue_query, route
 
 MODES = ("off", "shadow", "active")
 
@@ -100,6 +100,14 @@ async def run_plan(
         # for a product: the model can try other names, explain the nearest
         # match or work out what was meant. Answer only when sure.
         return None
+    if searched and branch_id:
+        # Search also returns partial matches ("sudu kiri" -> any "kiri"). A
+        # reply saying "yes, we have it" needs every word found in one product.
+        for step, out in outputs:
+            if step in searched and not await catalog_search_service.any_covers_all(
+                db, [p["product_id"] for p in out["products"]], step.args["query"]
+            ):
+                return None
     if any("error" in out for _, out in outputs) and not (searched and not branch_id):
         return None
     if plan.reply_kind == "greeting":
@@ -121,6 +129,52 @@ async def run_plan(
         "actions": turn.actions,
         "guide": turn.guide,
         "panels": turn.panels,
+        "language": lang,
+        "search_context": turn.search_context,
+        "briefing_note": None,
+        "briefing_ids": [],
+    }
+
+
+async def rescue(
+    message: str,
+    fallback_lang: str,
+    *,
+    db,
+    redis,
+    user_id: Optional[UUID],
+    branch_id: Optional[UUID],
+    history: List[Dict[str, Any]],
+    emit,
+) -> Optional[Dict[str, Any]]:
+    """
+    The model is down: show what the catalogue has for the product words in
+    ``message``, saying plainly that this is only a search. None when the
+    message names no product, or is about anything but products.
+    """
+    from app.services.catalog_search_service import get_vocabulary
+    from app.services.hybrid.rules import _language
+
+    if not branch_id:
+        return None
+    msg = parse(message)
+    query = rescue_query(msg, await get_vocabulary(db)) if msg else None
+    if not query:
+        return None
+    lang = _language(msg, fallback_lang)
+    turn = assistant_agent.Turn(lang)
+    ctx = {"db": db, "redis": redis, "user_id": user_id, "branch_id": branch_id, "history": history, "emit": emit}
+    out = await assistant_agent._run_tool("search_products", {"query": query}, ctx, turn)
+    if not out.get("products"):
+        return None
+    shown = list(dict.fromkeys(turn.search_order))[: assistant_agent.MAX_SHOWN_PRODUCTS]
+    return {
+        "reply": compose.rescued(lang),
+        "products": [turn.products[pid] for pid in shown],
+        "orders": [],
+        "actions": [],
+        "guide": None,
+        "panels": [],
         "language": lang,
         "search_context": turn.search_context,
         "briefing_note": None,

@@ -1,6 +1,11 @@
 # The hybrid assistant: answer in milliseconds, learn from the model
 
-Status: design, 2026-10-25. Owner's goal: the SRIBEES Online assistant should
+Status: active by default since 2026-11-01 (`HYBRID_MODE`). A rule answers only
+when one product matches every word of the search; otherwise the model answers.
+If the model is down, `engine.rescue` shows cards for the product words and says
+it is only a search.
+
+Design, 2026-10-25. Owner's goal: the SRIBEES Online assistant should
 answer "like Gemini" but, over the years, handle ~95% of messages without any
 paid model call, in milliseconds, and get better the more it is used.
 

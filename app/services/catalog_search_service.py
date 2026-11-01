@@ -392,6 +392,27 @@ def rank(rows: Sequence[Sequence], plan: SearchPlan) -> list[UUID]:
     return [s[5] for s in kept]
 
 
+def covers_all_words(tokens: Iterable[str], plan: SearchPlan) -> bool:
+    """Whether a product's search tokens answer every word of the query."""
+    tokens = set(tokens or ())
+    return all(tokens.intersection(plan.expansions[tok]) for tok in plan.query.required)
+
+
+async def any_covers_all(db: AsyncSession, product_ids: Sequence, query: str) -> bool:
+    """
+    Whether one of ``product_ids`` matches every word of ``query``. ``rank``
+    falls back to the best partial match ("sudu kiri" -> anything "kiri"), which
+    suits a search bar but is not good enough to answer a chat message with.
+    """
+    plan = await plan_search(db, query)
+    if plan is None or not product_ids:
+        return False
+    rows = (await db.execute(
+        select(Product.search_tokens).where(Product.product_id.in_(product_ids))
+    )).all()
+    return any(covers_all_words(row[0], plan) for row in rows)
+
+
 # ---------------------------------------------------------------------------
 # Per-worker vocabulary
 # ---------------------------------------------------------------------------

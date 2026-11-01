@@ -7,8 +7,10 @@ a server tool already wrote verified copy (orders, help, basket previews),
 that copy is the reply.
 """
 
+import zlib
 from typing import Any, Dict, List, Tuple
 
+from app.services.assistant_agent import MAX_TOOL_PRODUCTS
 from app.services.assistant_tools import tr
 from app.services.hybrid.plan import Plan, ToolCall
 
@@ -54,28 +56,62 @@ def _not_found(query: str, lang: str) -> str:
     )
 
 
+def rescued(lang: str) -> str:
+    return tr(
+        lang,
+        "I can't answer in full right now, but these match what you wrote.",
+        "දැනට සම්පූර්ණ පිළිතුරක් දෙන්න බැහැ, නමුත් ඔබ ලියපු දේට ගැළපෙන භාණ්ඩ මේවා.",
+        "இப்போது முழு பதில் தர முடியவில்லை, ஆனால் நீங்கள் எழுதியதற்குப் பொருந்தும் பொருட்கள் இவை.",
+    )
+
+
+def _price_of(product: dict, lang: str) -> str:
+    return f"{tr(lang, 'Rs', 'රු.', 'ரூ.')} {_money(product.get('price'))}"
+
+
+def _pick(seed: str, *lines: str) -> str:
+    """The same answer every time for the same products, but not one fixed sentence for all."""
+    return lines[zlib.crc32(seed.encode("utf-8")) % len(lines)]
+
+
 def _found(kind: str, products: List[dict], lang: str) -> str:
     first, count = products[0], len(products)
     name = first.get("name", "")
     if kind == "price":
-        priced = " · ".join(f"{p['name']} {tr(lang, 'Rs', 'රු.', 'ரூ.')} {_money(p.get('price'))}" for p in products[:3])
+        priced = " · ".join(f"{p['name']} {_price_of(p, lang)}" for p in products[:3])
         return tr(lang, f"Prices: {priced}.", f"මිල: {priced}.", f"விலை: {priced}.")
+    seed = name + kind
+    if count == 1:
+        price = _price_of(first, lang)
+        if kind == "want":
+            return tr(
+                lang,
+                f"Yes, we have {name} at {price}.",
+                f"ඔව්, {name} තියෙනවා, {price} 😊",
+                f"ஆம், {name} உள்ளது, {price} 😊",
+            )
+        return tr(lang, f"Here's {name}, {price}.", f"මෙන්න {name}, {price} 😊", f"இதோ {name}, {price} 😊")
+    # A full list was cut off at the cap, so its length is not how many we stock.
+    capped = count >= MAX_TOOL_PRODUCTS
+    low = _price_of(min(products, key=lambda p: float(p.get("price") or 0)), lang)
+    options = tr(
+        lang,
+        "several options" if capped else f"{count} options",
+        "වර්ග කිහිපයක්" if capped else f"වර්ග {count}ක්",
+        "பல வகைகள்" if capped else f"{count} வகைகள்",
+    )
     if kind == "want":
-        if count == 1:
-            return tr(lang, f"Yes, we have {name}.", f"ඔව්, {name} තියෙනවා 😊", f"ஆம், {name} உள்ளது 😊")
         return tr(
             lang,
-            f"Yes, {count} options including {name}.",
-            f"ඔව්, {name} ඇතුළුව වර්ග {count}ක් තියෙනවා 😊",
-            f"ஆம், {name} உட்பட {count} வகைகள் உள்ளன 😊",
+            _pick(seed, f"Yes, {options} including {name}, from {low}.", f"We have {options}, from {low}, including {name}."),
+            _pick(seed, f"ඔව්, {name} ඇතුළුව {options} තියෙනවා, {low} ඉඳන් 😊", f"තියෙනවා 😊 {name} ඇතුළුව {options}, {low} ඉඳන්."),
+            _pick(seed, f"ஆம், {name} உட்பட {options} உள்ளன, {low} முதல் 😊", f"உள்ளது 😊 {name} உட்பட {options}, {low} முதல்."),
         )
-    if count == 1:
-        return tr(lang, f"Here's {name}.", f"{name} මෙන්න 😊", f"{name} இதோ 😊")
     return tr(
         lang,
-        f"{count} options, including {name}.",
-        f"{name} ඇතුළුව වර්ග {count}ක් මෙන්න 😊",
-        f"{name} உட்பட {count} வகைகள் இதோ 😊",
+        _pick(seed, f"{options}, from {low}, including {name}.", f"Here you go: {options} including {name}, from {low}."),
+        _pick(seed, f"{name} ඇතුළුව {options} මෙන්න, {low} ඉඳන් 😊", f"මේ බලන්න 😊 {name} ඇතුළුව {options}, {low} ඉඳන්."),
+        _pick(seed, f"{name} உட்பட {options} இதோ, {low} முதல் 😊", f"இவற்றைப் பாருங்கள் 😊 {name} உட்பட {options}, {low} முதல்."),
     )
 
 
@@ -89,9 +125,9 @@ def products_reply(plan: Plan, outputs: List[Tuple[ToolCall, Dict[str, Any]]], l
             lines.append(_not_found(step.args.get("query", ""), lang))
     tail = tr(
         lang,
-        "Check the cards for prices and quantities.",
-        "මිල සහ ප්‍රමාණ පහළින් බලන්න.",
-        "விலைகளையும் அளவுகளையும் கீழே பார்க்கவும்.",
+        "Pick the one you want below.",
+        "ඕන එක පහළින් තෝරන්න.",
+        "வேண்டியதைக் கீழே தேர்ந்தெடுக்கவும்.",
     )
     if plan.reply_kind != "price" and any(out.get("products") for _, out in outputs):
         lines.append(tail)

@@ -231,6 +231,13 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+# Catalogue responses are big repetitive JSON (20 products ~30 KB) on phone
+# networks. Only these public paths: compressing responses that hold a secret
+# next to shopper-typed text is what makes BREACH-style attacks possible.
+from app.core.catalog_gzip import CatalogGZipMiddleware
+
+app.add_middleware(CatalogGZipMiddleware)
+
 # CORS middleware — added LAST so it is the OUTERMOST middleware. This
 # guarantees every response, including rate-limit rejections and error
 # responses from inner middleware, carries the Access-Control-Allow-Origin

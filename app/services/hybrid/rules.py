@@ -117,6 +117,25 @@ def _product_groups(words: List[Word], kinds: List[Set[str]]) -> List[Dict[str, 
     return out
 
 
+# What keeps a message from being a plain product request when the model is down.
+_NOT_SHOPPING = {"needs_model", "order", "history", "track", "how", "verb", "cart_add"}
+
+
+def rescue_query(msg: Message, vocabulary) -> Optional[str]:
+    """
+    The product words of a message no model can read right now; words the rules
+    do not know are skipped here, because a wrong guess only shows some cards.
+    None when the message is about anything but products.
+    """
+    if msg.order_reference:
+        return None
+    kinds = [_kinds(w, vocabulary) for w in msg.words]
+    if any(k & _NOT_SHOPPING or any(n.startswith("topic:") for n in k) for k in kinds):
+        return None
+    words = [w.raw for w, k in zip(msg.words, kinds, strict=True) if "product" in k]
+    return " ".join(words) or None
+
+
 def route(msg: Optional[Message], vocabulary, fallback_lang: str) -> Optional[Plan]:
     """A plan for ``msg`` if a rule is sure, else None (the model answers)."""
     if msg is None:

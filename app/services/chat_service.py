@@ -520,9 +520,8 @@ class ChatService:
         strict_matches: List[dict] = []
 
         for term in search_terms:
-            # Folding the brand into the query string leans on the existing
-            # trigram/ILIKE search for better ranking; the brand/variant
-            # checks below are the actual hard filter.
+            # Folding the brand into the query string helps the ranking; the
+            # brand/variant checks below are the actual hard filter.
             query = f"{brand} {term}".strip() if brand else term
             items, _total = await ProductService.get_all_for_branch(
                 db,
@@ -533,39 +532,20 @@ class ChatService:
                 limit=MAX_MATCHES_PER_TERM * 3,
             )
 
-            term_tokens = [t for t in _norm(term).split() if len(t) > 2]
-
             for item in items:
                 product = item["product"]
                 pid = product.product_id
                 if pid in seen:
                     continue
 
-                def multilingual_name(obj):
-                    return (
-                        " ".join(
-                            _norm(getattr(obj, field, None))
-                            for field in ("name", "name_si", "name_ta")
-                        )
-                        if obj
-                        else ""
-                    )
-
-                name_norm = multilingual_name(product)
-                cat_norm = multilingual_name(product.category)
-                subcat_norm = multilingual_name(product.subcategory)
-
-                # Category-relevance guard: the shared fuzzy/trigram search
-                # can surface a loosely-related product (e.g. a moisturizer
-                # whose description happens to mention "wash"). Only accept
-                # it here if the searched word genuinely appears in its name
-                # or category — otherwise a single generic search_term ends
-                # up mixing unrelated product types into one chat reply.
-                if term_tokens and not any(
-                    tok in name_norm or tok in cat_norm or tok in subcat_norm
-                    for tok in term_tokens
-                ):
-                    continue
+                # catalog_search already decided this product matches, through
+                # its name in any script, its spelling or its search keywords.
+                # Checking the typed word against the name again here threw
+                # away every Singlish and keyword match ("seeni" is in no name).
+                name_norm = " ".join(
+                    _norm(getattr(product, field, None))
+                    for field in ("name", "name_si", "name_ta")
+                )
 
                 seen.add(pid)
                 # compute_effective_data already resolves branch-vs-global
@@ -1001,6 +981,26 @@ class ChatService:
                             memory.count(plan.rule, "shadow_agree" if verdict else "shadow_disagree")
                         )
         except (GeminiAPIError, asyncio.TimeoutError):
+            # No model right now: the catalogue still works, so a shopper who
+            # named a product sees it instead of "try again later".
+            rescued = None
+            if not image_base64:
+                try:
+                    rescued = await engine.rescue(
+                        message, fixed_lang or fallback_lang, db=db, redis=redis,
+                        user_id=user_id, branch_id=branch_id, history=history, emit=emit,
+                    )
+                except Exception as exc:  # noqa: BLE001 - fall through to the honest failure
+                    logger.warning("Fast path rescue failed: {}", exc)
+            if rescued is not None:
+                recorder.record(
+                    **record,
+                    layer="rescue",
+                    language=rescued.get("language"),
+                    usage=usage,
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                )
+                return rescued
             recorder.record(
                 **record,
                 layer="degraded",

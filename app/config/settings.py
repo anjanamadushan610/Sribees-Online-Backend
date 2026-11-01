@@ -578,7 +578,7 @@ class Settings(BaseSettings):
         description="Model calls allowed per chat turn in the agent; the last one must answer.",
     )
     hybrid_mode: str = Field(
-        default="shadow",
+        default="active",
         description=(
             "The free fast path in front of the model (app/services/hybrid): "
             "'off'; 'shadow' = work out the fast plan and record it next to "

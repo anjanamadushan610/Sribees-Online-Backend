@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -137,11 +138,12 @@ def harness_targets():
         assistant_account,
         assistant_agent,
         assistant_shopping,
+        catalog_search_service,
         semantic_search,
     )
     from app.services.chat_service import ChatService
 
-    targets = [(ChatService, "_match_products"), (assistant_shopping, "catalog_product"),
+    targets = [(catalog_search_service, "any_covers_all"), (ChatService, "_match_products"), (assistant_shopping, "catalog_product"),
                (semantic_search, "related_product_ids")]
     targets += [(assistant_agent, n) for n in ("orders_result", "_feature", "_run_tool")]
     targets += [(assistant_account, n) for n in ("wallet_summary", "my_offers", "my_wishlist", "my_notifications",
@@ -158,7 +160,8 @@ class AgentHarness:
     """
 
     def __init__(self) -> None:
-        from app.services import assistant_agent
+        from app.services import assistant_agent, catalog_search_service
+        from app.services.catalog_search_service import Vocabulary
         from app.services.chat_service import ChatService
         from app.services.search_text import index_tokens
 
@@ -182,6 +185,13 @@ class AgentHarness:
         self.vectors: Dict[str, List[float]] = {}
         self._fake_account_tools()
         self.by_id = {p["product_id"]: p for p in data}
+        self.rows = [
+            (p["product_id"], *index_tokens(p["name"], p.get("name_si"), p.get("name_ta"), p.get("search_keywords")),
+             False, 0, p["name"])
+            for p in data
+        ]
+        self.vocabulary = Vocabulary(Counter(t for p in data for t in set(p["_tokens"])))
+        catalog_search_service.any_covers_all = self.covers
         from app.services import assistant_shopping
 
         assistant_shopping.catalog_product = self.catalog_product
@@ -244,34 +254,35 @@ class AgentHarness:
         self.agent.settings.semantic_search_enabled = True
 
     async def match(self, db, branch_id, terms, brand=None, variant=None, max_price=None, min_price=None, lang="si"):
-        from app.services.search_text import parse_query
-
-        q = parse_query(terms[0])
-
-        def hits(p):
-            toks = p["_tokens"]
-            return sum(
-                any(t == r or t.startswith(r) or (q.stems.get(r) and t.startswith(q.stems[r])) for t in toks)
-                for r in q.required
-            )
+        from app.services.catalog_search_service import make_plan, rank
 
         def price_of(p):
             return p["discount_price"] if p["is_on_sale"] and p["discount_price"] else p["price"]
 
-        pool = [
-            p for p in self.products
+        query = f"{brand} {terms[0]}".strip() if brand else terms[0]
+        plan = make_plan(self.vocabulary, query)
+        if plan is None:
+            return [], []
+        wanted = set(plan.terms)
+        rows = [r for r in self.rows if wanted & set(r[1])]
+        ranked = [self.by_id[pid] for pid in rank(rows, plan)]
+        broad = [
+            p for p in ranked
             if (not brand or brand.casefold() in p["name"].casefold())
             and (max_price is None or price_of(p) <= max_price)
             and (min_price is None or price_of(p) >= min_price)
         ]
-        scored = sorted(((hits(p), p) for p in pool), key=lambda x: (-x[0], x[1]["name"]))
-        need = len(q.required)
-        broad = [p for n, p in scored if need and n == need] or [p for n, p in scored if need > 1 and n >= 1]
         broad = broad[:9]
         size = (variant or "").casefold().replace(" ", "")
         strict = [p for p in broad if not size or size in p["name"].casefold().replace(" ", "")]
 
         return [self.card(p, lang) for p in strict], [self.card(p, lang) for p in broad]
+
+    async def covers(self, db, product_ids, query):
+        from app.services.catalog_search_service import covers_all_words, make_plan
+
+        plan = make_plan(self.vocabulary, query)
+        return bool(plan) and any(covers_all_words(self.by_id[pid]["_tokens"], plan) for pid in product_ids)
 
     async def orders(self, db, user_id, reference, lang, *, recent=False):
         return {
