@@ -200,6 +200,7 @@ cmd_deploy() {
 
   log "rolling out the app"
   APP_IMAGE="$image" compose up -d --no-build --force-recreate app
+  compose up -d --no-build backup
   wait_healthy app || die "app did not become healthy - run './deploy-prod.sh rollback'"
   smoke_test || die "smoke test failed - run './deploy-prod.sh rollback'"
 
