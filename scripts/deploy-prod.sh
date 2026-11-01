@@ -170,6 +170,14 @@ smoke_test() {
     < /dev/null
 }
 
+keep_demo_seed_off() {
+  # A database-level setting, so pg_dump does not carry it. Without it the seed
+  # migrations and the boot-time admin seed write demo data into production.
+  compose exec -T postgres sh -c \
+    'PGPASSWORD="$POSTGRES_PASSWORD" psql -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "ALTER DATABASE \"$POSTGRES_DB\" SET sribees.demo_seed = '"'"'off'"'"'"' \
+    < /dev/null || die "could not switch the demo seed off"
+}
+
 cmd_deploy() {
   require_env
   local image="${APP_IMAGE:-}"
@@ -185,6 +193,7 @@ cmd_deploy() {
   APP_IMAGE="$image" compose pull --quiet app || die "could not pull $image"
 
   start_infrastructure
+  keep_demo_seed_off
   backup_database
   create_base_tables "$image"
   run_migrations "$image"
