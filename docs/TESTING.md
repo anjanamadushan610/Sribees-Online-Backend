@@ -6,7 +6,7 @@ how to run the same checks locally. Covers all four repositories: this backend,
 
 ## The rule
 
-**Nothing deploys unless CI is green.** Production (`deploy-backend-ec2.yml`)
+**Nothing deploys unless CI is green.** Production (`deploy-prod.yml`)
 and development (`deploy-dev.yml`) both call `deploy.yml` as their first job and
 build nothing until it passes. (Before 2026-09-25 CI and deploy ran side by
 side, and `main` shipped for days with CI red.)
@@ -20,7 +20,7 @@ side, and `main` shipped for days with CI red.)
 | Integration | `tests/integration/` | The money path end to end over HTTP, against real Postgres and Redis | every push |
 | Deploy rehearsal | `deploy.yml` → `rehearsal` | The production image boots on an empty DB, every migration applies **twice**, the smoke test passes, production hardening is on | every push |
 | Smoke | `scripts/smoke_test.py` | Admin login, analytics answer and agree with each other, catalog is not empty | rehearsal, and on the server after every production deploy |
-| Public edge | `deploy-backend-ec2.yml` → `verify-public` | DNS, TLS, nginx and the app together: health, HSTS, no public docs, admin routes refuse anonymous calls | after every production deploy |
+| Public edge | `deploy-prod.yml` → `verify-public` | DNS, TLS, nginx and the app together: health, HSTS, no public docs, admin routes refuse anonymous calls | after every production deploy |
 | Browser E2E | `admin/e2e/` | Real browser, real backend, seeded data: auth, dashboards, analytics, every route opens, RBAC from the browser and the API | admin pushes |
 | Frontend unit | `admin/src/**/*.test.ts(x)`, `partner-portal/src/**` | Permissions, route guards, the API client's token refresh and logout, money and Sri Lanka time formatting | every push |
 | Mobile | `mobile/test/` | Models, providers, widgets; every English string has Sinhala and Tamil with the same `{placeholders}`; NIC rules match the backend | every push |

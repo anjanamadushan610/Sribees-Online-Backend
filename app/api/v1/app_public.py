@@ -220,7 +220,8 @@ def _sign_in_config(request: Request) -> dict:
     host = (request.headers.get("host") or "").split(":")[0].lower()
     # Only our own hosts; anything else (a test client, a spoofed Host) gets
     # production's address rather than one it chose.
-    base = f"https://{host}" if host == "sribees.com" or host.endswith(".sribees.com") else "https://api.sribees.com"
+    own = host in ("sribees.com", "sribeesonline.com") or host.endswith((".sribees.com", ".sribeesonline.com"))
+    base = f"https://{host}" if own else "https://api.sribeesonline.com"
     google = audiences("google")
     apple_services_id = (settings.apple_services_id or "").strip() or None
     return {

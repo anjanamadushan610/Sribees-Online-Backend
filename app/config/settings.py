@@ -133,7 +133,7 @@ class Settings(BaseSettings):
     # Server Settings
     # =========================================================================
     # Inside the container; the published port is loopback-only (see
-    # docker/ec2-docker-compose.yml), so this is not an exposure.
+    # docker-compose.prod-contabo.yml), so this is not an exposure.
     host: str = Field(default="0.0.0.0", description="Server host")  # nosec B104
     port: int = Field(default=8000, description="Server port")
     workers: int = Field(default=4, description="Number of worker processes")

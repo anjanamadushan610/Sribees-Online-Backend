@@ -132,6 +132,7 @@ class TrustedHostMiddleware(BaseHTTPMiddleware):
         "www.sribeesonline.lk",
         "api.sribeesonline.lk",
         "admin.sribeesonline.lk",
+        "api.sribeesonline.com",
         "api.sribees.com",
         "sribees.com",
     }

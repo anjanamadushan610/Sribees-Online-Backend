@@ -4,7 +4,7 @@
 # Every change passes through here before it can reach a server:
 #
 #   * Pull requests into main / development run it directly.
-#   * deploy-backend-ec2.yml (production) and deploy-dev.yml (development)
+#   * deploy-prod.yml (production) and deploy-dev.yml (development)
 #     CALL it as their first job (workflow_call) and build nothing until it is
 #     green. Before 2026-09-25 production deployed independently of CI, and
 #     main shipped for days with CI red.
@@ -211,7 +211,7 @@ jobs:
 
     services:
       postgres:
-        # The same image production runs (docker/ec2-docker-compose.yml).
+        # The same image production runs (docker-compose.prod-contabo.yml).
         image: ankane/pgvector:v0.5.1
         env:
           POSTGRES_USER: sribees_user

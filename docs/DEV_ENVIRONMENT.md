@@ -4,7 +4,7 @@ Written for: whoever sets this up on the Contabo box and whoever debugs it at
 2am afterwards.
 
 Production is untouched by everything in this document. It stays on EC2, on
-`main`, behind `deploy-backend-ec2.yml`, at `api.sribees.com`. Development is a
+`main`, behind `deploy-prod.yml`, at `api.sribeesonline.com`. Development is a
 different branch, a different host, a different database and a different
 hostname, and nothing in either pipeline can reach the other.
 
@@ -15,7 +15,7 @@ hostname, and nothing in either pipeline can reach the other.
 | | Production | Development |
 |---|---|---|
 | Branch | `main` | `development` |
-| Workflow | `deploy-backend-ec2.yml` | `deploy-dev.yml` |
+| Workflow | `deploy-prod.yml` | `deploy-dev.yml` |
 | Host | AWS EC2 | Contabo VPS (shared with `sribees-express-dev`) |
 | Path | `~/sribees-backend` | `/opt/sribees-online-dev` |
 | Hostname | `api.sribees.com` | `dev-api.sribees.com` |

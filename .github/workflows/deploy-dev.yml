@@ -2,7 +2,7 @@
 # SRIBEESonline — development CD (Contabo)
 #
 # Runs only when started by hand (workflow_dispatch) on `development`. Production is a different workflow
-# (deploy-backend-ec2.yml), a different host, a different database and a
+# (deploy-prod.yml), a different host, a different database and a
 # different branch; nothing here can reach it.
 #
 # Build once, push it, deploy that exact digest. The image is referenced

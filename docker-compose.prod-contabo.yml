@@ -1,0 +1,195 @@
+# =============================================================================
+# SRIBEESonline - PRODUCTION stack on the Contabo VPS (/opt/sribees-online-prod).
+#
+# Same shape as docker-compose.dev-contabo.yml and sharing nothing with it: its
+# own compose project, volumes and database. The Caddy of the Express stack owns
+# host ports 80 and 443 and proxies api.sribeesonline.com to this app over the
+# shared network, so nothing here is published beyond one loopback port.
+# APP_IMAGE is the digest deploy-prod.sh records in .image.
+# =============================================================================
+name: sribees-online-prod
+
+services:
+  app:
+    image: ${APP_IMAGE:?APP_IMAGE must be set (see .image, written by deploy-dev.sh)}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+      MEDIA_ROOT: /app/media
+      # The public origin, because stored media paths are relative and this is
+      # what resolves them. Must match the hostname the edge serves.
+      MEDIA_BASE_URL: https://${DOMAIN:?DOMAIN must be set}
+    ports:
+      # Loopback only, and NOT how the edge reaches this — that goes over the
+      # shared network below. This is here so someone on the box can
+      # `curl 127.0.0.1:8200/health` without going out to the internet and
+      # back, which is the first thing you want when the edge is the suspect.
+      #
+      # The 127.0.0.1 prefix is load-bearing: without it Docker writes its own
+      # iptables rules that bypass ufw and this API answers the internet on a
+      # high port in cleartext.
+      - "127.0.0.1:${APP_BIND_PORT:-8200}:8000"
+    networks:
+      default:
+      # The network sribees-express-dev's Caddy is on. Reaching this container
+      # by name over a shared network is what actually puts it on the
+      # internet; a published host port cannot serve that purpose, because a
+      # port bound to 127.0.0.1 is reachable from the host's loopback and NOT
+      # from another container coming in over the bridge gateway.
+      edge:
+        aliases:
+          - sribees-online-prod-app
+    volumes:
+      # Uploads outlive the container, exactly as in production: every deploy
+      # recreates the app from a fresh image, and without this every image an
+      # admin uploaded goes with it.
+      - media_data:/app/media
+    security_opt:
+      - no-new-privileges:true
+    # Deliberately NOT read_only: the production image writes logs under
+    # /app/logs and the local storage backend writes uploads under /app/media.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1536M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    # pgvector, not stock postgres: the catalogue's semantic search needs the
+    # extension and plain postgres fails on the CREATE EXTENSION.
+    image: pgvector/pgvector:pg15@sha256:a947c45cdc5906a1bc951f20a8709e321256343ee0f251e4ae00b5e7def4e6da
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
+      # SCRAM rather than the md5 default: an md5 hash is trivially cracked
+      # offline if it ever leaks.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No published port. Reachable on the compose network only; psql goes
+    # through `docker compose exec`, or an SSH tunnel.
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    restart: unless-stopped
+    # Redis ships with no authentication and a full admin command set. Require
+    # a password, and disable the commands that can wipe or reconfigure it.
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      - --appendonly
+      - "yes"
+      - --maxmemory-policy
+      - noeviction
+      # `--rename-command <CMD> ""` disables a command. The empty string must
+      # be its own argv entry — folded into the previous one redis rejects the
+      # config and crash-loops on boot.
+      - --rename-command
+      - FLUSHALL
+      - ""
+      - --rename-command
+      - CONFIG
+      - ""
+    volumes:
+      - redis_data:/data
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Nightly database dump and media archive, kept 14 days in the backups folder.
+  backup:
+    image: pgvector/pgvector:pg15@sha256:a947c45cdc5906a1bc951f20a8709e321256343ee0f251e4ae00b5e7def4e6da
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        while true; do
+          stamp=$$(date -u +%Y%m%dT%H%M%SZ)
+          pg_dump -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" --clean --if-exists | gzip -9 > "/backups/db-$$stamp.sql.gz.part" \
+            && mv "/backups/db-$$stamp.sql.gz.part" "/backups/db-$$stamp.sql.gz"
+          tar -czf "/backups/media-$$stamp.tar.gz" -C /media .
+          chmod 600 /backups/db-*.sql.gz /backups/media-*.tar.gz
+          find /backups \( -name 'db-*.gz' -o -name 'media-*.gz' \) -mtime +14 -delete
+          sleep 86400
+        done
+    volumes:
+      - ./backups:/backups
+      - media_data:/media:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  # Postgres and Redis live here and nowhere else: nothing outside this stack
+  # can reach them.
+  default:
+
+  # Created and owned by the sribees-express-dev stack (compose project
+  # `sribees`). Declared external so this stack joins it rather than trying to
+  # manage it — and so a mistake here cannot reconfigure Express's network.
+  # Only `app` joins it.
+  edge:
+    external: true
+    name: sribees_default
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:

@@ -1,0 +1,296 @@
+# =============================================================================
+# SRIBEESonline - production CD (Contabo), https://api.sribeesonline.com
+#
+# Started by hand, on main only. Same build-once, deploy-that-digest flow as
+# deploy-dev.yml; a different compose project, database and hostname on the box.
+#
+# Required repository secrets: SSH_HOST, SSH_USER, SSH_PRIVATE_KEY,
+# SSH_KNOWN_HOSTS, SSH_PORT (shared with development), PROD_ENV_FILE (the whole
+# .env), and the optional keys layered on it in the install step.
+# =============================================================================
+
+name: Deploy Production (Contabo)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: "Redeploy an existing image (ghcr.io/OWNER/REPO@sha256:...). Empty = build from this ref."
+        required: false
+        type: string
+      skip_public_check:
+        description: "Skip the check through the public edge (first rollout, before DNS points here)."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Queue rather than cancel: a half-finished rollout must always be driven to
+# completion, and cancelling one mid-migration leaves the schema ahead of the
+# running image.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # Production ships main and nothing else.
+  main-only:
+    name: Production deploys main only
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse any ref but main
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::Production deploys main only (this run is on ${{ github.ref }}). Use deploy-dev.yml for development."
+            exit 1
+          fi
+
+  verify:
+    name: CI gate
+    needs: [main-only]
+    if: ${{ inputs.image_ref == '' }}
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+
+  # ---------------------------------------------------------------------------
+  # Build and push. Output is a digest, not a tag.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build & push image
+    if: ${{ inputs.image_ref == '' }}
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR rejects uppercase, and a repository owner may legitimately have
+      # capitals in their handle.
+      - name: Resolve lowercase image name
+        id: name
+        run: echo "repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.name.outputs.repo }}:latest
+            ${{ env.REGISTRY }}/${{ steps.name.outputs.repo }}:${{ github.sha }}
+          cache-from: type=gha,scope=prod
+          cache-to: type=gha,mode=max,scope=prod,ignore-error=true
+
+      - name: Pin the image by digest
+        id: digest
+        run: |
+          echo "image=${{ env.REGISTRY }}/${{ steps.name.outputs.repo }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Ship it.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to Contabo
+    needs: [main-only, build]
+    # always() + an explicit result check so a manual redeploy (which skips
+    # build) still runs, while a *failed* build never reaches the server.
+    if: ${{ always() && needs.main-only.result == 'success' && (needs.build.result == 'success' || inputs.image_ref != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      # Read, never write: this job hands its GITHUB_TOKEN to the server, and
+      # the server's only job is to pull. Without this the token carries no
+      # packages scope and the pull fails with a message that reads like a
+      # visibility problem and is really a missing permission on our side.
+      packages: read
+    env:
+      DEPLOY_PATH: /opt/sribees-online-prod
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve image reference
+        id: image
+        env:
+          BUILT: ${{ needs.build.outputs.image }}
+          OVERRIDE: ${{ inputs.image_ref }}
+        run: |
+          IMAGE="${OVERRIDE:-$BUILT}"
+          if [ -z "$IMAGE" ]; then
+            echo "::error::no image reference to deploy"
+            exit 1
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          # Pinning the host key is what stops a DNS or BGP hijack being handed
+          # our deploy key and our .env. Never StrictHostKeyChecking=no.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_deploy ~/.ssh/known_hosts
+          {
+            echo "Host target"
+            echo "  HostName $SSH_HOST"
+            echo "  User $SSH_USER"
+            echo "  Port $SSH_PORT"
+            echo "  IdentityFile ~/.ssh/id_deploy"
+            echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking yes"
+            echo "  UserKnownHostsFile ~/.ssh/known_hosts"
+            echo "  BatchMode yes"
+            echo "  ServerAliveInterval 20"
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          ssh target "echo connected as \$(id -un) on \$(hostname)"
+
+      - name: Prepare the remote directory
+        # /opt is root-owned and the deploy account has no sudo, by design. On
+        # a fresh box `install -d` therefore fails and the deploy dies here.
+        # Creating it by hand once is not an answer: the next rebuilt VPS
+        # breaks the same way, and that runbook step is forgotten exactly when
+        # someone is under pressure. The account IS in the docker group, which
+        # is root-equivalent and is the accepted property of a compose deploy,
+        # so a throwaway container is the sanctioned way to create the tree.
+        # Idempotent: every run after the first takes the fast path.
+        run: |
+          ssh target "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          if install -d -m 0750 "$DEPLOY_PATH" "$DEPLOY_PATH/docker" "$DEPLOY_PATH/backups" 2>/dev/null; then
+            echo "deploy tree ready at $DEPLOY_PATH (owned by $(id -un))"
+            exit 0
+          fi
+          parent="$(dirname "$DEPLOY_PATH")"
+          leaf="$(basename "$DEPLOY_PATH")"
+          echo "creating $DEPLOY_PATH via a throwaway container ($(id -un) has no sudo)"
+          docker run --rm -v "$parent:/mnt" alpine:3.20 sh -c "
+            mkdir -p '/mnt/$leaf/docker' '/mnt/$leaf/backups' &&
+            chown -R $(id -u):$(id -g) '/mnt/$leaf' &&
+            chmod 0750 '/mnt/$leaf' '/mnt/$leaf/docker' '/mnt/$leaf/backups'"
+          install -d -m 0750 "$DEPLOY_PATH" "$DEPLOY_PATH/docker" "$DEPLOY_PATH/backups"
+          echo "deploy tree created at $DEPLOY_PATH (owned by $(id -un))"
+          REMOTE
+
+      - name: Sync deploy bundle
+        run: |
+          # Only what the server needs to RUN the stack. Application code is
+          # never copied here; it arrives exclusively inside the image.
+          scp docker-compose.prod-contabo.yml "target:$DEPLOY_PATH/docker-compose.prod-contabo.yml"
+          scp scripts/deploy-prod.sh "target:$DEPLOY_PATH/deploy-prod.sh"
+          ssh target "chmod 0750 '$DEPLOY_PATH/deploy-prod.sh'"
+
+      - name: Install the environment file (0600, never echoed)
+        env:
+          PROD_ENV_FILE: ${{ secrets.PROD_ENV_FILE }}
+          # Layered on PROD_ENV_FILE so each can be rotated on its own.
+          MARX_IPG_API_KEY: ${{ secrets.MARX_IPG_API_KEY }}
+          MARX_IPG_BASE_URL: ${{ secrets.MARX_IPG_BASE_URL }}
+          MARX_IPG_RETURN_URL: ${{ secrets.MARX_IPG_RETURN_URL }}
+          MARX_GATEWAY_METHODS_ENABLED: ${{ secrets.MARX_GATEWAY_METHODS_ENABLED }}
+          OTP_TEST_PHONES: ${{ secrets.OTP_TEST_PHONES }}
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMS_PROVIDER: ${{ secrets.SMS_PROVIDER }}
+          TEXTLK_API_TOKEN: ${{ secrets.TEXTLK_API_TOKEN }}
+          TEXTLK_SENDER_ID: ${{ secrets.TEXTLK_SENDER_ID }}
+          GOOGLE_CLIENT_IDS: ${{ secrets.GOOGLE_CLIENT_IDS }}
+          APPLE_SERVICES_ID: ${{ secrets.APPLE_SERVICES_ID }}
+          FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
+        run: |
+          if [ -z "$PROD_ENV_FILE" ]; then
+            echo "::error::secret PROD_ENV_FILE is empty"
+            exit 1
+          fi
+          for key in MARX_IPG_API_KEY MARX_IPG_BASE_URL MARX_IPG_RETURN_URL MARX_GATEWAY_METHODS_ENABLED OTP_TEST_PHONES SMOKE_ADMIN_EMAIL SMOKE_ADMIN_PASSWORD SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID FIREBASE_CREDENTIALS_JSON; do
+            value=$(printenv "$key" || true)
+            if [ "$key" = "FIREBASE_CREDENTIALS_JSON" ] && [ -n "$value" ]; then
+              # The pasted JSON spans lines; the .env wants one.
+              value=$(printf '%s' "$value" | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), separators=(",", ":")))')
+            fi
+            if [ -n "$value" ]; then
+              PROD_ENV_FILE=$(printf '%s\n' "$PROD_ENV_FILE" | grep -v "^${key}=" || true)
+              PROD_ENV_FILE=$(printf '%s\n%s=%s' "$PROD_ENV_FILE" "$key" "$value")
+            fi
+          done
+          printf '%s\n' "$PROD_ENV_FILE" | ssh target \
+            "umask 077 && cat > '$DEPLOY_PATH/.env.new' && chmod 600 '$DEPLOY_PATH/.env.new' && mv '$DEPLOY_PATH/.env.new' '$DEPLOY_PATH/.env'"
+
+      - name: Registry login on the server (short-lived job token)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          printf '%s\n' "$GHCR_TOKEN" | ssh target \
+            "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
+
+      - name: Roll out
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          ssh target "cd '$DEPLOY_PATH' && APP_IMAGE='$IMAGE' ./deploy-prod.sh deploy"
+
+      - name: Check through the public edge
+        if: ${{ !inputs.skip_public_check }}
+        env:
+          PUBLIC_API_URL: https://api.sribeesonline.com
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fsS -o /dev/null "$PUBLIC_API_URL/health"; then break; fi
+            [ "$i" = 10 ] && { echo "::error::$PUBLIC_API_URL/health is not answering"; exit 1; }
+            sleep 6
+          done
+          headers=$(curl -fsS -D - -o /dev/null "$PUBLIC_API_URL/health")
+          echo "$headers" | grep -qi '^strict-transport-security:' || { echo "::error::HSTS missing on the public edge"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_API_URL/docs")
+          [ "$code" = "404" ] || { echo "::error::API docs are public ($code)"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_API_URL/api/v1/admin/dashboard/stats")
+          [ "$code" = "401" ] || { echo "::error::an admin route answered $code without a token"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_API_URL/api/v1/app/app-config")
+          [ "$code" = "200" ] || { echo "::error::the app bootstrap config answered $code"; exit 1; }
+          echo "public edge OK"
+
+      - name: Roll back on failure
+        if: failure()
+        run: |
+          ssh target "cd '$DEPLOY_PATH' && ./deploy-prod.sh rollback" \
+            || echo "::warning::automatic rollback failed - investigate on the host"
+
+      - name: Drop the registry credential from the server
+        if: always()
+        run: ssh target "docker logout ghcr.io" || true

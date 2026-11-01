@@ -178,4 +178,4 @@ async def test_app_config_tells_the_app_how_to_start_a_sign_in(client, monkeypat
         "apple_redirect_uri": "https://devapionline.sribees.com/api/v1/auth/apple/callback",
     }
     r = await client.get("/api/v1/app/app-config", headers={"Host": "evil.example"})
-    assert r.json()["data"]["sign_in"]["apple_redirect_uri"].startswith("https://api.sribees.com/")
+    assert r.json()["data"]["sign_in"]["apple_redirect_uri"].startswith("https://api.sribeesonline.com/")
