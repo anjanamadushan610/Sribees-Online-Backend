@@ -45,7 +45,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.redis import RedisKeys
 from app.models.app_usage import AppInstall, AppUsageDay
-from app.models.assistant import AssistantProfile, AssistantReceipt, AssistantReminder
+from app.models.assistant import (
+    AssistantChatLog,
+    AssistantProfile,
+    AssistantReceipt,
+    AssistantReminder,
+)
 from app.models.notification import Notification, PushToken
 from app.models.order import Order
 from app.models.support_ticket import SupportTicket
@@ -135,6 +140,7 @@ async def close_account(
     for model in (
         WishlistItem,
         Notification,
+        AssistantChatLog,
         AssistantProfile,
         AssistantReminder,
         AssistantReceipt,

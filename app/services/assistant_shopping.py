@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from app.config.redis import RedisKeys
 from app.services.assistant_tools import action, tr
 from app.services.cart_service import CART_TTL, CartService
+from app.services.hybrid import chat_log
 from app.services.product_service import ProductService
 
 
@@ -496,4 +497,8 @@ async def confirm_cart(db, redis, user_id, branch_id, key, raw_proposal, payload
         if done:
             return done
         raise HTTPException(409, "CART_CHANGED_REVIEW_AGAIN")
+    before = {item.get("product_id") for item in json.loads(payload["base"] or "{}").get("items", [])}
+    chat_log.note_added(
+        user_id, [i["product_id"] for i in built["items"] if i.get("product_id") not in before], from_chat=True
+    )
     return reply

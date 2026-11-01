@@ -36,7 +36,7 @@ _PRIVACY_HTML = """<!doctype html>
 </head>
 <body>
 <h1>Privacy Policy</h1>
-<p class="meta">Sribees Online &middot; Effective 22 October 2026</p>
+<p class="meta">Sribees Online &middot; Effective 1 November 2026</p>
 
 <p>Sribees Digitel Solutions (the software arm of Sribees Lanka (Pvt) Ltd,
 "Sribees", "we", "us") operates the Sribees Online app and website. This
@@ -64,9 +64,11 @@ photo yourself via your phone's photo picker or camera each time; we do not
 access your photo library beyond the single photo you pick.</li>
 <li><strong>AI shopping assistant:</strong> if you use the in-app
 assistant, the messages you type and any photo you choose to send it (for
-example, a photo of an empty spice jar) are used to answer you. Your recent
-conversation is kept for 7 days so the assistant can follow it, then
-deleted automatically. Photos sent to the assistant are not stored by us.
+example, a photo of an empty spice jar) are used to answer you. We keep what
+you write, the assistant's replies, the products it showed you and whether you
+then added or ordered them, to answer you and to improve the shop. This is kept
+until you close your account; clearing the chat in the app removes it from your
+screen only. Photos sent to the assistant are not stored by us.
 Preferences you explicitly ask it to remember (favourite brands, ingredients
 to avoid, household size, budget) and reminders you set are kept until you
 ask it to forget them or close your account.</li>

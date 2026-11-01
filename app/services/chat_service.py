@@ -42,6 +42,7 @@ from app.schemas.chat import ChatPlan
 from app.services import assistant_briefings, chat_language
 from app.services.assistant_tools import action, help_result, orders_result, tr
 from app.services.embedding_service import GeminiAPIError
+from app.services.hybrid import chat_log
 from app.services.product_service import ProductService
 from app.utils.i18n import DEFAULT_LANGUAGE
 
@@ -681,6 +682,7 @@ class ChatService:
         whole turn -- reply, cards, buttons and panels alike -- and a message
         with nothing to go on continues the conversation's language.
         """
+        answered_by = "tool"  # a button or shortcut, unless the agent ran below
         history = await ChatService.get_history(redis, session_id)
         fallback_lang = chat_language.last_language(history) or lang
         fixed_lang = (
@@ -796,11 +798,17 @@ class ChatService:
                     response=response,
                     language=lang,
                 )
+                chat_log.record(
+                    session_id=session_id, user_id=user_id, branch_id=branch_id,
+                    message=message or task or "[photo]", reply=response["reply"], language=lang,
+                    answered_by="degraded", products=[], had_image=bool(image_base64),
+                )
                 return response
             if agent is not None:
                 # The agent already ran its tools and wrote the reply; only
                 # the briefing note and the history write remain.
                 lang = agent.pop("language")
+                answered_by = agent.pop("answered_by", None)
                 result = {
                     "intent": "agent",
                     "briefing_note": agent.pop("briefing_note"),
@@ -884,6 +892,11 @@ class ChatService:
             response.pop("search_context", None),
             response=response,
             language=lang,
+        )
+        chat_log.record(
+            session_id=session_id, user_id=user_id, branch_id=branch_id,
+            message=message or task or "[photo]", reply=response["reply"], language=lang,
+            answered_by=answered_by, products=response.get("products") or [], had_image=bool(image_base64),
         )
         return response
 
@@ -1000,6 +1013,7 @@ class ChatService:
                     usage=usage,
                     latency_ms=int((time.monotonic() - started) * 1000),
                 )
+                rescued["answered_by"] = "rescue"
                 return rescued
             recorder.record(
                 **record,
@@ -1012,6 +1026,7 @@ class ChatService:
         finally:
             _TURN_USAGE.reset(usage_token)
         out.pop("plan_trace", None)
+        out["answered_by"] = record.get("layer")
         recorder.record(
             **record,
             language=out.get("language"),

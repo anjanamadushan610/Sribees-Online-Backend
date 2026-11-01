@@ -108,6 +108,9 @@ class CartService:
         cashback_percentage: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Add item to cart."""
+        from app.services.hybrid import chat_log
+
+        chat_log.note_added(user_id, [product_id])
         cart = await CartService.get_cart(user_id)
 
         # Check if item already exists

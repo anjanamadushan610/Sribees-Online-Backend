@@ -320,3 +320,19 @@ def test_catalogue_is_gzipped_and_private_paths_are_not():
     client = TestClient(app)
     assert client.get("/api/v1/products/search").headers.get("content-encoding") == "gzip"
     assert "content-encoding" not in client.get("/api/v1/users/me").headers
+
+
+# --- the lasting chat log ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_turn_is_logged_with_who_answered(monkeypatch):
+    from app.services.hybrid import chat_log
+
+    logged = []
+    monkeypatch.setattr(chat_log, "record", lambda **row: logged.append(row))
+    out, _, _, _ = await _chat(monkeypatch, "active")
+    assert "answered_by" not in out
+    assert logged[0]["message"] == "seeni one" and logged[0]["reply"] == out["reply"]
+    assert logged[0]["answered_by"] == "L2"
+    assert logged[0]["products"][0]["product_id"] == "p-sugar"
