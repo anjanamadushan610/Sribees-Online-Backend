@@ -133,7 +133,9 @@ class OTPService:
 
     # Sending rules, the same on every server (the owner's, 2026-09-27). The
     # daily total for the whole server is not here: the Super Admin sets it.
-    RESEND_COOLDOWN_SECONDS = 5 * 60
+    # The resend wait went from 5 minutes to 45 seconds on 2026-11-02 (owner);
+    # the per-number hourly and daily caps still bound what a number costs.
+    RESEND_COOLDOWN_SECONDS = 45
     MAX_SENDS_PER_PHONE_PER_HOUR = 5
     MAX_SENDS_PER_PHONE_PER_DAY = 10
     MAX_SENDS_PER_IP_PER_HOUR = 10

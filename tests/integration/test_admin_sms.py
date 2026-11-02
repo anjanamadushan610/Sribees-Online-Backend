@@ -21,7 +21,7 @@ async def test_the_super_admin_sets_the_daily_total_and_sign_in_obeys_it(api, wo
     assert r.status_code == 200, r.text
     page = r.json()["data"]
     assert page["provider"] == "console" and page["is_live"] is False
-    assert page["rules"]["resend_wait_seconds"] == 300
+    assert page["rules"]["resend_wait_seconds"] == 45
     assert page["rules"]["per_address_per_hour"] == 10
     assert len(page["history"]) == 7
     assert "api_key" not in r.text.lower()
