@@ -129,9 +129,9 @@ async def test_a_declined_payment_can_be_paid_again_from_the_order(
     assert shown["payment"]["tone"] == "error"
 
     # Not by a method that is switched off...
-    r = await api.post(f"/api/v1/payments/orders/{order['order_id']}/pay", json={"method": "MARX_BANK"},
+    r = await api.post(f"/api/v1/payments/orders/{order['order_id']}/pay", json={"method": "MARX_AMEX"},
                        headers=customer.headers)
-    assert r.status_code == 400, "bank transfer is off"
+    assert r.status_code == 400, "Amex is off"
 
     # ...but again by card.
     marx.outcome = "SUCCESS"
@@ -272,10 +272,11 @@ async def test_methods_come_from_the_server_in_english(
     card = methods["MARX_OTHER"]
     assert card["name"] == "Visa / Mastercard / UnionPay", "English whatever the app's language"
     assert card["icon"] == "card" and card["kind"] == "online"
-    assert "MARX_AMEX" not in methods and "MARX_BANK" not in methods, "off: Marx does not carry them for us"
+    assert "MARX_AMEX" not in methods, "off: Marx does not carry it for us"
+    assert methods["MARX_BANK"]["icon"] == "bank", "on since Marx enabled bank payments"
     assert methods["COD"]["kind"] == "offline" and methods["COD"]["type"] == "OFFLINE", "old apps still read type"
 
-    r = await _place(api, app_redis, world, customer, await make_product(), method="MARX_BANK")
+    r = await _place(api, app_redis, world, customer, await make_product(), method="MARX_AMEX")
     assert r.status_code == 400, "a switched-off method is refused even if sent"
 
     monkeypatch.setattr(settings, "marx_gateway_methods_enabled", False)
