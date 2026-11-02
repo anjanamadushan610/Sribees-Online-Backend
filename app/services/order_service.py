@@ -43,6 +43,7 @@ from app.services import (
     courier_location_service,
     delivery_quote_service,
     delivery_verification_service,
+    free_delivery_service,
     weight_options_service,
 )
 from app.services.app_settings_service import AppSettingsService
@@ -531,11 +532,16 @@ class OrderService:
             confirmed_quote = await OrderService._confirm_courier_quote(breakdown.courier_quote_id)
 
         original_delivery_fee = breakdown.delivery_fee
-        delivery_benefit = await ReferralPromotionService.delivery(
+        free_delivery = (
+            await free_delivery_service.covering_source(db, user_id, branch_id, breakdown.subtotal)
+            if original_delivery_fee and original_delivery_fee > 0
+            else None
+        )
+        delivery_benefit = None if free_delivery else await ReferralPromotionService.delivery(
             db, user_id, breakdown.subtotal, original_delivery_fee, lock=True)
-        if data.expected_referral_free_delivery and not delivery_benefit:
+        if data.expected_referral_free_delivery and not (delivery_benefit or free_delivery):
             raise ValueError('Your free delivery offer is no longer available. Refresh checkout to review the delivery charge.')
-        if delivery_benefit:
+        if delivery_benefit or free_delivery:
             breakdown = await PricingService.quote(
                 items=priced_items, coupon=coupon_for_pricing, use_wallet=data.use_wallet,
                 wallet_balance=wallet_balance, wallet_amount=data.wallet_amount, tax_rate=pricing_config["tax_rate"],
@@ -625,7 +631,8 @@ class OrderService:
             courier_quote_id=confirmed_quote.quote_id,
             courier_quote_expires_at=confirmed_quote.expires_at,
             courier_quote_amount=original_delivery_fee,
-            referral_delivery_discount=original_delivery_fee if delivery_benefit else Decimal('0.00'),
+            referral_delivery_discount=original_delivery_fee if (delivery_benefit or free_delivery) else Decimal('0.00'),
+            free_delivery_source=free_delivery,
             courier_quote_confirmed_at=datetime.now(timezone.utc),
         )
 

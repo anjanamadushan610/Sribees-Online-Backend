@@ -37,7 +37,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import settings
 from app.models.branch import Branch
 from app.models.user import Address
-from app.services import branch_service, courier_credentials, courier_location_service
+from app.services import (
+    branch_service,
+    courier_credentials,
+    courier_location_service,
+    free_delivery_service,
+)
 from app.services.pricing_service import (
     DELIVERY_NO_ADDRESS,
     DELIVERY_NOT_SERVICEABLE,
@@ -47,7 +52,6 @@ from app.services.pricing_service import (
     cart_weight_kg,
 )
 from app.services.referral_promotion_service import ReferralPromotionService
-from app.services.referral_promotion_service import enabled as promotions_enabled
 
 _CACHE_PREFIX = "courier:cart-quote:v1"
 
@@ -205,10 +209,9 @@ async def quote_for_cart(
 
     from app.services.order_service import OrderService
 
-    if promotions_enabled():
-        # Quote requests may carry stale/client-supplied prices. Eligibility
-        # must use the same catalogue subtotal order creation will charge.
-        items = await OrderService._attach_server_prices(db, items, destination.branch_id)
+    # Quote requests may carry stale/client-supplied prices. Eligibility must use
+    # the same catalogue subtotal order creation will charge.
+    items = await OrderService._attach_server_prices(db, items, destination.branch_id, strict=False)
     weighted = await OrderService._attach_weights(db, items)
     async with courier_credentials.optional_for_branch(db, destination.branch_id) as target:
         outlet_id = await outlet_for(db, destination.branch_id)
@@ -221,7 +224,7 @@ async def quote_for_cart(
             cached = await _read_cached(redis, key)
             if cached is not None:
                 subtotal = sum(Decimal(str(i.get('price', 0))) * Decimal(str(i['quantity'])) for i in weighted)
-                return await ReferralPromotionService.quote(db, user_id, subtotal, cached), destination
+                return await _with_offers(db, user_id, destination.branch_id, subtotal, cached), destination
         quote = await PricingService.quote_delivery(
             weighted,
             postal_city_id=destination.postal_city_id,
@@ -231,7 +234,13 @@ async def quote_for_cart(
         if key is not None:
             await _write_cached(redis, key, quote)
     subtotal = sum(Decimal(str(i.get('price', 0))) * Decimal(str(i['quantity'])) for i in weighted)
-    return await ReferralPromotionService.quote(db, user_id, subtotal, quote), destination
+    return await _with_offers(db, user_id, destination.branch_id, subtotal, quote), destination
+
+
+async def _with_offers(db, user_id, branch_id, subtotal, quote: DeliveryQuote) -> DeliveryQuote:
+    """One offer at most on a delivery; free delivery goes first, as it has no use limit."""
+    waived = await free_delivery_service.apply_to_quote(db, user_id, branch_id, subtotal, quote)
+    return waived or await ReferralPromotionService.quote(db, user_id, subtotal, quote)
 
 
 def delivery_payload(quote: DeliveryQuote, destination: DeliveryDestination) -> dict:

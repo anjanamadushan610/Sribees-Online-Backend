@@ -29,6 +29,7 @@ from app.models.escalation import (
     OrderEscalation,
 )
 from app.models.finance_outbox import FinanceOutbox, FinanceStockLevel
+from app.models.free_delivery import FreeDeliveryBranchOffer, FreeDeliveryGrant
 from app.models.location import LocationDistrict, LocationProvince
 from app.models.loyalty import (
     LoyaltyAccount,
@@ -91,6 +92,8 @@ from app.models.wishlist import WishlistItem
 
 __all__ = [
     "ReferralBenefit", "ReferralDeliveryRedemption", "ReferralPromotion",
+    "FreeDeliveryBranchOffer",
+    "FreeDeliveryGrant",
     "AssistantChatLog",
     "AssistantProfile",
     "AssistantReminder",

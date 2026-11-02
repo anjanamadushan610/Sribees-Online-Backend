@@ -48,6 +48,7 @@ from app.api.v1 import (
     coupons,
     courier_webhooks,
     delivery,
+    free_delivery,
     linked_partner_wallet,
     locations,
     marketing,
@@ -506,3 +507,4 @@ router.include_router(
 router.include_router(linked_partner_wallet.router)
 
 router.include_router(referral_promotions.router)
+router.include_router(free_delivery.router)
