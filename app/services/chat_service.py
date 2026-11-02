@@ -39,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.redis import RedisKeys, RedisTTL
 from app.config.settings import settings
 from app.schemas.chat import ChatPlan
-from app.services import assistant_briefings, chat_language
+from app.services import assistant_briefings, chat_budget, chat_language
 from app.services.assistant_tools import action, help_result, orders_result, tr
 from app.services.embedding_service import GeminiAPIError
 from app.services.hybrid import chat_log
@@ -762,33 +762,55 @@ class ChatService:
                         on_stage=on_stage,
                     )
                 else:
+                    await chat_budget.ensure_allowed(redis, session_id)
                     await ChatService._emit(on_stage, "understanding")
-                    result = await asyncio.wait_for(
-                        ChatService._ask_gemini(
-                            message,
-                            history,
-                            image_base64,
-                            image_mime_type,
-                            lang=fixed_lang,
-                            application_context=application_context,
-                            fallback_lang=fallback_lang,
-                            briefing_prompt=briefings.prompt() if briefings else "",
-                        ),
-                        timeout=30,
+                    usage: List[Dict[str, Any]] = []
+                    usage_token = _TURN_USAGE.set(usage)
+                    try:
+                        result = await asyncio.wait_for(
+                            ChatService._ask_gemini(
+                                message,
+                                history,
+                                image_base64,
+                                image_mime_type,
+                                lang=fixed_lang,
+                                application_context=application_context,
+                                fallback_lang=fallback_lang,
+                                briefing_prompt=briefings.prompt() if briefings else "",
+                            ),
+                            timeout=30,
+                        )
+                    finally:
+                        _TURN_USAGE.reset(usage_token)
+                        await chat_budget.charge(redis, session_id, usage)
+            except (GeminiAPIError, asyncio.TimeoutError) as exc:
+                resting = isinstance(exc, chat_budget.ChatBudgetExceeded)
+                if resting:
+                    # Never an amount or a limit: the assistant is just resting.
+                    response.update(
+                        {
+                            "reply": tr(
+                                lang,
+                                "I'm taking a short rest right now. Let's chat again tomorrow. Meanwhile you can search and shop in the app as usual.",
+                                "මම දැන් පොඩි විවේකයක් ගන්නවා. හෙට ආයෙත් කතා කරමු. ඒ අතරේ app එකේ බඩු හොයලා සුපුරුදු විදිහටම ගන්න පුළුවන්.",
+                                "நான் இப்போது சிறிது ஓய்வெடுக்கிறேன். நாளை மீண்டும் பேசலாம். அதுவரை ஆப்பில் வழக்கம்போல் தேடி வாங்கலாம்.",
+                            ),
+                            "language": lang,
+                        }
                     )
-            except (GeminiAPIError, asyncio.TimeoutError):
-                response.update(
-                    {
-                        "reply": tr(
-                            lang,
-                            "I can't understand new requests right now. Please try your message again shortly.",
-                            "දැනට අලුත් ප්‍රශ්න තේරුම් ගැනීමේ සේවාවට සම්බන්ධ වෙන්න බැහැ. ඔබේ ප්‍රශ්නය තව මොහොතකින් නැවත එවන්න.",
-                            "இப்போது புதிய கேள்விகளைப் புரிந்துகொள்ளும் சேவை கிடைக்கவில்லை. சிறிது நேரத்தில் மீண்டும் முயற்சிக்கவும்.",
-                        ),
-                        "degraded": True,
-                        "language": lang,
-                    }
-                )
+                else:
+                    response.update(
+                        {
+                            "reply": tr(
+                                lang,
+                                "I can't understand new requests right now. Please try your message again shortly.",
+                                "දැනට අලුත් ප්‍රශ්න තේරුම් ගැනීමේ සේවාවට සම්බන්ධ වෙන්න බැහැ. ඔබේ ප්‍රශ්නය තව මොහොතකින් නැවත එවන්න.",
+                                "இப்போது புதிய கேள்விகளைப் புரிந்துகொள்ளும் சேவை கிடைக்கவில்லை. சிறிது நேரத்தில் மீண்டும் முயற்சிக்கவும்.",
+                            ),
+                            "degraded": True,
+                            "language": lang,
+                        }
+                    )
                 await ChatService._append_turn(
                     redis,
                     session_id,
@@ -801,7 +823,7 @@ class ChatService:
                 chat_log.record(
                     session_id=session_id, user_id=user_id, branch_id=branch_id,
                     message=message or task or "[photo]", reply=response["reply"], language=lang,
-                    answered_by="degraded", products=[], had_image=bool(image_base64),
+                    answered_by="resting" if resting else "degraded", products=[], had_image=bool(image_base64),
                 )
                 return response
             if agent is not None:
@@ -976,6 +998,7 @@ class ChatService:
                     record.update(layer=plan.layer, plan=plan.as_log())
                     canary.maybe_check(plan, agent_kwargs, base_record)
             if out is None:
+                await chat_budget.ensure_allowed(redis, base_record["identity"])
                 out = await asyncio.wait_for(
                     assistant_agent.run(db=db, emit=emit, **agent_kwargs),
                     timeout=AGENT_TURN_TIMEOUT,
@@ -993,7 +1016,7 @@ class ChatService:
                         recorder.background(
                             memory.count(plan.rule, "shadow_agree" if verdict else "shadow_disagree")
                         )
-        except (GeminiAPIError, asyncio.TimeoutError):
+        except (GeminiAPIError, asyncio.TimeoutError) as exc:
             # No model right now: the catalogue still works, so a shopper who
             # named a product sees it instead of "try again later".
             rescued = None
@@ -1017,7 +1040,7 @@ class ChatService:
                 return rescued
             recorder.record(
                 **record,
-                layer="degraded",
+                layer="resting" if isinstance(exc, chat_budget.ChatBudgetExceeded) else "degraded",
                 shadow_plan=plan.as_log() if plan else None,
                 usage=usage,
                 latency_ms=int((time.monotonic() - started) * 1000),
@@ -1025,6 +1048,7 @@ class ChatService:
             raise
         finally:
             _TURN_USAGE.reset(usage_token)
+            await chat_budget.charge(redis, base_record["identity"], usage)
         out.pop("plan_trace", None)
         out["answered_by"] = record.get("layer")
         recorder.record(

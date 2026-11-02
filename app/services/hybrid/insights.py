@@ -14,8 +14,8 @@ are compared, so a translation is not counted as a disagreement.
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-USD_PER_M = {"input": 0.75, "output": 3.75}  # gemini-3.8-flash list price, 2026
-USD_LKR = 300.0
+from app.services.chat_budget import USD_LKR, USD_PER_M
+
 PROMOTE_AT = 0.98
 MIN_TURNS = 30
 

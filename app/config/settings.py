@@ -571,6 +571,17 @@ class Settings(BaseSettings):
             "(the way back if the agent misbehaves; on since 2026-10-25)."
         ),
     )
+    assistant_daily_budget_lkr: float = Field(
+        default=100.0,
+        ge=0,
+        description=(
+            "Most one customer's chat may spend on model calls per day "
+            "(Asia/Colombo), in LKR at list price (app/services/chat_budget.py). "
+            "Past it the fast path and search still answer and the rest gets a "
+            "quiet 'resting' reply; the customer is never told the amount. "
+            "0 = no ceiling. The owner chose Rs 100 (2026-11-02)."
+        ),
+    )
     assistant_agent_max_rounds: int = Field(
         default=4,
         ge=2,
