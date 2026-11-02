@@ -261,9 +261,9 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
     top = _data(r)["products"]
     assert top[0]["product_id"] == str(rice) and top[0]["total_earned"] == 90.0 and top[0]["units"] == 2
 
-    # The header line now speaks in "up to", from the server.
+    # The header line comes from the server and names no rate.
     me = _data(await api.get("/api/v1/partner/me", headers=agent))
-    assert me["commissionPercent"] >= 10.0 and "up to" in me["commissionText"]
+    assert me["commissionPercent"] >= 10.0 and "%" not in me["commissionText"]
 
     # A rate change later never touches this order.
     await api.put(f"{RC}/products/{rice}", json={"percentage": 1}, headers=boss.headers)

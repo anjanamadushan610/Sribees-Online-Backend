@@ -178,7 +178,8 @@ def test_a_bad_stored_setting_falls_back(raw):
 
 def test_offer_text_is_written_by_the_server_in_the_callers_language():
     assert offer_text(D("5.00"), audience="partner", accept_language=None) == (
-        "Earn up to 5% on selected products your customers buy."
+        "Earn commission on selected products your customers buy."
     )
-    assert "2.5%" in offer_text(D("2.50"), audience="friend", accept_language="si")
+    si = offer_text(D("2.50"), audience="friend", accept_language="si")
+    assert "කොමිස්" in si and "%" not in si, "no rate is shown: it differs per product"
     assert "None are on offer" in offer_text(D("0"), audience="friend", accept_language="en")
