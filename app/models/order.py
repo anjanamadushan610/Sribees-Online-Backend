@@ -150,6 +150,9 @@ class Order(Base):
     # They are equal at checkout; they differ only if a booking had to re-quote
     # after the hold lapsed, which is the number finance needs to see.
     courier_quote_amount = Column(Numeric(10, 2), nullable=True)
+    # 'branch' or 'customer' when free delivery waived the charge; the amount
+    # waived is then in referral_delivery_discount, finance's subsidy figure.
+    free_delivery_source = Column(String(10), nullable=True)
     referral_delivery_discount = Column(Numeric(10, 2), nullable=False, default=0, server_default="0")
     courier_quote_confirmed_at = Column(DateTime(timezone=True), nullable=True)
     courier_shipment_id = Column(String(64), nullable=True)

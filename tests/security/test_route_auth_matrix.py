@@ -29,6 +29,8 @@ pytestmark = pytest.mark.security
 # webhooks, and the static app-config the app reads on its splash screen.
 PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/health"),
+    # The offer popup after the first-run tour: a guest sees it too.
+    ("GET", "/api/v1/free-delivery/welcome"),
     ("GET", "/api"),
     ("GET", "/.well-known/assetlinks.json"),
     # The iOS twin of assetlinks: Universal Links for the same /p/ links.
