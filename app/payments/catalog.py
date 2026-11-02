@@ -105,8 +105,6 @@ METHODS: tuple[MethodSpec, ...] = (
         option="PAY_BY_BANK_ACCOUNT",
         name="Bank Transfer",
         description="Pay straight from your bank account",
-        # Off (owner, 2026-09-28): not working on our Marx account yet.
-        offered=False,
     ),
 )
 
