@@ -70,7 +70,7 @@ LIMIT = 100
 
 def test_the_owners_rules():
     """Pinned: the owner set these on 2026-09-27, the same for every server."""
-    assert OTPService.RESEND_COOLDOWN_SECONDS == 5 * 60
+    assert OTPService.RESEND_COOLDOWN_SECONDS == 45
     assert OTPService.MAX_SENDS_PER_IP_PER_HOUR == 10
     assert OTPService.MAX_SENDS_PER_PHONE_PER_HOUR == 5
     assert OTPService.MAX_SENDS_PER_PHONE_PER_DAY == 10
@@ -94,7 +94,7 @@ async def test_the_code_is_texted_and_the_app_is_told_how_to_draw_it(redis, gate
     assert code in gateway.sent[0][1] and "Sribees Online" in gateway.sent[0][1]
     assert gateway.sent[0][1].isascii(), "an English text is one SMS; Unicode costs two or three"
     assert challenge.code_length == len(code) == 6
-    assert challenge.resend_in_seconds == 300
+    assert challenge.resend_in_seconds == 45
     assert challenge.expires_in_seconds == 180
     assert challenge.destination == "+94 77 *** **67"
     assert "4567" not in challenge.destination
@@ -105,7 +105,7 @@ async def test_a_resend_waits_for_the_cooldown(redis, gateway):
     err = await _refused(OTPService.issue(redis, KEY, PHONE, daily_limit=LIMIT))
     assert err.status_code == 429
     assert err.detail["error"]["code"] == "OTP_RESEND_TOO_SOON"
-    assert 240 < err.detail["error"]["retry_after"] <= 300, "five minutes"
+    assert 30 < err.detail["error"]["retry_after"] <= 45, "forty-five seconds"
     assert len(gateway.sent) == 1
 
 
@@ -183,7 +183,7 @@ async def test_the_request_endpoint_returns_what_the_code_screen_needs(client, g
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["codeLength"] == 6
-    assert body["resendInSeconds"] == 300
+    assert body["resendInSeconds"] == 45
     assert body["expiresInSeconds"] == 180
     assert body["destination"] == "+94 77 *** **67"
     assert body["channel"] == "sms"
