@@ -15,6 +15,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -22,6 +23,7 @@ from app.core.dependencies import BranchScope, inject_branch_filter, require_per
 from app.models.branch import Branch
 from app.models.product import BranchInventory, Product
 from app.schemas.inventory import BranchOverrideCreate, InventoryUpdateRequest
+from app.services import branch_cashback
 from app.services.product_service import ProductService
 from app.services.referral_commission.rate_admin import describe_rates
 
@@ -143,6 +145,9 @@ async def list_inventory(
             "scope": {
                 "is_super_admin": scope.is_super_admin,
                 "branch_id": str(effective_branch) if effective_branch else None,
+                **branch_cashback.describe(
+                    scope.role, await branch_cashback.branch_max_percent(db)
+                ),
             },
         },
     }
@@ -241,6 +246,19 @@ async def stock_product_in_branch(
         )
 
     overrides = body.model_dump(exclude={"product_id", "branch_id"})
+    # Checked against what the upsert will really write: an unset cashback is
+    # None here, which clears a stocked row's rate.
+    existing = (
+        await db.execute(
+            select(BranchInventory.cashback_percentage).where(
+                BranchInventory.product_id == body.product_id,
+                BranchInventory.branch_id == effective_branch,
+            )
+        )
+    ).first()
+    await branch_cashback.guard(
+        db, scope.role, overrides, current=existing[0] if existing else None
+    )
     inv, created = await ProductService.upsert_branch_override(
         db,
         product_id=body.product_id,
@@ -311,11 +329,9 @@ async def update_inventory(
             detail=f"Cannot set stock below reserved count of {new_reserved}. Resolve pending orders first.",
         )
 
-    updated = await ProductService.update_inventory_row(
-        db,
-        inv,
-        **body.model_dump(exclude_unset=True, exclude={"reserved_quantity"}),
-    )
+    fields = body.model_dump(exclude_unset=True, exclude={"reserved_quantity"})
+    await branch_cashback.guard(db, scope.role, fields, current=inv.cashback_percentage)
+    updated = await ProductService.update_inventory_row(db, inv, **fields)
     logger.info(f"[admin] Inventory {inventory_id} updated in branch {inv.branch_id}")
 
     return {
