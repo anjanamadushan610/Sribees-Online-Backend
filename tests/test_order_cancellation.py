@@ -227,9 +227,10 @@ def test_a_wallet_paid_order_still_pays_the_delivery_charge():
     """The fee is charged against everything paid, not just the card portion.
     Shrinking only the gateway refund would let a wallet-paid customer cancel
     a booked parcel for free."""
+    # total_amount is net of the wallet: an order the wallet paid in full has nothing left.
     order = _order(
         status=OrderStatus.READY_FOR_PICKUP.value,
-        total_amount=Decimal("2000"),
+        total_amount=Decimal("0"),
         wallet_deduction=Decimal("2000"),
         shipping_amount=Decimal("350"),
     )
@@ -245,13 +246,15 @@ def test_a_card_payment_is_owed_back_in_full():
     assert OrderService.gateway_paid_amount(_order()) == Decimal("5000.00")
 
 
-def test_the_wallet_portion_is_not_counted_twice():
-    """_reverse_order_financials already returns wallet_deduction, so this
-    must be the REMAINDER or the customer is refunded more than they paid."""
-    order = _order(total_amount=Decimal("5000"), wallet_deduction=Decimal("1500"))
+def test_card_and_wallet_together_return_everything_paid():
+    """A Rs 5,000 order with Rs 1,500 from the wallet: total_amount is the Rs 3,500
+    the card was charged (it is net of the wallet). The card part comes back in
+    full and the wallet part separately -- Rs 5,000 in all. Subtracting the wallet
+    from total_amount again once kept Rs 1,500 of every such cancelled order."""
+    order = _order(total_amount=Decimal("3500"), wallet_deduction=Decimal("1500"))
     assert OrderService.gateway_paid_amount(order) == Decimal("3500")
-    # The two together are the full total, which is what is owed.
     assert OrderService.gateway_paid_amount(order) + order.wallet_deduction == Decimal("5000")
+    assert OrderService.cancellation_refund_preview(order) == Decimal("5000")
 
 
 def test_a_cod_order_refunds_nothing():
@@ -274,15 +277,15 @@ def test_an_unpaid_gateway_order_refunds_nothing():
     assert OrderService.gateway_paid_amount(order) == Decimal("0")
 
 
-def test_a_wallet_larger_than_the_total_never_goes_negative():
+def test_a_negative_total_never_becomes_a_debit():
     """A credit of a negative amount would DEBIT the customer on a
     cancellation -- taking money for cancelling."""
-    order = _order(total_amount=Decimal("1000"), wallet_deduction=Decimal("1500"))
+    order = _order(total_amount=Decimal("-1"), wallet_deduction=Decimal("1500"))
     assert OrderService.gateway_paid_amount(order) == Decimal("0")
 
 
 def test_a_fully_wallet_paid_order_owes_nothing_extra():
-    order = _order(total_amount=Decimal("2000"), wallet_deduction=Decimal("2000"))
+    order = _order(total_amount=Decimal("0"), wallet_deduction=Decimal("2000"))
     assert OrderService.gateway_paid_amount(order) == Decimal("0")
 
 

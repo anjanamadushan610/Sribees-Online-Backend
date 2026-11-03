@@ -106,6 +106,53 @@ async def test_an_online_order_is_placed_only_when_the_money_arrives(
     assert listed["show_delivery_code"] is True and listed["delivery_verification_code"]
 
 
+async def test_a_card_and_wallet_order_cancelled_gives_back_everything_paid(
+        api, db, app_redis, world, make_customer, make_product, fake_courier, marx):
+    """Rs 1,000 of goods + delivery, Rs 300 from the wallet, the rest by card. Cancelled
+    before booking, the wallet must end where it started plus the card part: the
+    wallet part used to be kept (total_amount is already net of the wallet)."""
+    from decimal import Decimal
+
+    from app.models.wallet import WalletTransactionType
+    from app.services.wallet_service import WalletService
+
+    customer = await make_customer()
+    await WalletService.apply_transaction(db, user_id=customer.user_id, tx_type=WalletTransactionType.REFUND,
+                                          amount=Decimal("300"), title="ZZ credit")
+    await db.commit()
+    product = await make_product(price="500.00", stock=10)
+    r = await api.patch("/api/v1/auth/me", json={"email": f"zz.{uuid.uuid4().hex[:8]}@sribees-ci.lk"},
+                        headers=customer.headers)
+    await app_redis.setex(RedisKeys.branch_context(str(customer.user_id)), 600,
+                          json.dumps({"branch_id": str(world.branch_id), "branch_name": "ZZ"}))
+    await api.post("/api/v1/cart/items", json={"product_id": str(product), "quantity": 2, "price": "1",
+                                               "name": "ZZ"}, headers=customer.headers)
+    r = await api.post("/api/v1/orders", json={
+        "delivery_address_id": str(customer.address_id), "contact_phone": customer.phone,
+        "alternate_phone": "+94719999999", "payment_method": "MARX_OTHER",
+        "use_wallet": True, "wallet_amount": "300"}, headers=customer.headers)
+    assert r.status_code == 201, r.text
+    order = r.json()["data"]
+    action = order["payment_action"]
+    tr_id = action["url"].rsplit("/", 1)[1]
+    r = await api.post(action["complete_path"].replace("/payments", "/api/v1/payments", 1),
+                       json={"return_url": _came_back(action, tr_id, order["order_number"])},
+                       headers=customer.headers)
+    assert r.json()["data"]["outcome"] == "paid", r.text
+    card = Decimal(str(order["total_amount"]))   # what the card was charged
+    assert Decimal(str(order["wallet_deduction"])) == Decimal("300")
+
+    async def wallet() -> Decimal:
+        from tests.integration.test_order_lifecycle import _balance
+
+        return Decimal(str(_balance(await api.get("/api/v1/wallet", headers=customer.headers))))
+
+    assert await wallet() == Decimal("0")
+    r = await api.post(f"/api/v1/orders/{order['order_id']}/cancel", headers=customer.headers)
+    assert r.status_code == 200, r.text
+    assert await wallet() == card + Decimal("300"), "the card part and the wallet part both come back"
+
+
 async def test_a_declined_payment_can_be_paid_again_from_the_order(
         api, db, app_redis, world, make_customer, make_product, fake_courier, marx):
     customer = await make_customer()

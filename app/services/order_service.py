@@ -1829,11 +1829,12 @@ class OrderService:
         """
         What the customer paid with a card, and is therefore owed back.
 
-        The wallet portion is refunded separately by
-        :meth:`_reverse_order_financials`, so this is deliberately the
-        REMAINDER -- together they return the full order total, which is what
-        a customer who cancelled before we booked a courier is owed. We have
-        incurred nothing at that point.
+        ``total_amount`` is already net of the wallet (PricingService.quote:
+        total = gross - wallet_deduction), and it is exactly what the gateway
+        charged. The wallet portion is refunded separately by
+        :meth:`_reverse_order_financials`; together they return everything the
+        customer paid. Subtracting the wallet here again (as this once did)
+        kept the wallet part of every card + wallet order that was cancelled.
 
         Zero unless the money actually arrived: a COD order is unpaid until
         the rider collects it, and an abandoned gateway order never reached
@@ -1843,7 +1844,7 @@ class OrderService:
             return Decimal("0")
         if (order.payment_method or "").upper() == PaymentMethodEnum.COD.value:
             return Decimal("0")
-        paid = (order.total_amount or Decimal("0")) - (order.wallet_deduction or Decimal("0"))
+        paid = order.total_amount or Decimal("0")
         return paid if paid > 0 else Decimal("0")
 
     # Cancelling has three states, not two, and the middle one is the point.

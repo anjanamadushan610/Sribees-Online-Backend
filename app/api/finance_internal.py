@@ -147,11 +147,13 @@ async def finance_totals(
     for branch_id, method, total, wallet, subsidy in delivered:
         r = rows[key(branch_id)]
         r["delivered_count"] += 1
-        r["delivered_total"] += total or 0
+        # total_amount is what was left to pay after the wallet; the order's value
+        # is that plus the wallet part, and on a COD order the rider collects the total.
+        r["delivered_total"] += (total or 0) + (wallet or 0)
         if subsidy:
             r["referral_delivery_subsidy"] = r.get("referral_delivery_subsidy", Decimal("0")) + subsidy
         if (method or "").upper() == "COD":
-            r["cod"] += (total or 0) - (wallet or 0)
+            r["cod"] += total or 0
 
     paid = await db.execute(
         select(Order.branch_id, func.sum(PaymentAttempt.amount))
