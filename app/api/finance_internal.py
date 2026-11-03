@@ -415,6 +415,51 @@ async def finance_catalog(
         for p in (await db.execute(select(Product))).scalars()]}
 
 
+@router.get("/cod-remittances")
+async def finance_cod_remittances(
+    limit: int = Query(default=50, ge=1, le=200),
+    _: None = Depends(require_finance_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """SribeesExpress's COD remittances, each with the orders it settles, for
+    Finance to match COD order by order: what was collected for each, the delivery
+    charge Express kept back for it, and the net paid. Also Express's own figure for
+    COD collected and not yet remitted. Read from SribeesExpress through our own
+    courier credentials (Finance holds none)."""
+    from app.services.courier_service import CourierService
+
+    try:
+        runs = await CourierService.list_remittances(limit=limit)
+        balance = await CourierService.get_cod_balance()
+    except Exception as exc:  # noqa: BLE001 -- an outage is reported, not raised
+        raise HTTPException(status_code=502, detail=f"SribeesExpress could not be read: {exc}")
+    out = []
+    for run in runs:
+        shipments = await CourierService.get_remittance_shipments(run["id"])
+        waybills = [s["shipment_id"] for s in shipments]
+        orders = dict((await db.execute(
+            select(Order.courier_shipment_id, Order.order_id).where(Order.courier_shipment_id.in_(waybills))
+        )).all()) if waybills else {}
+        out.append({
+            "remittance_id": run["id"], "status": run.get("status"),
+            "gross": str(run.get("gross_cod_amount")), "deductions": str(run.get("deductions_amount")),
+            "net": str(run.get("net_amount")), "bank_reference": run.get("bank_reference"),
+            "created_at": run.get("created_at"), "paid_at": run.get("paid_at"),
+            "shipments": [{
+                "shipment_id": s["shipment_id"],
+                "order_id": str(orders[s["shipment_id"]]) if s["shipment_id"] in orders else None,
+                "order_number": s.get("merchant_order_ref"),
+                "collected": str((s.get("cod") or {}).get("amount") or 0),
+                "charge": str(s.get("amount_lkr") or 0),
+            } for s in shipments],
+        })
+    return {"remittances": out, "express_balance": {
+        "collected_not_remitted": str(balance.get("collected_not_remitted")),
+        "shipment_count": balance.get("shipment_count"),
+        "oldest_collection_at": balance.get("oldest_collection_at"),
+    }}
+
+
 class StockLevelIn(BaseModel):
     branch_id: str = Field(min_length=36, max_length=36)
     product_id: str = Field(min_length=36, max_length=36)

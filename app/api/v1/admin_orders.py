@@ -20,6 +20,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -48,7 +49,7 @@ from app.schemas.order import (
     ReturnNoteRequest,
     UpdateOrderStatusRequest,
 )
-from app.services import courier_sync_service, order_workflow
+from app.services import courier_sync_service, order_workflow, partial_delivery
 from app.services.invoice_service import InvoiceService
 from app.services.notification_service import NotificationService
 from app.services.order_service import OrderService, resolve_recipient_name
@@ -412,6 +413,17 @@ def _courier_block(order: Order, *, branch_pickup_registered: bool = False) -> d
             else None
         ),
         "remittance_id": order.courier_remittance_id,
+        # Partial delivery: the rider collected less than the total, so some items
+        # came back. Recorded once the goods are at the shop (POST .../undelivered-items).
+        "cod_shortfall": (
+            float(partial_delivery.cod_shortfall(order))
+            if partial_delivery.cod_shortfall(order) is not None
+            else None
+        ),
+        "undelivered_items": order.undelivered_items,
+        "undelivered_recorded_at": (
+            order.undelivered_recorded_at.isoformat() if order.undelivered_recorded_at else None
+        ),
         "failure_note": order.courier_failure_note,
         "will_retry": order.courier_will_retry,
         "can_request_pickup": (
@@ -1226,6 +1238,47 @@ async def get_courier_label(
             "requires_handover_code": bool(order.courier_handover_required),
             "tracking_url": order.courier_tracking_url,
         },
+    }
+
+
+class UndeliveredItem(BaseModel):
+    order_item_id: UUID
+    quantity: int = Field(..., ge=1)
+
+
+class UndeliveredItemsIn(BaseModel):
+    items: list[UndeliveredItem] = Field(..., min_length=1)
+
+
+@router.post("/{order_id}/undelivered-items", response_model=dict)
+async def record_undelivered_items(
+    order_id: UUID,
+    body: UndeliveredItemsIn,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(require_permission("orders", "update")),
+):
+    """A partially delivered COD order: record the items the customer refused, once
+    they are back at the shop. Their stock goes back on the shelf and Finance takes
+    the sale off. No refund: the customer paid only for what they took."""
+    order = await _load_scoped_order(db, order_id, scope)
+    try:
+        await partial_delivery.record(
+            db, order, [i.model_dump(mode="json") for i in body.items])
+    except partial_delivery.PartialDeliveryError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    order = await _load_scoped_order(db, order_id, scope)
+    branch_name = await _branch_name(db, order.branch_id)
+    return {
+        "success": True,
+        "data": {
+            "order": _format_order_detail(order, branch_name),
+            "courier": _courier_block(
+                order,
+                branch_pickup_registered=await _branch_pickup_registered(db, order.branch_id),
+            ),
+        },
+        "message": "Undelivered items recorded; their stock is back on the shelf.",
     }
 
 
