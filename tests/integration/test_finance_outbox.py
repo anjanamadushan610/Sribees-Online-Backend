@@ -235,6 +235,26 @@ async def test_daily_totals_for_reconciliation(api, world, make_customer, make_p
     assert (await api.get("/internal/finance/totals", params={"day": today})).status_code == 401
 
 
+async def test_stock_compare_for_the_parallel_run(api, world, make_customer, make_product, place_order):
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    product = await make_product(stock=40)
+    await place_order(await make_customer(), product, 3)
+    r = await api.put("/internal/finance/stock-levels", headers=auth, json={"levels": [{
+        "branch_id": str(world.branch_id), "product_id": str(product), "sellable_qty": "40",
+        "unit": "each", "version": 1}]})
+    assert r.status_code == 200, r.text
+
+    r = await api.get("/internal/finance/stock-compare", headers=auth)
+    assert r.status_code == 200, r.text
+    rows = {(x["branch_id"], x["product_id"]): x for x in r.json()["rows"]}
+    mine = rows[(str(world.branch_id), str(product))]
+    # Placed, not dispatched: Online has taken 3 off already, Finance has not.
+    assert mine["committed"] == 3
+    assert mine["finance_qty"] == "40.000" and mine["finance_unit"] == "each"
+    assert mine["name"]
+    assert (await api.get("/internal/finance/stock-compare")).status_code == 401
+
+
 async def test_stock_levels_are_recorded_but_change_nothing_in_the_shop(api, db, world, make_product):
     import uuid as _uuid
 

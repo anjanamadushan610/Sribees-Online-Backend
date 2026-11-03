@@ -36,13 +36,14 @@ from app.config.database import get_db
 from app.config.settings import settings
 from app.models.branch import Branch
 from app.models.finance_outbox import FinanceOutbox, FinanceStockLevel
-from app.models.order import Order
+from app.models.order import Order, OrderItem
 from app.models.partner_wallet import (
     PartnerWallet,
     PartnerWalletEntry,
     PartnerWithdrawal,
 )
 from app.models.payment import PaymentAttempt, PaymentAttemptStatus
+from app.models.product import BranchInventory, Product
 from app.models.referral import ReferralCommission, ReferralCommissionStatus
 from app.models.wallet import Wallet, WalletTransaction
 
@@ -291,6 +292,48 @@ async def finance_opening_snapshot(
         "orders": orders,
         "open_orders_before_cutoff": older_open,
     }
+
+
+# Placed (stock already taken off branch_inventory) but the goods have not left yet.
+PLACED_NOT_SENT = ("awaiting_payment", "pending", "confirmed", "processing", "packing", "packed",
+                   "ready_for_pickup")
+
+
+@router.get("/stock-compare")
+async def finance_stock_compare(
+    _: None = Depends(require_finance_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """For Finance's parallel run: per branch and product, the shop's stock, what is
+    placed but not yet dispatched (Online took it off at placing, Finance takes it
+    off at dispatch), and the sellable quantity Finance last pushed."""
+    now = (await db.execute(select(func.now()))).scalar_one()
+    rows: dict[tuple, dict] = {}
+
+    def row(branch_id, product_id) -> dict:
+        return rows.setdefault((branch_id, product_id), {
+            "branch_id": str(branch_id), "product_id": str(product_id), "online_stock": 0,
+            "committed": 0, "finance_qty": None, "finance_unit": None, "finance_at": None})
+
+    for b, p, qty in await db.execute(
+            select(BranchInventory.branch_id, BranchInventory.product_id, BranchInventory.stock_quantity)):
+        row(b, p)["online_stock"] = int(qty or 0)
+    for b, p, qty in await db.execute(
+            select(Order.branch_id, OrderItem.product_id, func.sum(OrderItem.quantity))
+            .join(Order, Order.order_id == OrderItem.order_id)
+            .where(Order.status.in_(PLACED_NOT_SENT), Order.branch_id.is_not(None))
+            .group_by(Order.branch_id, OrderItem.product_id)):
+        row(b, p)["committed"] = int(qty or 0)
+    for lv in (await db.execute(select(FinanceStockLevel))).scalars():
+        r = row(lv.branch_id, lv.product_id)
+        r.update(finance_qty=f"{lv.sellable_qty:f}", finance_unit=lv.unit,
+                 finance_at=lv.received_at.isoformat())
+    names = {pid: (name, sku) for pid, name, sku in await db.execute(
+        select(Product.product_id, Product.name, Product.sku)
+        .where(Product.product_id.in_({p for _, p in rows})))} if rows else {}
+    for (_, p), r in rows.items():
+        r["name"], r["sku"] = names.get(p, (None, None))
+    return {"as_of": now.isoformat(), "rows": list(rows.values())}
 
 
 class StockLevelIn(BaseModel):
