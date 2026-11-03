@@ -142,6 +142,53 @@ async def test_wallet_paid_order_cancelled(api, db, world, make_customer, make_p
     assert loose and loose[-1]["payload"]["reason"] is None
 
 
+async def test_opening_snapshot_for_go_live(api, db, world, make_customer, make_product, place_order,
+                                            make_admin, fake_courier, app_redis):
+    from app.config.redis import RedisKeys
+    from app.models.wallet import WalletTransactionType
+    from app.services.wallet_service import WalletService
+
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    # One order paid partly from the wallet and still open; one delivered.
+    customer = await make_customer()
+    await WalletService.apply_transaction(db, user_id=customer.user_id, tx_type=WalletTransactionType.REFUND,
+                                          amount=Decimal("300"), title="ZZ credit")
+    await db.commit()
+    product = await make_product(price="250.00")
+    await app_redis.setex(RedisKeys.branch_context(str(customer.user_id)), 600,
+                          json.dumps({"branch_id": str(world.branch_id), "branch_name": "ZZ"}))
+    await api.post("/api/v1/cart/items", json={"product_id": str(product), "quantity": 2, "price": "250",
+                                               "name": "ZZ"}, headers=customer.headers)
+    r = await api.post("/api/v1/orders", json={
+        "delivery_address_id": str(customer.address_id), "contact_phone": customer.phone,
+        "alternate_phone": "+94719999999", "payment_method": "COD", "use_wallet": True, "wallet_amount": "200"},
+        headers=customer.headers)
+    assert r.status_code == 201, r.text
+    open_id = r.json()["data"]["order_id"]
+    _, done, _, _ = await _delivered(api, make_customer, make_product, place_order, make_admin, fake_courier)
+
+    r = await api.get("/internal/finance/opening-snapshot", params={"cutoff": "2026-01-01"}, headers=auth)
+    assert r.status_code == 200, r.text
+    snap = r.json()
+    assert snap["seq"] == max(e["seq"] for e in await _events(api))
+    assert all(n <= snap["seq"] for n in snap["missing"])
+    assert all(c["seq"] > snap["missing"][0] for c in snap["counted_after_gap"])
+    assert str(world.branch_id) in {b["branch_id"] for b in snap["branches"]}
+    orders = {o["order_id"]: o for o in snap["orders"]}
+    assert orders[open_id]["advance"] == "200.00"
+    assert orders[open_id]["delivered"] is False and orders[open_id]["dispatched"] is False
+    assert orders[open_id]["branch_id"] == str(world.branch_id)
+    assert orders[done["order_id"]]["delivered"] is True and orders[done["order_id"]]["dispatched"] is True
+    assert Decimal(snap["customer_wallets"]["total"]) >= Decimal("100.00")  # this customer's 300 - 200
+
+    # Orders before the cut-off are tests: left out, and only counted when still open.
+    later = (await api.get("/internal/finance/opening-snapshot", params={"cutoff": "2999-01-01"},
+                           headers=auth)).json()
+    assert later["orders"] == [] and later["open_orders_before_cutoff"] >= 1
+    assert (await api.get("/internal/finance/opening-snapshot",
+                          params={"cutoff": "2026-01-01"})).status_code == 401
+
+
 async def test_nothing_is_written_while_switched_off(api, monkeypatch, make_customer, make_product, place_order):
     from app.config.settings import settings
 
