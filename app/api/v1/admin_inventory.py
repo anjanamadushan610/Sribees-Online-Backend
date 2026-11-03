@@ -246,8 +246,6 @@ async def stock_product_in_branch(
         )
 
     overrides = body.model_dump(exclude={"product_id", "branch_id"})
-    # Checked against what the upsert will really write: an unset cashback is
-    # None here, which clears a stocked row's rate.
     existing = (
         await db.execute(
             select(BranchInventory.cashback_percentage).where(
@@ -256,6 +254,12 @@ async def stock_product_in_branch(
             )
         )
     ).first()
+    if existing:
+        # Already stocked: write only what the caller sent. The schema's
+        # defaults (no discount, no cashback, hidden, threshold 10) are for a
+        # new row -- applied to a stocked one they wiped the branch's settings
+        # each time the Price app changed a price.
+        overrides = {k: v for k, v in overrides.items() if k in body.model_fields_set}
     await branch_cashback.guard(
         db, scope.role, overrides, current=existing[0] if existing else None
     )
