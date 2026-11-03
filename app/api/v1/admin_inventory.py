@@ -15,6 +15,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -290,6 +291,71 @@ async def stock_product_in_branch(
             else "Branch override updated successfully"
         ),
     }
+
+
+class CashbackUpdate(BaseModel):
+    cashback_percentage: Optional[float] = Field(
+        ..., ge=0, le=100, description="This branch's cashback %. Null falls back to the product's."
+    )
+    branch_id: Optional[UUID] = Field(None, description="Super Admin only; others use their own branch.")
+
+
+async def _cashback_view(db: AsyncSession, scope: BranchScope, product_id: UUID, branch_id: Optional[UUID]):
+    """One product's cashback in one branch, for the Sribees Price app."""
+    effective_branch = scope.resolve(branch_id)
+    if effective_branch is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Specify branch_id.")
+    row = (
+        await db.execute(
+            select(BranchInventory, Product)
+            .join(Product, Product.product_id == BranchInventory.product_id)
+            .where(BranchInventory.product_id == product_id, BranchInventory.branch_id == effective_branch)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This branch does not stock the product.")
+    return row[0], row[1]
+
+
+def _cashback_data(inv: BranchInventory, product: Product, scope: BranchScope, cap) -> dict:
+    return {
+        "product_id": str(product.product_id),
+        "branch_id": str(inv.branch_id),
+        "cashback_percentage": inv.cashback_percentage,
+        "global_cashback_percentage": product.cashback_percentage,
+        "effective_cashback": ProductService.compute_effective_data(product, inv)["effective_cashback"],
+        **branch_cashback.describe(scope.role, cap),
+    }
+
+
+@router.get("/cashback/{product_id}", response_model=dict)
+async def get_branch_cashback(
+    product_id: UUID,
+    branch_id: Optional[UUID] = Query(None, description="Super Admin only"),
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """A product's cashback in a branch: the override, the product's rate, and what customers earn."""
+    inv, product = await _cashback_view(db, scope, product_id, branch_id)
+    cap = await branch_cashback.branch_max_percent(db)
+    return {"success": True, "data": _cashback_data(inv, product, scope, cap)}
+
+
+@router.put("/cashback/{product_id}", response_model=dict)
+async def set_branch_cashback(
+    product_id: UUID,
+    body: CashbackUpdate,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """Set or clear a branch's cashback (Branch Manager / Super Admin, capped)."""
+    inv, product = await _cashback_view(db, scope, product_id, body.branch_id)
+    fields = {"cashback_percentage": body.cashback_percentage}
+    await branch_cashback.guard(db, scope.role, fields, current=inv.cashback_percentage)
+    inv = await ProductService.update_inventory_row(db, inv, **fields)
+    logger.info(f"[admin] cashback {body.cashback_percentage} for product {product_id} branch {inv.branch_id}")
+    cap = await branch_cashback.branch_max_percent(db)
+    return {"success": True, "data": _cashback_data(inv, product, scope, cap)}
 
 
 @router.put("/{inventory_id}", response_model=dict,

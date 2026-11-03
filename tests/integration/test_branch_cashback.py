@@ -8,6 +8,8 @@ other settings.
 """
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import select
 
 INV = "/api/v1/admin/inventory"
@@ -95,3 +97,34 @@ async def test_a_price_change_keeps_the_branchs_other_settings(
     assert (row.cashback_percentage, row.discount_percentage, row.is_on_sale, row.low_stock_threshold) == (
         2, 10, True, 3,
     )
+
+
+async def test_the_price_app_reads_and_sets_cashback_by_product(
+    api, db, world, make_product, make_admin
+):
+    boss = await make_admin("super_admin", api=api)
+    manager = await make_admin("branch_manager", api=api)
+    stock_keeper = await make_admin("inventory_manager", api=api)
+    pid = await make_product(price="300.00")
+    url = f"{INV}/cashback/{pid}"
+
+    r = await api.get(url, headers=stock_keeper.headers)
+    assert r.status_code == 200 and r.json()["data"]["can_edit_cashback"] is False, r.text
+    r = await api.put(url, json={"cashback_percentage": 3}, headers=stock_keeper.headers)
+    assert r.status_code == 403, r.text
+
+    r = await api.put(url, json={"cashback_percentage": 30.5}, headers=manager.headers)
+    assert r.status_code == 400, r.text
+    r = await api.put(url, json={"cashback_percentage": 3}, headers=manager.headers)
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert (data["cashback_percentage"], data["effective_cashback"], data["can_edit_cashback"]) == (3, 3, True)
+
+    # A Super Admin names the branch; clearing falls back to the product's rate.
+    r = await api.put(url, json={"cashback_percentage": None}, headers=boss.headers)
+    assert r.status_code == 400, r.text
+    r = await api.put(url, json={"cashback_percentage": None, "branch_id": str(world.branch_id)}, headers=boss.headers)
+    assert r.status_code == 200 and r.json()["data"]["cashback_percentage"] is None, r.text
+
+    r = await api.get(f"{INV}/cashback/{uuid.uuid4()}", headers=manager.headers)
+    assert r.status_code == 404
