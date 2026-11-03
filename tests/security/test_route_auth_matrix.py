@@ -73,6 +73,7 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/internal/finance/totals"),
     ("GET", "/internal/finance/opening-snapshot"),
     ("GET", "/internal/finance/stock-compare"),
+    ("GET", "/internal/finance/catalog"),
     ("PUT", "/internal/finance/stock-levels"),
     # --- app bootstrap -------------------------------------------------------
     ("GET", "/api/v1/app/splash-config"),

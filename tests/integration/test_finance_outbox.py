@@ -249,7 +249,7 @@ async def test_stock_compare_for_the_parallel_run(api, world, make_customer, mak
     rows = {(x["branch_id"], x["product_id"]): x for x in r.json()["rows"]}
     mine = rows[(str(world.branch_id), str(product))]
     # Placed, not dispatched: Online has taken 3 off already, Finance has not.
-    assert mine["committed"] == 3
+    assert mine["committed"] == "3"
     assert mine["finance_qty"] == "40.000" and mine["finance_unit"] == "each"
     assert mine["name"]
     assert (await api.get("/internal/finance/stock-compare")).status_code == 401

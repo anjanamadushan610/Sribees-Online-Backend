@@ -360,6 +360,14 @@ class Settings(BaseSettings):
         default="",
         description="Comma-separated IPs/CIDRs allowed to call /internal/finance/* (empty = any peer).",
     )
+    finance_stock_authority: bool = Field(
+        default=False,
+        description=(
+            "Online's half of the stock switch: when on AND the owner has switched it on in "
+            "Sribees Finance, Finance's pushes set the shop's stock. Either half off = Online "
+            "keeps its own stock (the parallel run)."
+        ),
+    )
     courier_webhook_secret: str = Field(
         default="",
         description=(

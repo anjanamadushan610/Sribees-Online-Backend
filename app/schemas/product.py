@@ -151,6 +151,11 @@ class ProductCreate(BaseModel):
         False,
         description="Bought by weight; starts with the default weight options priced from `price` per kg",
     )
+    stock_mode: Literal["unit", "loose", "packed"] = Field(
+        "unit",
+        description="How branch stock is kept: unit, loose (grams) or packed (per weight). "
+                    "Only a product sold by weight can be loose or packed.",
+    )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None
     images: Optional[List[ProductImageCreate]] = Field(
@@ -220,6 +225,14 @@ class ProductUpdate(BaseModel):
     sold_by_weight: Optional[bool] = Field(
         None,
         description="Bought by weight; null leaves it unchanged",
+    )
+    stock_mode: Optional[Literal["unit", "loose", "packed"]] = Field(
+        None,
+        description=(
+            "How branch stock is kept: unit (count), loose (grams, a weight option takes its "
+            "weight), packed (a count per weight option). Changing it zeroes this product's "
+            "branch stock, which must then be counted in the new measure. Null leaves it unchanged."
+        ),
     )
     meta_title: Optional[str] = Field(None, max_length=255)
     meta_description: Optional[str] = None

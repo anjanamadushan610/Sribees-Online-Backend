@@ -685,56 +685,49 @@ class OrderService:
                     "This promotion has reached its budget and is no longer available."
                 )
 
-        # Deduct branch inventory
+        # Deduct branch inventory: units, grams of a loose product, or packs of a
+        # pre-packed size, under a row lock (app/services/stock_keeping.py).
         if branch_id:
-            from app.models.product import BranchInventory
+            from app.services import stock_keeping
             for item in order_items:
                 p_id = UUID(str(item["product_id"]))
-                res = await db.execute(
-                    select(BranchInventory).where(
-                        BranchInventory.branch_id == branch_id,
-                        BranchInventory.product_id == p_id
-                    )
-                )
-                inv = res.scalars().first()
-                if inv is not None:
-                    if inv.stock_quantity < item["quantity"]:
-                        # Read before the rollback: it expires inv, and touching
-                        # it afterwards is a lazy load that 500s the checkout.
-                        left = inv.stock_quantity
-                        await db.rollback()
-                        item_name = item.get("name") or item.get("product_name", "Product")
-                        if not data.is_buy_now:
-                            if left > 0:
-                                try:
-                                    await CartService.update_item_quantity(
-                                        user_id=str(user_id),
-                                        product_id=str(p_id),
-                                        quantity=left,
-                                        variant_id=item.get("variant_id")
-                                    )
-                                except Exception:
-                                    pass
-                                raise ValueError(
-                                    f"Stock changed for {item_name}. Only {left} available. Your cart has been updated."
+                try:
+                    await stock_keeping.take(db, branch_id, p_id, item.get("variant_id"),
+                                             int(item["quantity"]))
+                except stock_keeping.OutOfStock as short:
+                    left = short.left
+                    await db.rollback()
+                    item_name = item.get("name") or item.get("product_name", "Product")
+                    if not data.is_buy_now:
+                        if left > 0:
+                            try:
+                                await CartService.update_item_quantity(
+                                    user_id=str(user_id),
+                                    product_id=str(p_id),
+                                    quantity=left,
+                                    variant_id=item.get("variant_id")
                                 )
-                            else:
-                                try:
-                                    await CartService.remove_item(
-                                        user_id=str(user_id),
-                                        product_id=str(p_id),
-                                        variant_id=item.get("variant_id")
-                                    )
-                                except Exception:
-                                    pass
-                                raise ValueError(
-                                    f"{item_name} is currently out of stock and was removed from your cart."
-                                )
-                        else:
+                            except Exception:
+                                pass
                             raise ValueError(
-                                f"Only {left} available for {item_name}."
+                                f"Stock changed for {item_name}. Only {left} available. Your cart has been updated."
                             )
-                    inv.stock_quantity = max(0, inv.stock_quantity - item["quantity"])
+                        else:
+                            try:
+                                await CartService.remove_item(
+                                    user_id=str(user_id),
+                                    product_id=str(p_id),
+                                    variant_id=item.get("variant_id")
+                                )
+                            except Exception:
+                                pass
+                            raise ValueError(
+                                f"{item_name} is currently out of stock and was removed from your cart."
+                            )
+                    else:
+                        raise ValueError(
+                            f"Only {left} available for {item_name}."
+                        )
 
         # Whether each product may be returned, read from the catalog rather
         # than the cart payload (which the client wrote), and frozen onto the
@@ -1251,7 +1244,11 @@ class OrderService:
                 )
                 branch_inv = res.scalars().first()
                 if branch_inv is not None:
-                    available_stock = branch_inv.stock_quantity
+                    from app.services import stock_keeping
+
+                    # In this option's own measure (grams of a loose product become packs).
+                    available_stock = await stock_keeping.available(
+                        db, order.branch_id, item.product_id, item.variant_id) or 0
                     if branch_inv.branch_price is not None:
                         price = float(branch_inv.branch_price)
                     elif product.discount_price is not None:
@@ -2126,20 +2123,15 @@ class OrderService:
         """
         if previous_status not in OrderService._ON_THE_SHELF or order.branch_id is None:
             return
+        from app.services import stock_keeping
+
         rows = await db.execute(
-            select(OrderItem.product_id, func.sum(OrderItem.quantity))
+            select(OrderItem.product_id, OrderItem.variant_id, func.sum(OrderItem.quantity))
             .where(OrderItem.order_id == order.order_id)
-            .group_by(OrderItem.product_id)
+            .group_by(OrderItem.product_id, OrderItem.variant_id)
         )
-        for product_id, quantity in rows.all():
-            await db.execute(
-                BranchInventory.__table__.update()
-                .where(
-                    BranchInventory.__table__.c.branch_id == order.branch_id,
-                    BranchInventory.__table__.c.product_id == product_id,
-                )
-                .values(stock_quantity=BranchInventory.__table__.c.stock_quantity + quantity)
-            )
+        for product_id, variant_id, quantity in rows.all():
+            await stock_keeping.give_back(db, order.branch_id, product_id, variant_id, int(quantity))
 
     @staticmethod
     async def cancel_order(

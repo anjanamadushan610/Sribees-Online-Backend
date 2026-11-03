@@ -158,6 +158,7 @@ def _order_lines(session: Session, order: Order) -> list[dict]:
             OrderItem.product_name, OrderItem.product_sku, OrderItem.variant_name,
             OrderItem.quantity, OrderItem.unit_price, OrderItem.subtotal,
             OrderItem.coupon_discount, ProductVariant.weight_grams, Category.name.label("category"),
+            Product.stock_mode, ProductVariant.sku.label("variant_sku"),
         )
         .outerjoin(ProductVariant, ProductVariant.variant_id == OrderItem.variant_id)
         .outerjoin(Product, Product.product_id == OrderItem.product_id)
@@ -180,6 +181,10 @@ def _order_lines(session: Session, order: Order) -> list[dict]:
             "subtotal": _money(r.subtotal),
             "coupon_discount": _money(r.coupon_discount),
             "category": r.category,
+            # how the product keeps stock (unit / loose / packed); Finance takes the
+            # line from the product, its kilograms, or the pack size (migration 100)
+            "stock_mode": r.stock_mode or "unit",
+            "variant_sku": r.variant_sku,
         }
         for r in rows
     ]

@@ -125,7 +125,8 @@ def format_product(
         "is_perishable": bool(getattr(product, "is_perishable", False)),
         "price_review_level": getattr(product, "price_review_level", None),
         "sold_by_weight": bool(getattr(product, "sold_by_weight", False)),
-        "weight": float(product.weight) if getattr(product, "weight", None) is not None else None,
+        "stock_mode": getattr(product, "stock_mode", None) or "unit",
+        "weight":float(product.weight) if getattr(product, "weight", None) is not None else None,
         "weight_unit": getattr(product, "weight_unit", None) or "kg",
         "display_size": getattr(product, "display_size", None),
         "display_size_unit": getattr(product, "display_size_unit", None),
@@ -714,6 +715,15 @@ async def get_product(
         weight_options = (await weight_options_service.options_for(
             db, [product.product_id], branch_id
         )).get(str(product.product_id), [])
+        # How many of each weight the branch can still sell (null = not tracked there),
+        # so the app can grey out a size that has run out (stock_keeping.py).
+        from app.services import stock_keeping
+
+        for option in weight_options:
+            option["available"] = (
+                await stock_keeping.available(db, branch_id, product.product_id, option["variant_id"])
+                if branch_id else None
+            )
 
     return {
         "success": True,
