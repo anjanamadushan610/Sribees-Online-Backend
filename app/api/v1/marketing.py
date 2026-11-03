@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.core.dependencies import require_permission
 from app.models.branch import Branch
+from app.models.product import BranchInventory
 from app.schemas.product import BranchInventoryUpdateRequest
-from app.services import marketing_dashboard_service
+from app.services import branch_cashback, marketing_dashboard_service
 from app.services.product_service import ProductService
 
 router = APIRouter()
@@ -203,6 +204,17 @@ async def update_branch_inventory(
     branch_id = _resolve_branch_id(admin, branch_id)
 
     update_data = body.model_dump(exclude_unset=True)
+    current = (
+        await db.execute(
+            select(BranchInventory.cashback_percentage).where(
+                BranchInventory.product_id == product_id,
+                BranchInventory.branch_id == branch_id,
+            )
+        )
+    ).first()
+    await branch_cashback.guard(
+        db, admin.role, update_data, current=current[0] if current else None
+    )
     inv = await ProductService.update_branch_inventory(
         db,
         product_id=product_id,

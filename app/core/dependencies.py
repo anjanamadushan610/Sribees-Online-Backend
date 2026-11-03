@@ -385,10 +385,17 @@ class BranchScope:
       decisions. Everyone else is pinned to their assigned ``branch_id``.
     """
 
-    def __init__(self, is_super_admin: bool, is_unscoped: bool, branch_id: Optional[UUID]):
+    def __init__(
+        self,
+        is_super_admin: bool,
+        is_unscoped: bool,
+        branch_id: Optional[UUID],
+        role: Optional[str] = None,
+    ):
         self.is_super_admin = is_super_admin
         self.is_unscoped = is_unscoped
         self.branch_id = branch_id
+        self.role = role
 
     def resolve(self, requested_branch_id: Optional[UUID] = None) -> Optional[UUID]:
         """
@@ -433,7 +440,9 @@ async def inject_branch_filter(
             message="Your admin account is not assigned to a branch.",
         )
 
-    return BranchScope(is_super_admin=is_super, is_unscoped=is_unscoped, branch_id=admin.branch_id)
+    return BranchScope(
+        is_super_admin=is_super, is_unscoped=is_unscoped, branch_id=admin.branch_id, role=role
+    )
 
 
 # ============================================================================
