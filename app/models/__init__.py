@@ -28,7 +28,7 @@ from app.models.escalation import (
     EscalationStatus,
     OrderEscalation,
 )
-from app.models.finance_outbox import FinanceOutbox, FinanceStockLevel
+from app.models.finance_outbox import FinanceMinPrice, FinanceOutbox, FinanceStockLevel
 from app.models.free_delivery import FreeDeliveryBranchOffer, FreeDeliveryGrant
 from app.models.location import LocationDistrict, LocationProvince
 from app.models.loyalty import (
@@ -112,6 +112,7 @@ __all__ = [
     # Sribees Finance event feed
     "FinanceOutbox",
     "FinanceStockLevel",
+    "FinanceMinPrice",
     # Online payment tries
     "PaymentAttempt",
     "PaymentAttemptStatus",

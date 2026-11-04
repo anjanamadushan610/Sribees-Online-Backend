@@ -283,3 +283,73 @@ async def test_stock_levels_are_recorded_but_change_nothing_in_the_shop(api, db,
         BranchInventory.product_id == _uuid.UUID(str(product)),
         BranchInventory.branch_id == world.branch_id))).scalar_one_or_none()
     assert shop in (None, 40), "the shop still sells from its own stock"
+
+
+async def test_catalog_carries_branch_prices_rates_and_weight(api, db, world, make_product):
+    """Sribees Finance's minimum price needs what each item sells for in each branch
+    (before and after Quick Sale), the cashback and referral it carries, and its
+    weight -- worked out by checkout's own functions."""
+    import uuid as _uuid
+
+    from app.config.settings import settings
+    from app.models.product import Product, ProductVariant
+
+    rice = await make_product(price="250.00", discount=10, branch_price="260.00")
+    sugar = await make_product(price="300.00")
+    product = await db.get(Product, sugar)
+    product.stock_mode = "packed"
+    half = ProductVariant(product_id=sugar, name="500g", sku=f"ZZ500-{_uuid.uuid4().hex[:6]}",
+                          price=Decimal("150.00"), weight_grams=500, is_active=True)
+    db.add(half)
+    await db.commit()
+
+    r = await api.get("/internal/finance/catalog", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert r.status_code == 200, r.text
+    rows = {p["product_id"]: p for p in r.json()["products"]}
+    mine = rows[str(rice)]
+    assert mine["weight_kg"] == "1.000"
+    [here] = [b for b in mine["branch_prices"] if b["branch_id"] == str(world.branch_id)]
+    platform = f"{Decimal(str(settings.cashback_rate)) * 100:.2f}"
+    assert here == {"branch_id": str(world.branch_id), "price": "260.00", "effective_price": "234.00",
+                    "discount_pct": "10.00", "cashback_pct": platform, "referral_pct": "0.00"}
+    # A pre-packed product is priced per pack size, on the variant.
+    packed = rows[str(sugar)]
+    assert packed["branch_prices"] == []
+    [opt] = [v for v in packed["variants"] if v["variant_id"] == str(half.variant_id)]
+    [pack_here] = [b for b in opt["branch_prices"] if b["branch_id"] == str(world.branch_id)]
+    assert (pack_here["price"], pack_here["effective_price"]) == ("150.00", "150.00")
+
+
+async def test_min_prices_are_stored_newest_first_and_shown_to_the_branch(
+    api, db, world, make_product, make_admin
+):
+    rice = await make_product(price="250.00")
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+
+    def push(price, version, **extra):
+        return {"prices": [{"branch_id": str(world.branch_id), "product_id": str(rice),
+                            "min_price": price, "ready_cost": "228.66", "margin_pct": "10.00",
+                            "cashback_pct": "0.50", "referral_pct": "0.50",
+                            "cost_ref": "RPK-000002 (2026-10-17)", "version": version, **extra}]}
+
+    r = await api.put("/internal/finance/min-prices", json=push("257.00", 3), headers=auth)
+    assert r.status_code == 200 and r.json() == {"received": 1, "stored": 1}
+    stale = await api.put("/internal/finance/min-prices", json=push("999.00", 2), headers=auth)
+    assert stale.json()["stored"] == 0, "an older push never overwrites a newer one"
+    assert (await api.put("/internal/finance/min-prices", json=push("1.00", 9))).status_code == 401
+
+    manager = await make_admin("branch_manager", api=api)
+    hdr = {"Authorization": f"Bearer {manager.token}"}
+    r = await api.get("/api/v1/admin/inventory/price-floors", headers=hdr,
+                      params={"product_ids": str(rice)})
+    assert r.status_code == 200, r.text
+    [floor] = r.json()["data"]["floors"][str(rice)]
+    assert floor["min_price"] == "257.00" and floor["ready_cost"] == "228.66"
+    assert floor["cost_ref"] == "RPK-000002 (2026-10-17)"
+    # Advice only: the shop's price is untouched.
+    from app.models.product import Product
+
+    assert (await db.get(Product, rice)).price == Decimal("250.00")
+    bad = await api.get("/api/v1/admin/inventory/price-floors", headers=hdr,
+                        params={"product_ids": "not-an-id"})
+    assert bad.status_code == 400

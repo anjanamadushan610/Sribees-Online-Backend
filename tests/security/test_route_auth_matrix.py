@@ -76,6 +76,7 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/internal/finance/catalog"),
     ("GET", "/internal/finance/cod-remittances"),
     ("PUT", "/internal/finance/stock-levels"),
+    ("PUT", "/internal/finance/min-prices"),
     # --- app bootstrap -------------------------------------------------------
     ("GET", "/api/v1/app/splash-config"),
     ("GET", "/api/v1/app/support-info"),

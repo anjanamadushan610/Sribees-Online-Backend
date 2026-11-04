@@ -41,3 +41,27 @@ class FinanceStockLevel(Base):
     unit = Column(String(10), nullable=False)
     version = Column(BigInteger, nullable=False)
     received_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class FinanceMinPrice(Base):
+    """The lowest price that keeps the margin, as Sribees Finance last pushed it
+    (migration 102). Advice for the admin, the Price app and Price Intel; it never
+    changes what a customer pays."""
+
+    __tablename__ = "finance_min_prices"
+
+    branch_id = Column(UUID(as_uuid=True), primary_key=True)
+    item_id = Column(UUID(as_uuid=True), primary_key=True)  # the product, or a pack size
+    product_id = Column(UUID(as_uuid=True), nullable=False)
+    variant_id = Column(UUID(as_uuid=True), nullable=True)
+    min_price = Column(Numeric(14, 2), nullable=True)
+    ready_cost = Column(Numeric(14, 2), nullable=True)
+    purchase_cost = Column(Numeric(14, 2), nullable=True)
+    materials_cost = Column(Numeric(14, 2), nullable=True)
+    margin_pct = Column(Numeric(5, 2), nullable=True)
+    cashback_pct = Column(Numeric(5, 2), nullable=True)
+    referral_pct = Column(Numeric(5, 2), nullable=True)
+    cost_ref = Column(String(120), nullable=True)
+    no_floor_reason = Column(String(200), nullable=True)
+    version = Column(BigInteger, nullable=False)
+    received_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

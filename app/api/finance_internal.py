@@ -38,7 +38,7 @@ from app.config.database import get_db
 from app.config.settings import settings
 from app.models.branch import Branch
 from app.models.category import Category
-from app.models.finance_outbox import FinanceOutbox, FinanceStockLevel
+from app.models.finance_outbox import FinanceMinPrice, FinanceOutbox, FinanceStockLevel
 from app.models.order import Order, OrderItem
 from app.models.partner_wallet import (
     PartnerWallet,
@@ -54,6 +54,7 @@ from app.models.product import (
 )
 from app.models.referral import ReferralCommission, ReferralCommissionStatus
 from app.models.wallet import Wallet, WalletTransaction
+from app.services.product_service import ProductService
 
 router = APIRouter(prefix="/internal/finance", tags=["Internal: Finance"], include_in_schema=False)
 
@@ -407,12 +408,71 @@ async def finance_catalog(
             "variant_id": str(v.variant_id), "sku": v.sku, "name": v.name,
             "weight_grams": v.weight_grams, "is_active": bool(v.is_active)})
     categories = dict((await db.execute(select(Category.category_id, Category.name))).all())
+    products = list((await db.execute(select(Product))).scalars())
+    prices = await _branch_prices(db, products)
+    weights = await ProductService.get_weight_map(db, [p.product_id for p in products])
+    for pid, rows in prices["variants"].items():
+        for v in variants.get(uuid.UUID(pid), []):
+            v["branch_prices"] = rows.get(v["variant_id"], [])
     return {"products": [
         {"product_id": str(p.product_id), "sku": p.sku, "name": p.name,
          "category": categories.get(p.category_id), "stock_mode": p.stock_mode or "unit",
          "cost_price": f"{p.cost_price:.2f}" if p.cost_price is not None else None,
+         "weight_kg": _kg(weights.get(str(p.product_id))),
+         "branch_prices": prices["products"].get(str(p.product_id), []),
          "is_active": bool(p.is_active), "variants": variants.get(p.product_id, [])}
-        for p in (await db.execute(select(Product))).scalars()]}
+        for p in products]}
+
+
+def _kg(value) -> str | None:
+    if not value or value <= 0:
+        return None
+    return f"{Decimal(str(value)).quantize(Decimal('0.001')):f}"
+
+
+async def _branch_prices(db: AsyncSession, products: list) -> dict:
+    """Per active branch, what each product (and each pack size) sells for: the price
+    before and after its Quick Sale discount, and the cashback and referral rates a
+    sale carries, worked out by the same functions checkout uses. Sribees Finance
+    compares these with its minimum price."""
+    from app.services import weight_options_service
+    from app.services.referral_commission import CommissionRateResolver
+
+    ids = [p.product_id for p in products]
+    packed = [p.product_id for p in products if p.stock_mode == "packed"]
+    out_products: dict = defaultdict(list)
+    out_variants: dict = defaultdict(lambda: defaultdict(list))
+    branches = list((await db.execute(select(Branch.branch_id).where(Branch.is_active.is_(True)))).scalars())
+    by_id = {p.product_id: p for p in products}
+    for branch_id in branches:
+        paid = await ProductService.get_price_map(db, ids, branch_id)
+        cashback = await ProductService.get_cashback_map(db, ids, branch_id)
+        referral = await CommissionRateResolver.resolve(db, ids, branch_id)
+        overrides = {pid: (bp, d) for pid, bp, d in await db.execute(
+            select(BranchInventory.product_id, BranchInventory.branch_price,
+                   BranchInventory.discount_percentage)
+            .where(BranchInventory.branch_id == branch_id))}
+        options = await weight_options_service.options_for(db, packed, branch_id)
+        for pid_s, price in paid.items():
+            p = by_id[uuid.UUID(pid_s)]
+            branch_price, branch_discount = overrides.get(p.product_id) or (None, None)
+            original = Decimal(str(branch_price if branch_price is not None else p.price or 0))
+            discount = branch_discount if branch_discount is not None else p.discount_percentage
+            rates = {"cashback_pct": f"{Decimal(str(cashback.get(pid_s, 0))):.2f}",
+                     "referral_pct": f"{Decimal(str(referral.get(pid_s, 0))):.2f}"}
+            if p.stock_mode == "packed":
+                for o in options.get(pid_s, []):
+                    out_variants[pid_s][o["variant_id"]].append({
+                        "branch_id": str(branch_id),
+                        "price": f"{Decimal(str(o['original_price'])):.2f}",
+                        "effective_price": f"{Decimal(str(o['price'])):.2f}",
+                        "discount_pct": f"{Decimal(str(discount or 0)):.2f}", **rates})
+                continue
+            out_products[pid_s].append({
+                "branch_id": str(branch_id), "price": f"{original:.2f}",
+                "effective_price": f"{price:.2f}",
+                "discount_pct": f"{Decimal(str(discount or 0)):.2f}", **rates})
+    return {"products": out_products, "variants": out_variants}
 
 
 @router.get("/cod-remittances")
@@ -526,3 +586,49 @@ async def finance_stock_levels(
             applied += 1
     await db.commit()
     return {"received": len(body.levels), "stored": stored, "applied_to_shop": applied}
+
+
+class MinPriceIn(BaseModel):
+    branch_id: str = Field(min_length=36, max_length=36)
+    product_id: str = Field(min_length=36, max_length=36)
+    variant_id: str | None = Field(default=None, min_length=36, max_length=36)
+    min_price: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    ready_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    purchase_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    materials_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    margin_pct: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    cashback_pct: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    referral_pct: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    cost_ref: str | None = Field(default=None, max_length=120)
+    no_floor_reason: str | None = Field(default=None, max_length=200)
+    version: int = Field(ge=0)
+
+
+class MinPricesIn(BaseModel):
+    prices: list[MinPriceIn] = Field(max_length=5000)
+
+
+@router.put("/min-prices")
+async def finance_min_prices(
+    body: MinPricesIn,
+    _: None = Depends(require_finance_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Record Finance's minimum prices. A push older than what is stored for that
+    branch and item is ignored. Nothing else changes: the floor is advice."""
+    stored = 0
+    for mp in body.prices:
+        values = mp.model_dump(exclude={"branch_id", "product_id", "variant_id", "version"})
+        stmt = insert(FinanceMinPrice).values(
+            branch_id=mp.branch_id, item_id=mp.variant_id or mp.product_id,
+            product_id=mp.product_id, variant_id=mp.variant_id, version=mp.version,
+            received_at=func.now(), **values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[FinanceMinPrice.branch_id, FinanceMinPrice.item_id],
+            set_={**{k: getattr(stmt.excluded, k) for k in values},
+                  "product_id": stmt.excluded.product_id, "variant_id": stmt.excluded.variant_id,
+                  "version": stmt.excluded.version, "received_at": func.now()},
+            where=FinanceMinPrice.version < stmt.excluded.version)
+        stored += (await db.execute(stmt)).rowcount or 0
+    await db.commit()
+    return {"received": len(body.prices), "stored": stored}

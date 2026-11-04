@@ -23,6 +23,7 @@ from app.config.database import get_db
 from app.config.settings import settings
 from app.core.dependencies import BranchScope, inject_branch_filter, require_permission
 from app.models.branch import Branch
+from app.models.finance_outbox import FinanceMinPrice
 from app.models.product import (
     BranchInventory,
     BranchVariantInventory,
@@ -366,6 +367,52 @@ async def set_branch_cashback(
     logger.info(f"[admin] cashback {body.cashback_percentage} for product {product_id} branch {inv.branch_id}")
     cap = await branch_cashback.branch_max_percent(db)
     return {"success": True, "data": _cashback_data(inv, product, scope, cap)}
+
+
+def _floor_row(mp: FinanceMinPrice) -> dict:
+    def s(v):
+        return None if v is None else f"{v:.2f}"
+    return {
+        "product_id": str(mp.product_id),
+        "variant_id": str(mp.variant_id) if mp.variant_id else None,
+        "min_price": s(mp.min_price), "ready_cost": s(mp.ready_cost),
+        "purchase_cost": s(mp.purchase_cost), "materials_cost": s(mp.materials_cost),
+        "margin_pct": s(mp.margin_pct), "cashback_pct": s(mp.cashback_pct),
+        "referral_pct": s(mp.referral_pct), "cost_ref": mp.cost_ref,
+        "no_floor_reason": mp.no_floor_reason,
+        "as_of": mp.received_at.isoformat() if mp.received_at else None,
+    }
+
+
+@router.get("/price-floors", response_model=dict)
+async def get_price_floors(
+    product_ids: str = Query(..., max_length=20000,
+                             description="Comma-separated product ids (at most 200)"),
+    branch_id: Optional[UUID] = Query(None, description="Super Admin only"),
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """Sribees Finance's minimum price for these products (and their pack sizes) in a
+    branch, for the quiet icon by a price that is below it. Advice only: a price below
+    the floor can still be saved (a promotion). A product Finance has no floor for is
+    simply absent."""
+    effective_branch = scope.resolve(branch_id)
+    if effective_branch is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Specify branch_id.")
+    try:
+        ids = [UUID(x.strip()) for x in product_ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bad product id.")
+    if not ids or len(ids) > 200:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Ask for 1 to 200 products.")
+    rows = (await db.execute(select(FinanceMinPrice).where(
+        FinanceMinPrice.branch_id == effective_branch,
+        FinanceMinPrice.product_id.in_(ids)))).scalars().all()
+    out: dict = {}
+    for mp in rows:
+        out.setdefault(str(mp.product_id), []).append(_floor_row(mp))
+    return {"success": True, "data": {"branch_id": str(effective_branch), "floors": out}}
 
 
 @router.put("/{inventory_id}", response_model=dict,
