@@ -15,19 +15,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from redis.asyncio import Redis
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.redis import get_redis, get_redis_optional
 from app.core.dependencies import get_current_user
-from app.models.product import BranchInventory
 from app.schemas.cart import (
     AddToCartRequest,
     ApplyCouponRequest,
     UpdateCartItemRequest,
 )
-from app.services import coupon_presenter, delivery_quote_service
+from app.services import coupon_presenter, delivery_quote_service, stock_keeping
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.coupon_service import CouponService, CouponValidationError
@@ -231,20 +229,14 @@ async def get_cart(
                 updated_any = False
                 for item in list(cart["items"]):
                     try:
-                        p_uuid = UUID(item["product_id"])
-                        res = await db.execute(
-                            select(BranchInventory).where(
-                                BranchInventory.branch_id == branch_id,
-                                BranchInventory.product_id == p_uuid
-                            )
-                        )
-                        inv = res.scalars().first()
-                        if inv is not None and inv.stock_quantity < item["quantity"]:
-                            if inv.stock_quantity > 0:
+                        left = await stock_keeping.available(
+                            db, branch_id, item["product_id"], item.get("variant_id"))
+                        if left is not None and left < item["quantity"]:
+                            if left > 0:
                                 await CartService.update_item_quantity(
                                     user_id=str(current_user.user_id),
                                     product_id=item["product_id"],
-                                    quantity=inv.stock_quantity,
+                                    quantity=left,
                                     variant_id=item.get("variant_id")
                                 )
                             else:
@@ -286,25 +278,20 @@ async def add_to_cart(
             branch_id = await _optional_branch_id(redis, current_user)
             if branch_id:
                 try:
-                    p_uuid = UUID(data.product_id)
-                    res = await db.execute(
-                        select(BranchInventory).where(
-                            BranchInventory.branch_id == branch_id,
-                            BranchInventory.product_id == p_uuid
-                        )
-                    )
-                    inv = res.scalars().first()
-                    if inv is not None:
+                    UUID(data.product_id)
+                    left = await stock_keeping.available(db, branch_id, data.product_id, data.variant_id)
+                    if left is not None:
                         existing_cart = await CartService.get_cart(str(current_user.user_id))
                         existing_qty = sum(
                             item["quantity"]
                             for item in existing_cart.get("items", [])
                             if item.get("product_id") == data.product_id
+                            and (item.get("variant_id") or None) == (data.variant_id or None)
                         )
-                        if existing_qty + data.quantity > inv.stock_quantity:
+                        if existing_qty + data.quantity > left:
                             raise HTTPException(
                                 status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f"Only {inv.stock_quantity} items available in stock for this branch"
+                                detail=f"Only {left} items available in stock for this branch"
                             )
                 except ValueError:
                     pass
@@ -355,18 +342,12 @@ async def update_cart_item(
             branch_id = await _optional_branch_id(redis, current_user)
             if branch_id:
                 try:
-                    p_uuid = UUID(product_id)
-                    res = await db.execute(
-                        select(BranchInventory).where(
-                            BranchInventory.branch_id == branch_id,
-                            BranchInventory.product_id == p_uuid
-                        )
-                    )
-                    inv = res.scalars().first()
-                    if inv is not None and data.quantity > inv.stock_quantity:
+                    UUID(product_id)
+                    left = await stock_keeping.available(db, branch_id, product_id, variant_id)
+                    if left is not None and data.quantity > left:
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"Only {inv.stock_quantity} items available in stock for this branch"
+                            detail=f"Only {left} items available in stock for this branch"
                         )
                 except ValueError:
                     pass

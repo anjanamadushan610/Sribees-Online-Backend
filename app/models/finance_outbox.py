@@ -33,7 +33,10 @@ class FinanceStockLevel(Base):
     __tablename__ = "finance_stock_levels"
 
     branch_id = Column(UUID(as_uuid=True), primary_key=True)
-    product_id = Column(UUID(as_uuid=True), primary_key=True)
+    # migration 100: one row per stock item -- the product, or a pack size (the variant)
+    item_id = Column(UUID(as_uuid=True), primary_key=True)
+    product_id = Column(UUID(as_uuid=True), nullable=False)
+    variant_id = Column(UUID(as_uuid=True), nullable=True)
     sellable_qty = Column(Numeric(14, 3), nullable=False)
     unit = Column(String(10), nullable=False)
     version = Column(BigInteger, nullable=False)

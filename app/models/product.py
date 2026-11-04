@@ -86,6 +86,8 @@ class Product(Base):
     )
 
     stock_quantity = Column(Integer, default=0, comment="Global default stock")
+    # migration 100: unit / loose (branch stock in grams) / packed (stock per weight option)
+    stock_mode = Column(String(8), nullable=False, default="unit", server_default="unit")
     low_stock_threshold = Column(Integer, default=10)
     weight = Column(Numeric(10, 3), nullable=True)
     weight_unit = Column(String(10), default="kg")
@@ -199,6 +201,19 @@ class Product(Base):
         return f"<Product {self.name}>"
 
 
+class BranchVariantInventory(Base):
+    """Packs of one size on a branch's shelf, for a pre-packed product (migration 100)."""
+
+    __tablename__ = "branch_variant_inventory"
+
+    branch_id = Column(UUID(as_uuid=True), ForeignKey("branches.branch_id", ondelete="CASCADE"),
+                       primary_key=True)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.variant_id", ondelete="CASCADE"),
+                        primary_key=True)
+    stock_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class BranchInventory(Base):
     """
     Branch-specific overrides for a global product.
@@ -233,6 +248,9 @@ class BranchInventory(Base):
         default=0,
         comment="Branch-level stock on hand",
     )
+    # migration 100: a loose product's grams; stock_quantity then shows packs of its
+    # smallest weight option (app/services/stock_keeping.py keeps the two together)
+    stock_grams = Column(Integer, nullable=False, default=0, server_default="0")
     reserved_quantity = Column(
         Integer,
         default=0,

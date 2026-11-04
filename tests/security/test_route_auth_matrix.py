@@ -71,6 +71,10 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     # See tests/integration/test_finance_outbox.py::test_the_feed_is_locked.
     ("GET", "/internal/finance/events"),
     ("GET", "/internal/finance/totals"),
+    ("GET", "/internal/finance/opening-snapshot"),
+    ("GET", "/internal/finance/stock-compare"),
+    ("GET", "/internal/finance/catalog"),
+    ("GET", "/internal/finance/cod-remittances"),
     ("PUT", "/internal/finance/stock-levels"),
     # --- app bootstrap -------------------------------------------------------
     ("GET", "/api/v1/app/splash-config"),

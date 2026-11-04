@@ -984,6 +984,8 @@ async def update_product(
             "data": format_product(updated),
             "message": "Product updated successfully",
         }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except Exception as e:
         logger.error(f"Error updating product: {e}")
         raise HTTPException(

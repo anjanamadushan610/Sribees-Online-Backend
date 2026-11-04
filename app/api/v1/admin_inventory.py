@@ -20,9 +20,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
+from app.config.settings import settings
 from app.core.dependencies import BranchScope, inject_branch_filter, require_permission
 from app.models.branch import Branch
-from app.models.product import BranchInventory, Product
+from app.models.product import (
+    BranchInventory,
+    BranchVariantInventory,
+    Product,
+    ProductVariant,
+)
 from app.schemas.inventory import BranchOverrideCreate, InventoryUpdateRequest
 from app.services import branch_cashback
 from app.services.product_service import ProductService
@@ -73,6 +79,10 @@ def _format_inventory_row(inv: BranchInventory, product: Product, branch: Branch
         "is_on_sale": inv.is_on_sale,
         # Stock
         "stock_quantity": stock,
+        # How the stock is kept (migration 100). For loose goods stock_quantity shows packs of
+        # the smallest weight and stock_grams is the figure; packed sizes are on /weights.
+        "stock_mode": product.stock_mode or "unit",
+        "stock_grams": inv.stock_grams or 0,
         "reserved_quantity": reserved,
         "available_quantity": max(0, stock - reserved),
         "low_stock_threshold": threshold,
@@ -390,6 +400,15 @@ async def update_inventory(
             detail="You can only modify inventory for your own branch.",
         )
 
+    # The Quick Edit form always sends the stock figure; only a change of it is refused.
+    if body.stock_quantity is not None and body.stock_quantity != (inv.stock_quantity or 0):
+        if settings.finance_stock_authority:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="Stock is kept by Sribees Finance; count it there.")
+        if (product.stock_mode or "unit") != "unit":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="This product is kept by weight; set its stock under Weights.")
+
     # Validation: stock_quantity cannot be less than reserved_quantity
     new_stock = body.stock_quantity if body.stock_quantity is not None else inv.stock_quantity
     new_reserved = inv.reserved_quantity  # Reserved quantity is system-managed and read-only
@@ -409,3 +428,106 @@ async def update_inventory(
         "data": _format_inventory_row(updated, product, branch),
         "message": "Inventory updated successfully",
     }
+
+
+# ---------------------------------------------------------------- weight stock (migration 100)
+class PackCount(BaseModel):
+    variant_id: UUID
+    stock_quantity: int = Field(..., ge=0)
+
+
+class WeightStockUpdate(BaseModel):
+    stock_grams: Optional[int] = Field(None, ge=0, description="Loose products: grams on hand")
+    packs: Optional[list[PackCount]] = Field(None, description="Pre-packed products: packs per weight")
+
+
+async def _weights(db: AsyncSession, inv: BranchInventory, product: Product) -> dict:
+    from app.services import stock_keeping
+    from app.services.weight_options_service import label
+
+    variants = (await db.execute(
+        select(ProductVariant).where(ProductVariant.product_id == product.product_id,
+                                     ProductVariant.weight_grams.is_not(None),
+                                     ProductVariant.is_active.is_not(False))
+        .order_by(ProductVariant.weight_grams))).scalars().all()
+    counts = dict((await db.execute(
+        select(BranchVariantInventory.variant_id, BranchVariantInventory.stock_quantity)
+        .where(BranchVariantInventory.branch_id == inv.branch_id,
+               BranchVariantInventory.variant_id.in_([v.variant_id for v in variants])))).all()) if variants else {}
+    options = []
+    for v in variants:
+        options.append({
+            "variant_id": str(v.variant_id), "weight_grams": v.weight_grams, "label": label(v.weight_grams),
+            "packs": counts.get(v.variant_id, 0) if product.stock_mode == "packed" else None,
+            "available": await stock_keeping.available(db, inv.branch_id, product.product_id, v.variant_id),
+        })
+    return {
+        "inventory_id": str(inv.inventory_id), "product_id": str(product.product_id),
+        "stock_mode": product.stock_mode or "unit", "stock_grams": inv.stock_grams or 0,
+        "stock_quantity": inv.stock_quantity or 0, "options": options,
+        "kept_by_finance": bool(settings.finance_stock_authority),
+    }
+
+
+async def _scoped_row(db: AsyncSession, scope: BranchScope, inventory_id: UUID):
+    found = await ProductService.get_inventory_by_id(db, inventory_id)
+    if not found:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inventory item not found")
+    inv, product, _ = found
+    if not scope.is_super_admin and inv.branch_id != scope.branch_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You can only modify inventory for your own branch.")
+    return inv, product
+
+
+@router.get("/{inventory_id}/weights", response_model=dict)
+async def get_weight_stock(
+    inventory_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """A weight product's stock in a branch: grams (loose) or packs per weight (packed),
+    and how many of each weight can still be sold."""
+    inv, product = await _scoped_row(db, scope, inventory_id)
+    return {"success": True, "data": await _weights(db, inv, product)}
+
+
+@router.put("/{inventory_id}/weights", response_model=dict,
+            dependencies=[Depends(require_permission("inventory", "update"))])
+async def set_weight_stock(
+    inventory_id: UUID,
+    body: WeightStockUpdate,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """Count a weight product: grams for a loose one, packs of each weight for a pre-packed one."""
+    from app.services import stock_keeping
+
+    inv, product = await _scoped_row(db, scope, inventory_id)
+    if settings.finance_stock_authority:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="Stock is kept by Sribees Finance; count it there.")
+    mode = product.stock_mode or "unit"
+    if mode == "loose":
+        if body.stock_grams is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Give the grams on hand.")
+        await stock_keeping.set_level(db, inv.branch_id, stock_keeping.Item(
+            "loose", product.product_id, None, None), body.stock_grams)
+    elif mode == "packed":
+        if not body.packs:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Give the packs of each weight.")
+        mine = set((await db.execute(select(ProductVariant.variant_id).where(
+            ProductVariant.product_id == product.product_id, ProductVariant.weight_grams.is_not(None)))).scalars())
+        for pack in body.packs:
+            if pack.variant_id not in mine:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="That weight is not one of this product's options.")
+            await stock_keeping.set_level(db, inv.branch_id, stock_keeping.Item(
+                "packed", product.product_id, pack.variant_id, None), pack.stock_quantity)
+    else:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="This product is counted in units; choose loose or pre-packed first.")
+    await db.commit()
+    await db.refresh(inv)
+    logger.info(f"[admin] weight stock of {product.product_id} set in branch {inv.branch_id}")
+    return {"success": True, "data": await _weights(db, inv, product)}

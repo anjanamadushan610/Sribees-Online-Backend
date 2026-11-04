@@ -328,6 +328,8 @@ class ProductService:
             is_returnable=data.is_returnable,
             price_review_level=data.price_review_level,
             sold_by_weight=data.sold_by_weight,
+            # loose / packed only means something for a weight product
+            stock_mode=data.stock_mode if data.sold_by_weight else "unit",
             meta_title=data.meta_title,
             meta_description=data.meta_description
         )
@@ -381,9 +383,33 @@ class ProductService:
             for key in exclude:
                 update_data.pop(key, None)
         # NOT NULL: an explicit null means "not changing it", not "unknown".
-        for not_null in ("is_returnable", "price_review_level", "sold_by_weight"):
+        for not_null in ("is_returnable", "price_review_level", "sold_by_weight", "stock_mode"):
             if not_null in update_data and update_data[not_null] is None:
                 update_data.pop(not_null)
+        if "stock_mode" not in update_data or update_data["stock_mode"] == product.stock_mode:
+            update_data.pop("stock_mode", None)
+        else:
+            weighed = update_data.get("sold_by_weight", product.sold_by_weight)
+            if update_data["stock_mode"] != "unit" and not weighed:
+                raise ValueError("Only a product sold by weight can be kept loose or pre-packed.")
+            from app.config.settings import settings as _settings
+
+            if _settings.finance_stock_authority:
+                raise ValueError("Stock is kept by Sribees Finance; change how it is kept there first.")
+            # The old figures are in the old measure (units, grams or packs): zero them so
+            # nothing is sold on a wrong number; the branch counts it again.
+            from app.models.product import (
+                BranchInventory,
+                BranchVariantInventory,
+                ProductVariant,
+            )
+
+            await db.execute(BranchInventory.__table__.update()
+                             .where(BranchInventory.__table__.c.product_id == product.product_id)
+                             .values(stock_quantity=0, stock_grams=0))
+            await db.execute(BranchVariantInventory.__table__.delete().where(
+                BranchVariantInventory.__table__.c.variant_id.in_(
+                    select(ProductVariant.variant_id).where(ProductVariant.product_id == product.product_id))))
 
         old_price = product.price if "price" in update_data else None
         for field, value in update_data.items():

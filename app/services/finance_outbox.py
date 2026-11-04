@@ -18,6 +18,8 @@ Four kinds, each a full snapshot of the figures (Finance never calls back):
 * ``wallet.movement``   -- every wallet credit/debit with its ``reason``
                            (the ledger accounts depend on why, not on how much).
 * ``commission.changed``-- a referral commission row changing status or amount.
+* ``order.undelivered`` -- the items a COD customer refused, once back at the shop
+                           (app/services/partial_delivery.py).
 
 Off unless ``FINANCE_OUTBOX_ENABLED`` (ships dark). Writing an event must
 never break the change itself: a failure to build a payload is logged and the
@@ -158,6 +160,7 @@ def _order_lines(session: Session, order: Order) -> list[dict]:
             OrderItem.product_name, OrderItem.product_sku, OrderItem.variant_name,
             OrderItem.quantity, OrderItem.unit_price, OrderItem.subtotal,
             OrderItem.coupon_discount, ProductVariant.weight_grams, Category.name.label("category"),
+            Product.stock_mode, ProductVariant.sku.label("variant_sku"),
         )
         .outerjoin(ProductVariant, ProductVariant.variant_id == OrderItem.variant_id)
         .outerjoin(Product, Product.product_id == OrderItem.product_id)
@@ -180,6 +183,10 @@ def _order_lines(session: Session, order: Order) -> list[dict]:
             "subtotal": _money(r.subtotal),
             "coupon_discount": _money(r.coupon_discount),
             "category": r.category,
+            # how the product keeps stock (unit / loose / packed); Finance takes the
+            # line from the product, its kilograms, or the pack size (migration 100)
+            "stock_mode": r.stock_mode or "unit",
+            "variant_sku": r.variant_sku,
         }
         for r in rows
     ]
@@ -246,7 +253,23 @@ def _order_event(session: Session, order: Order, old_status: Optional[str]) -> F
         payload["amounts"]["referral_delivery_subsidy"] = _money(order.referral_delivery_discount)
     if order.status == "refunded":
         payload["returned"] = _returned(order, lines)
+    # Partial delivery: what the rider actually collected (less than the total
+    # when the customer refused some items) and, once recorded, those items.
+    if order.courier_cod_collected_amount is not None:
+        payload["amounts"]["cod_collected"] = _money(order.courier_cod_collected_amount)
+    if order.undelivered_items:
+        payload["undelivered"] = list(order.undelivered_items)
     return _row("order.status", order.order_id, payload)
+
+
+async def order_undelivered(db, order: Order) -> None:
+    """``order.undelivered``: the refused items of a partially delivered COD order
+    are back at the shop. The same snapshot as ``order.status``, with ``undelivered``."""
+    if not enabled():
+        return
+    row = await db.run_sync(lambda s: _order_event(s, order, order.status))
+    row.event_type = "order.undelivered"
+    db.add(row)
 
 
 def _payment_event(session: Session, attempt: PaymentAttempt) -> FinanceOutbox:

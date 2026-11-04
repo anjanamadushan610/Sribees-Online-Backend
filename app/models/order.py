@@ -181,6 +181,11 @@ class Order(Base):
     )
     courier_cod_collected_amount = Column(Numeric(12, 2), nullable=True)
     courier_cod_collected_at = Column(DateTime(timezone=True), nullable=True)
+    # Partial delivery (migration 101): the rider collected less than the total
+    # because the customer refused some items. Recorded once the goods are back:
+    # [{"order_item_id": str, "quantity": int}, ...]
+    undelivered_items = Column(JSONB, nullable=True)
+    undelivered_recorded_at = Column(DateTime(timezone=True), nullable=True)
     # Rider free text on a failed/returned shipment. Free text by design
     # (§8) -- never branch business logic on its exact wording. Branch on
     # courier_will_retry instead, which is the machine-readable half.
