@@ -115,7 +115,7 @@ async def _put(db: AsyncSession, branch_id, row, it: Item, value: int) -> None:
 
 async def refresh_summary(db: AsyncSession, branch_id, product_id) -> None:
     """branch_inventory.stock_quantity as screens read it: packs of the smallest active
-    weight option (loose), or all packs together (packed)."""
+    weight option (loose), or all packs of the active sizes together (packed)."""
     inv = (await db.execute(select(BranchInventory).where(
         BranchInventory.branch_id == branch_id, BranchInventory.product_id == product_id))).scalars().first()
     if inv is None:
@@ -133,7 +133,9 @@ async def refresh_summary(db: AsyncSession, branch_id, product_id) -> None:
             select(func.coalesce(func.sum(BranchVariantInventory.stock_quantity), 0))
             .join(ProductVariant, ProductVariant.variant_id == BranchVariantInventory.variant_id)
             .where(BranchVariantInventory.branch_id == branch_id,
-                   ProductVariant.product_id == product_id))).scalar_one())
+                   ProductVariant.product_id == product_id,
+                   # a pack size no longer offered cannot be bought: not "in stock"
+                   ProductVariant.is_active.is_not(False)))).scalar_one())
 
 
 async def available(db: AsyncSession, branch_id, product_id, variant_id=None) -> Optional[int]:
@@ -166,6 +168,12 @@ async def give_back(db: AsyncSession, branch_id, product_id, variant_id, quantit
     row = await _row(db, branch_id, it, lock=True)
     if row is not None:
         await _put(db, branch_id, row, it, _get(row, it) + quantity * per_line(it))
+
+
+async def lock_row(db: AsyncSession, branch_id, it: Item) -> bool:
+    """Take checkout's row lock on the item's stock row (until the transaction ends).
+    False if the branch does not carry the product."""
+    return await _row(db, _uuid(branch_id), it, lock=True) is not None
 
 
 async def set_level(db: AsyncSession, branch_id, it: Item, value: int) -> bool:

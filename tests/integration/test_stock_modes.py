@@ -190,3 +190,64 @@ async def test_branch_counts_weights_and_the_app_sees_each_size(
     assert r.status_code == 200, r.text
     counted = {o["label"]: o["available"] for o in r.json()["data"]["options"]}
     assert counted == {"250g": 4, "500g": 2, "1kg": 1, "2kg": 0, "5kg": 0}
+
+
+async def test_finance_push_never_adds_back_what_is_ordered_or_unbooked(
+    api, db, world, make_customer, make_product, place_order, monkeypatch
+):
+    """Review 2026-11-05: the shop's figure = Finance's sellable - orders placed and not yet
+    sent - orders sent after the last event Finance had booked. Read under the row lock."""
+    from sqlalchemy import update
+
+    from app.config.settings import settings
+    from app.models.finance_outbox import FinanceOutbox
+    from app.models.order import Order
+
+    monkeypatch.setattr(settings, "finance_service_token_sha256", hashlib.sha256(TOKEN.encode()).hexdigest())
+    monkeypatch.setattr(settings, "finance_allowed_ips", "")
+    monkeypatch.setattr(settings, "finance_stock_authority", True)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    product = await make_product(stock=20)
+    order = await place_order(await make_customer(), product, 2)
+    version = [10]
+
+    async def push(qty: str, booked_through=None) -> None:
+        version[0] += 1
+        body = {"authority": True, "levels": [{
+            "branch_id": str(world.branch_id), "product_id": str(product), "sellable_qty": qty,
+            "unit": "each", "version": version[0]}]}
+        if booked_through is not None:
+            body["booked_through"] = booked_through
+        r = await api.put("/internal/finance/stock-levels", headers=auth, json=body)
+        assert r.status_code == 200 and r.json()["applied_to_shop"] == 1, r.text
+
+    await push("10")
+    assert (await _shelf(db, world, product))[1] == 8, "the 2 ordered stay off the shelf"
+
+    # The order goes to the courier; Finance has not booked that yet.
+    oid = uuid.UUID(str(order.get("order_id") or order["id"]))
+    await db.execute(update(Order).where(Order.order_id == oid).values(status="handed_to_courier"))
+    ev = FinanceOutbox(event_type="order.status", aggregate_id=oid,
+                       payload={"to_status": "handed_to_courier"})
+    db.add(ev)
+    await db.flush()
+    seq = ev.seq
+    await db.commit()
+    await push("10", booked_through=seq - 1)
+    assert (await _shelf(db, world, product))[1] == 8, "sent but not booked: still off the shelf"
+    # Finance books the dispatch: its sellable is 8 now, and nothing is off twice.
+    await push("8", booked_through=seq)
+    assert (await _shelf(db, world, product))[1] == 8
+
+
+async def test_online_transfers_wait_while_finance_keeps_the_stock(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.config.settings import settings
+    from app.services.stock_transfer_service import StockTransferError, StockTransferService
+
+    monkeypatch.setattr(settings, "finance_stock_authority", True)
+    for step in (StockTransferService.approve, StockTransferService.complete):
+        status = "pending" if step is StockTransferService.approve else "in_transit"
+        with pytest.raises(StockTransferError, match="Sribees Finance"):
+            await step(None, SimpleNamespace(status=status), *([uuid.uuid4()] if status == "pending" else []))

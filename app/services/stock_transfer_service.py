@@ -14,6 +14,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.config.settings import settings
 from app.models.admin import Admin
 from app.models.branch import Branch
 from app.models.product import BranchInventory, Product
@@ -138,6 +139,9 @@ class StockTransferService:
     async def approve(db: AsyncSession, transfer: StockTransfer, approved_by_id: UUID) -> StockTransfer:
         if transfer.status != TransferStatus.PENDING.value:
             raise StockTransferError(f"Only a pending transfer can be approved (this one is {transfer.status}).")
+        if settings.finance_stock_authority:
+            raise StockTransferError("Stock is kept by Sribees Finance; send the stock between "
+                                     "branches there.")
 
         source = (
             await db.execute(
@@ -193,6 +197,9 @@ class StockTransferService:
     async def complete(db: AsyncSession, transfer: StockTransfer) -> StockTransfer:
         if transfer.status != TransferStatus.IN_TRANSIT.value:
             raise StockTransferError(f"Only an in-transit transfer can be completed (this one is {transfer.status}).")
+        if settings.finance_stock_authority:
+            raise StockTransferError("Stock is kept by Sribees Finance; send the stock between "
+                                     "branches there.")
 
         dest = (
             await db.execute(

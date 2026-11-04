@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -332,6 +332,34 @@ async def _committed(db: AsyncSession) -> dict[tuple, int]:
     return out
 
 
+async def _committed_item(db: AsyncSession, branch_id: uuid.UUID, item: "object",
+                          booked_through: int | None) -> int:
+    """What Online has taken off this item's shelf and Finance has not: orders placed and
+    not yet dispatched, plus orders dispatched after the last event Finance had booked
+    when it worked out its figure (its sellable does not know them yet). Read after the
+    item's row is locked, so an order placed meanwhile is either here or already waits on
+    the lock -- it can never be added back to the shelf."""
+    if item.variant_id is not None:
+        match = OrderItem.variant_id == item.variant_id
+    else:
+        match = OrderItem.product_id == item.product_id
+    conds = [Order.status.in_(PLACED_NOT_SENT)]
+    if booked_through is not None:
+        late = (select(FinanceOutbox.aggregate_id)
+                .where(FinanceOutbox.seq > booked_through,
+                       FinanceOutbox.event_type == "order.status",
+                       FinanceOutbox.payload["to_status"].astext.in_(DISPATCHED)))
+        conds.append(and_(Order.order_id.in_(late), Order.status.not_in(PLACED_NOT_SENT)))
+    total = 0
+    for qty, grams in await db.execute(
+            select(OrderItem.quantity, ProductVariant.weight_grams)
+            .join(Order, Order.order_id == OrderItem.order_id)
+            .outerjoin(ProductVariant, ProductVariant.variant_id == OrderItem.variant_id)
+            .where(Order.branch_id == branch_id, match, or_(*conds))):
+        total += int(qty) * int(grams) if item.mode == "loose" and grams else int(qty)
+    return total
+
+
 def _in_finance_unit(value: int, mode: str) -> str:
     """Online keeps loose goods in grams; Finance in kilograms."""
     return f"{Decimal(value) / 1000:.3f}" if mode == "loose" else str(int(value))
@@ -534,6 +562,8 @@ class StockLevelsIn(BaseModel):
     levels: list[StockLevelIn] = Field(max_length=5000)
     # the owner's half of the stock switch, as Sribees Finance holds it
     authority: bool = False
+    # the last Online event Finance had booked when it worked these figures out
+    booked_through: int | None = Field(default=None, ge=0)
 
 
 @router.put("/stock-levels")
@@ -551,7 +581,6 @@ async def finance_stock_levels(
 
     stored = applied = 0
     apply = bool(body.authority and settings.finance_stock_authority)
-    committed = await _committed(db) if apply else {}
     for lv in body.levels:
         item_id = lv.variant_id or lv.product_id
         stmt = insert(FinanceStockLevel).values(
@@ -581,9 +610,13 @@ async def finance_stock_levels(
         branch = uuid.UUID(lv.branch_id)
         item = stock_keeping.Item(mode, uuid.UUID(lv.product_id),
                                   uuid.UUID(lv.variant_id) if lv.variant_id else None, None)
-        value = measure - committed.get((branch, uuid.UUID(item_id)), 0)
+        if not await stock_keeping.lock_row(db, branch, item):
+            await db.commit()
+            continue
+        value = measure - await _committed_item(db, branch, item, body.booked_through)
         if await stock_keeping.set_level(db, branch, item, value):
             applied += 1
+        await db.commit()  # one item at a time: checkout never waits on a whole chunk
     await db.commit()
     return {"received": len(body.levels), "stored": stored, "applied_to_shop": applied}
 
