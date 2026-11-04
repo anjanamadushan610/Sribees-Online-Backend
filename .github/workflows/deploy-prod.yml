@@ -233,16 +233,18 @@ jobs:
           APPLE_SERVICES_ID: ${{ secrets.APPLE_SERVICES_ID }}
           FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
           # Sribees Finance's event feed: switched on, and the SHA-256 of the token the
-          # production finance worker presents. FINANCE_STOCK_AUTHORITY is not layered:
-          # the shop keeps its own stock until the owner decides otherwise.
+          # production finance worker presents.
           FINANCE_OUTBOX_ENABLED: ${{ secrets.PROD_FINANCE_OUTBOX_ENABLED }}
           FINANCE_SERVICE_TOKEN_SHA256: ${{ secrets.PROD_FINANCE_SERVICE_TOKEN_SHA256 }}
+          # Online's half of the stock switch (owner, 2026-11-05). With it and the owner's
+          # switch in Finance both on, Finance's pushes set the shop's stock.
+          FINANCE_STOCK_AUTHORITY: ${{ secrets.PROD_FINANCE_STOCK_AUTHORITY }}
         run: |
           if [ -z "$PROD_ENV_FILE" ]; then
             echo "::error::secret PROD_ENV_FILE is empty"
             exit 1
           fi
-          for key in MARX_IPG_API_KEY MARX_IPG_BASE_URL MARX_IPG_RETURN_URL MARX_GATEWAY_METHODS_ENABLED OTP_TEST_PHONES SMOKE_ADMIN_EMAIL SMOKE_ADMIN_PASSWORD SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID FIREBASE_CREDENTIALS_JSON FINANCE_OUTBOX_ENABLED FINANCE_SERVICE_TOKEN_SHA256; do
+          for key in MARX_IPG_API_KEY MARX_IPG_BASE_URL MARX_IPG_RETURN_URL MARX_GATEWAY_METHODS_ENABLED OTP_TEST_PHONES SMOKE_ADMIN_EMAIL SMOKE_ADMIN_PASSWORD SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID FIREBASE_CREDENTIALS_JSON FINANCE_OUTBOX_ENABLED FINANCE_SERVICE_TOKEN_SHA256 FINANCE_STOCK_AUTHORITY; do
             value=$(printenv "$key" || true)
             if [ "$key" = "FIREBASE_CREDENTIALS_JSON" ] && [ -n "$value" ]; then
               # The pasted JSON spans lines; the .env wants one.
