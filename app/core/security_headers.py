@@ -135,6 +135,9 @@ class TrustedHostMiddleware(BaseHTTPMiddleware):
         "api.sribeesonline.com",
         "api.sribees.com",
         "sribees.com",
+        # Sribees Finance production calls the internal finance routes by container
+        # name on the box's shared network (never through the edge).
+        "sribees-online-prod-app",
     }
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
