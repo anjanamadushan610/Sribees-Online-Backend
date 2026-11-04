@@ -54,8 +54,8 @@ CREATE TRIGGER trg_po_directory_updated_at
 INSERT INTO post_office_directory (id, post_office, district, province, is_active)
 VALUES
     (gen_random_uuid(), 'Welipenna',     'Kalutara', 'Western', TRUE),
-    (gen_random_uuid(), 'Mathugama',     'Kalutara', 'Western', TRUE),
-    (gen_random_uuid(), 'Meegahathanna', 'Kalutara', 'Western', TRUE)
+    (gen_random_uuid(), 'Matugama',      'Kalutara', 'Western', TRUE),
+    (gen_random_uuid(), 'Meegahatenna',  'Kalutara', 'Western', TRUE)
 ON CONFLICT (post_office) DO NOTHING;
 
 COMMIT;

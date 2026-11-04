@@ -134,13 +134,13 @@ POST_OFFICE_MAPPINGS = [
         "province": "Western Province",
     },
     {
-        "post_office": "Mathugama",
+        "post_office": "Matugama",
         "branch_code": "COL",
         "district": "Kalutara",
         "province": "Western Province",
     },
     {
-        "post_office": "Meegahathanna",
+        "post_office": "Meegahatenna",
         "branch_code": "COL",
         "district": "Kalutara",
         "province": "Western Province",

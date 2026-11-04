@@ -147,7 +147,9 @@ async def create_address(
             postal_city=data.postal_city,
             district=data.district,
             province=data.province,
-            postal_code=data.postal_code or "",
+            postal_code=(data.postal_code or "").strip()
+            or await branch_service.postal_code_for(db, data.postal_city, data.district)
+            or "",
             is_default=make_default,
         )
         # Matched against the synced SribeesExpress directory in the same
@@ -212,6 +214,15 @@ async def update_address(
             address.province = data.province
         if "postal_code" in data.model_fields_set:
             address.postal_code = data.postal_code
+        # The app sends no code: a moved (or never-coded) address takes its
+        # town's, so the courier label and invoices carry one.
+        if "postal_code" not in data.model_fields_set and (
+            location_changed or not (address.postal_code or "").strip()
+        ):
+            address.postal_code = (
+                await branch_service.postal_code_for(db, address.postal_city, address.district)
+                or ("" if location_changed else address.postal_code or "")
+            )
         if "is_default" in data.model_fields_set and data.is_default is not None:
             address.is_default = data.is_default
 

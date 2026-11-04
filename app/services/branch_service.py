@@ -102,10 +102,12 @@ async def list_postal_cities_for_district(
     )
 
     mappings = result.unique().scalars().all()
+    codes = await postal_codes_for_district(db, normalized)
     return [
         {
             "postalCity": m.postal_city,
             "postOffice": m.postal_city,  # legacy key, see module docstring
+            "postalCode": codes.get(m.postal_city.lower()),
             "district": m.district,
             "province": m.province,
             "branchId": str(m.branch_id),
@@ -114,6 +116,25 @@ async def list_postal_cities_for_district(
         }
         for m in mappings
     ]
+
+
+async def postal_codes_for_district(db: AsyncSession, district: str) -> dict[str, str]:
+    """{lower(postal city): postal code} for one district's directory rows."""
+    rows = await db.execute(
+        select(PostalCityDirectory.postal_city, PostalCityDirectory.postal_code).where(
+            func.lower(PostalCityDirectory.district) == district.strip().lower(),
+            PostalCityDirectory.postal_code.is_not(None),
+        )
+    )
+    return {name.lower(): code for name, code in rows.all()}
+
+
+async def postal_code_for(db: AsyncSession, postal_city: str, district: str) -> Optional[str]:
+    """The Sri Lanka Post code of a town, or None when the directory has none."""
+    if not postal_city or not district:
+        return None
+    codes = await postal_codes_for_district(db, district)
+    return codes.get(postal_city.strip().lower())
 
 
 # ============================================================================

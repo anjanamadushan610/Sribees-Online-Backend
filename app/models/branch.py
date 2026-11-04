@@ -262,6 +262,9 @@ class PostalCityDirectory(Base):
     )
     district: Mapped[str] = mapped_column(String(100), nullable=False)
     province: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Sri Lanka Post code (migration 103). Shown beside the name in the
+    # customer picker and copied onto a saved address that has none.
+    postal_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     # is_active is maintained by courier_postal_city_service.sync(): FALSE
     # means SribeesExpress reported on this district and did not list this
     # postal city, i.e. they cannot deliver there yet. Checkout must refuse it
@@ -309,6 +312,7 @@ class PostalCityDirectory(Base):
             "postal_city": self.postal_city,
             "district": self.district,
             "province": self.province,
+            "postal_code": self.postal_code,
             "is_active": self.is_active,
             "is_launched": self.is_launched,
             "courier_postal_city_id": self.courier_postal_city_id,
