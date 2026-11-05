@@ -244,7 +244,10 @@ async def test_online_transfers_wait_while_finance_keeps_the_stock(monkeypatch):
     from types import SimpleNamespace
 
     from app.config.settings import settings
-    from app.services.stock_transfer_service import StockTransferError, StockTransferService
+    from app.services.stock_transfer_service import (
+        StockTransferError,
+        StockTransferService,
+    )
 
     monkeypatch.setattr(settings, "finance_stock_authority", True)
     for step in (StockTransferService.approve, StockTransferService.complete):
