@@ -168,6 +168,11 @@ async def give_back(db: AsyncSession, branch_id, product_id, variant_id, quantit
     row = await _row(db, branch_id, it, lock=True)
     if row is not None:
         await _put(db, branch_id, row, it, _get(row, it) + quantity * per_line(it))
+        if it.mode == "unit" and variant_id is None:
+            # A line without a size, placed before the product became loose or
+            # pre-packed, lands on the product's own row -- for those modes only
+            # the screens' summary, worked out from the sizes. Put it back to that.
+            await refresh_summary(db, branch_id, it.product_id)
 
 
 async def lock_row(db: AsyncSession, branch_id, it: Item) -> bool:

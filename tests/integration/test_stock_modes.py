@@ -87,6 +87,13 @@ async def test_packed_goods_count_each_size(api, db, world, make_admin, make_pro
         await stock_keeping.take(db, world.branch_id, product, kilo, 1)
     await db.rollback()
 
+    # An old line without a size (ordered before the product was packed) is
+    # cancelled: the summary stays the sum of the sizes, nothing is invented.
+    await stock_keeping.give_back(db, world.branch_id, product, None, 3)
+    await db.commit()
+    assert (await _shelf(db, world, product))[1] == 3
+    assert await stock_keeping.available(db, world.branch_id, product, small) == 3
+
 
 async def test_only_weight_products_can_be_loose_or_packed(api, make_admin, make_product):
     boss = await make_admin("super_admin", api=api)
