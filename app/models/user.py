@@ -14,6 +14,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Sequence,
     String,
     Text,
     func,
@@ -105,6 +106,17 @@ class User(Base):
     )
     profile_picture_url: Optional[str] = Column(
         Text,
+        nullable=True,
+    )
+
+    # The customer's number, in sign-up order: shown as SB-00001 (see
+    # customer_code below). Drawn from a sequence, so two sign-ups can never
+    # get the same one and a number is never reused, even after deletion.
+    # Existing accounts were numbered by created_at (migration 104).
+    customer_no: Optional[int] = Column(
+        Integer,
+        Sequence("users_customer_no_seq"),
+        unique=True,
         nullable=True,
     )
 

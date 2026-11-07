@@ -235,3 +235,20 @@ def test_an_order_needs_two_different_reachable_numbers():
         )
     with pytest.raises(ValueError):
         CreateOrderRequest(delivery_address_id=str(uuid4()))
+
+
+@pytest.mark.parametrize(
+    "number, code",
+    [(1, "SB-00001"), (42, "SB-00042"), (99999, "SB-99999"), (123456, "SB-123456")],
+)
+def test_customer_code_is_sb_and_at_least_five_digits(number, code):
+    from app.utils.identity import format_customer_code
+
+    assert format_customer_code(number) == code
+
+
+@pytest.mark.parametrize("missing", [None, 0, -3])
+def test_no_customer_number_means_no_code_not_a_made_up_one(missing):
+    from app.utils.identity import format_customer_code
+
+    assert format_customer_code(missing) is None

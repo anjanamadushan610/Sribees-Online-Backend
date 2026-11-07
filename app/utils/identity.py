@@ -102,3 +102,15 @@ def missing_profile_fields(
     """
     held = {"full_name": full_name, "nic": nic, "email": email}
     return [field for field, value in held.items() if not (value or "").strip()]
+
+
+def format_customer_code(customer_no: Optional[int]) -> Optional[str]:
+    """SB- and at least five digits: 7 -> "SB-00007", 123456 -> "SB-123456".
+
+    The number is the account's place in sign-up order (users.customer_no,
+    migration 104). None while a row has no number yet, so a caller shows
+    nothing rather than a made-up code.
+    """
+    if customer_no is None or customer_no <= 0:
+        return None
+    return f"SB-{customer_no:05d}"

@@ -96,6 +96,7 @@ class AuthService:
                 created_at=user.created_at,
                 updated_at=user.updated_at,
                 last_login=user.last_login,
+                customer_no=user.customer_no,
             ),
             tokens=TokensResponse(
                 access_token=tokens["access_token"],
@@ -188,6 +189,7 @@ class AuthService:
                 created_at=user.created_at,
                 updated_at=user.updated_at,
                 last_login=user.last_login,
+                customer_no=user.customer_no,
             ),
             tokens=TokensResponse(
                 access_token=tokens["access_token"],
@@ -404,6 +406,7 @@ class AuthService:
                 created_at=user.created_at,
                 updated_at=user.updated_at,
                 last_login=user.last_login,
+                customer_no=user.customer_no,
             ),
         )
 
@@ -504,6 +507,7 @@ class AuthService:
                 created_at=user.created_at,
                 updated_at=user.updated_at,
                 last_login=user.last_login,
+                customer_no=user.customer_no,
             ),
         )
 

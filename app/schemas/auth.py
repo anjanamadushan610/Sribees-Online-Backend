@@ -214,6 +214,16 @@ class UserResponse(BaseModel):
     created_at: datetime = Field(..., alias="createdAt")
     updated_at: datetime = Field(..., alias="updatedAt")
     last_login: Optional[datetime] = Field(None, alias="lastLogin")
+    customer_no: Optional[int] = Field(None, alias="customerNo")
+
+    @computed_field(alias="customerCode")
+    @property
+    def customer_code(self) -> Optional[str]:
+        # What the profile screen shows and staff look up: SB- and at least
+        # five digits, from the sign-up-order number (migration 104).
+        from app.utils.identity import format_customer_code
+
+        return format_customer_code(self.customer_no)
 
     @computed_field(alias="missingProfileFields")
     @property

@@ -239,3 +239,21 @@ async def test_coupons_for_guests_and_customers(api, app_redis, make_customer, w
     assert r.status_code == 200, r.text
     r = await api.post("/api/v1/coupons/collect", json={"code": "NOSUCHCOUPON"}, headers=c.headers)
     assert r.status_code in (400, 404, 422), r.text
+
+
+# ---------------------------------------------------------------------------
+# Customer number (migration 104)
+# ---------------------------------------------------------------------------
+async def test_customer_numbers_follow_sign_up_order_and_never_repeat(api, make_customer, world):
+    first = await make_customer(with_address=False)
+    second = await make_customer(with_address=False)
+
+    codes = []
+    for c in (first, second):
+        r = await api.get("/api/v1/auth/me", headers=c.headers)
+        assert r.status_code == 200, r.text
+        user = _data(r)["user"] if "user" in _data(r) else r.json()["user"]
+        assert user["customerCode"] == f"SB-{user['customerNo']:05d}"
+        codes.append(user["customerNo"])
+
+    assert codes[0] < codes[1]
