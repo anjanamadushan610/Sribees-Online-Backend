@@ -244,7 +244,11 @@ async def test_coupons_for_guests_and_customers(api, app_redis, make_customer, w
 # ---------------------------------------------------------------------------
 # Customer number (migration 104)
 # ---------------------------------------------------------------------------
-async def test_customer_numbers_follow_sign_up_order_and_never_repeat(api, make_customer, world):
+async def test_customer_number_is_five_digits_unique_and_back_on_insert(api, db, make_customer, world):
+    from sqlalchemy import select
+
+    from app.models.user import User
+
     first = await make_customer(with_address=False)
     second = await make_customer(with_address=False)
 
@@ -253,7 +257,26 @@ async def test_customer_numbers_follow_sign_up_order_and_never_repeat(api, make_
         r = await api.get("/api/v1/auth/me", headers=c.headers)
         assert r.status_code == 200, r.text
         user = _data(r)["user"] if "user" in _data(r) else r.json()["user"]
-        assert user["customerCode"] == f"SB-{user['customerNo']:05d}"
+        assert 10000 <= user["customerNo"] <= 99999
+        assert user["customerCode"] == f"SB-{user['customerNo']}"
         codes.append(user["customerNo"])
+    assert codes[0] != codes[1]
 
-    assert codes[0] < codes[1]
+    # The trigger's number comes back on the INSERT itself (RETURNING), so a
+    # sign-up response can carry it without a second query.
+    row = (await db.execute(select(User).where(User.user_id == first.user_id))).scalar_one()
+    assert row.customer_no == codes[0]
+
+
+async def test_same_registration_moment_still_gets_two_numbers(db):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    moment = datetime(2026, 11, 7, 8, 0, 0, 123456, tzinfo=timezone.utc)
+    a = (await db.execute(text("SELECT sribees_customer_no_candidate(:m, 0)"), {"m": moment})).scalar()
+    again = (await db.execute(text("SELECT sribees_customer_no_candidate(:m, 0)"), {"m": moment})).scalar()
+    b = (await db.execute(text("SELECT sribees_customer_no_candidate(:m, 1)"), {"m": moment})).scalar()
+    assert a == again, "the algorithm is a function of the registration moment"
+    assert 10000 <= a <= 99999 and 10000 <= b <= 99999
+    assert a != b, "a clash moves to the next attempt, a different number"

@@ -11,10 +11,10 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    FetchedValue,
     ForeignKey,
     Index,
     Integer,
-    Sequence,
     String,
     Text,
     func,
@@ -109,13 +109,13 @@ class User(Base):
         nullable=True,
     )
 
-    # The customer's number, in sign-up order: shown as SB-00001 (see
-    # customer_code below). Drawn from a sequence, so two sign-ups can never
-    # get the same one and a number is never reused, even after deletion.
-    # Existing accounts were numbered by created_at (migration 104).
+    # The customer's number, shown as SB-47215 (see customer_code). Made by
+    # the database from the registration moment, not handed out in order,
+    # and unique (migration 104's trigger + unique index). FetchedValue: the
+    # trigger fills it on INSERT and SQLAlchemy reads it back via RETURNING.
     customer_no: Optional[int] = Column(
         Integer,
-        Sequence("users_customer_no_seq"),
+        FetchedValue(),
         unique=True,
         nullable=True,
     )

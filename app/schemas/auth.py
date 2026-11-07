@@ -219,8 +219,8 @@ class UserResponse(BaseModel):
     @computed_field(alias="customerCode")
     @property
     def customer_code(self) -> Optional[str]:
-        # What the profile screen shows and staff look up: SB- and at least
-        # five digits, from the sign-up-order number (migration 104).
+        # What the profile screen shows and staff look up: SB- and five
+        # digits, made from the registration moment (migration 104).
         from app.utils.identity import format_customer_code
 
         return format_customer_code(self.customer_no)

@@ -105,11 +105,13 @@ def missing_profile_fields(
 
 
 def format_customer_code(customer_no: Optional[int]) -> Optional[str]:
-    """SB- and at least five digits: 7 -> "SB-00007", 123456 -> "SB-123456".
+    """SB- and the five-digit number: 47215 -> "SB-47215".
 
-    The number is the account's place in sign-up order (users.customer_no,
-    migration 104). None while a row has no number yet, so a caller shows
-    nothing rather than a made-up code.
+    The number is made by the database from the registration moment and is
+    unique, not a place in sign-up order (users.customer_no, migration 104).
+    Zero-padded so a number from a future wider range still prints sensibly.
+    None while a row has no number yet, so a caller shows nothing rather than
+    a made-up code.
     """
     if customer_no is None or customer_no <= 0:
         return None
