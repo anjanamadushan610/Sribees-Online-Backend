@@ -28,18 +28,11 @@ CREATE INDEX IF NOT EXISTS idx_banners_branch_active_order
     ON banners (branch_id, is_active, sort_order);
 
 -- -----------------------------------------------------------------------------
--- Seed the three slides the app used to ship hardcoded, as platform-wide rows,
--- so the carousel is populated the moment this lands rather than empty until
--- someone opens the admin panel.
+-- Seed banners REMOVED (2026-11-07, owner's decision).
 --
--- DO NOTHING on conflict: once these exist an admin owns them, and a redeploy
--- must not resurrect a banner they deliberately edited or deactivated.
+-- This used to insert three placeholder slides ("Fresh Farm Produce",
+-- "20% Off Greens", "Earn 10% Cash Back") with fixed ids and ON CONFLICT DO
+-- NOTHING. Because every deploy replays every migration and nothing guarded
+-- it, deleting them from the admin panel only lasted until the next deploy.
+-- Banners are made in the admin panel only.
 -- -----------------------------------------------------------------------------
-INSERT INTO banners (banner_id, title, subtitle, branch_id, sort_order, is_active) VALUES
-    ('b0000000-0000-4000-a000-000000000001', 'Fresh Farm Produce',
-     'Delivered straight to you.', NULL, 1, TRUE),
-    ('b0000000-0000-4000-a000-000000000002', '20% Off Greens',
-     'This weekend only.', NULL, 2, TRUE),
-    ('b0000000-0000-4000-a000-000000000003', 'Earn 10% Cash Back',
-     'On every single order.', NULL, 3, TRUE)
-ON CONFLICT (banner_id) DO NOTHING;
