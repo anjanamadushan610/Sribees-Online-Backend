@@ -26,16 +26,6 @@
 -- ADMIN_CREDENTIALS.md is corrected alongside this.
 -- =============================================================================
 
-UPDATE admins a
-SET branch_id = b.branch_id, updated_at = NOW()
-FROM branches b
-WHERE b.code = 'CMB'
-  AND a.email IN ('marketing@sribeesonline.lk', 'inventory@sribeesonline.lk')
-  AND a.branch_id IS NULL;
-
-UPDATE admins a
-SET branch_id = b.branch_id, updated_at = NOW()
-FROM branches b
-WHERE b.code = 'NGB'
-  AND a.email = 'support@sribeesonline.lk'
-  AND a.branch_id IS NULL;
+-- Data write REMOVED 2026-11-07 (owner's decision): every deploy replays every
+-- migration, so this branch assignment of the deleted demo admins ran again on each release and could change live
+-- data. The file stays so the replay list does not change.

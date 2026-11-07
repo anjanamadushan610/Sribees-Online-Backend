@@ -15,11 +15,9 @@
 ALTER TABLE categories
     ADD COLUMN IF NOT EXISTS image_url VARCHAR(500);
 
--- Only top-level categories (parent_category_id IS NULL) may carry an image.
-UPDATE categories
-   SET image_url = NULL
- WHERE parent_category_id IS NOT NULL
-   AND image_url IS NOT NULL;
+-- Data write REMOVED 2026-11-07 (owner's decision): every deploy replays every
+-- migration, so this UPDATE (it cleared every sub-category image) ran again on each release and could change live
+-- data. Schema statements in this file are unchanged.
 
 -- The home screen's query is "top-level, active, ordered by name".
 CREATE INDEX IF NOT EXISTS idx_categories_top_level_active

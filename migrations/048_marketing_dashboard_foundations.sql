@@ -50,16 +50,9 @@ COMMENT ON COLUMN branches.delivery_runs IS
     '{label, dispatch_time "HH:MM" Asia/Colombo, cutoff_minutes}. Empty = branch '
     'has not configured its runs yet.';
 
--- Seed the standard three rounds onto every branch that has none yet, so the
--- dashboard is meaningful from the first deploy. A branch that has already
--- configured its own runs is left alone.
-UPDATE branches
-SET delivery_runs = '[
-    {"label": "Morning",   "dispatch_time": "10:00", "cutoff_minutes": 30},
-    {"label": "Afternoon", "dispatch_time": "14:00", "cutoff_minutes": 30},
-    {"label": "Evening",   "dispatch_time": "18:00", "cutoff_minutes": 30}
-]'::jsonb
-WHERE delivery_runs IS NULL OR jsonb_array_length(delivery_runs) = 0;
+-- Data write REMOVED 2026-11-07 (owner's decision): every deploy replays every
+-- migration, so this seed of three default delivery runs ran again on each release and could change live
+-- data. Schema statements in this file are unchanged.
 
 -- -----------------------------------------------------------------------------
 -- 3. Perishable products
