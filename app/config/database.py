@@ -85,8 +85,11 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """
-    Initialize database connection, create all tables,
-    and seed a default super admin user if not already present.
+    Initialize database connection and create all tables.
+
+    Seeds nothing. The demo branches and admin accounts that used to be
+    created here on every boot were removed on 2026-11-07 at the owner's
+    request: real branches and staff are made from the admin dashboard.
     """
     try:
         # Import all models to ensure they are registered with SQLAlchemy Base metadata
@@ -120,156 +123,9 @@ async def init_db() -> None:
 
         logger.info("✅ PostgreSQL connected and tables initialized successfully")
 
-        await _seed_admin_accounts()
-
     except Exception as e:
         logger.error(f"❌ PostgreSQL connection/initialization failed: {e}")
         raise
-
-
-# Branches the demo admins are scoped to. Seeded first, because a branch
-# manager without a branch_id can see nothing.
-_SEED_BRANCHES = [
-    # (code, name,            district,  province)
-    ("CMB", "Colombo Main",   "Colombo", "Western"),
-    ("KDY", "Kandy Central",  "Kandy",   "Central"),
-    ("GLE", "Galle Fort",     "Galle",   "Southern"),
-]
-
-# The accounts documented in admin/ADMIN_CREDENTIALS.md.
-#
-# NOTE ON ROLES: staff1.colombo is seeded as CUSTOMER_SUPPORT, a real base
-# role — not the delegated AdminRole.STAFF (role='staff') introduced by
-# migration 037, which requires a role_id pointing at a custom role a
-# base-role admin created at runtime and can't be pre-seeded here.
-_SEED_ADMINS = [
-    # (email,                             full_name,               role,                            branch_code)
-    ("superadmin@sribeesonline.lk",      "Super Admin",            "SUPER_ADMIN",       None),
-    ("manager.colombo@sribeesonline.lk", "Colombo Branch Manager", "BRANCH_MANAGER",    "CMB"),
-    ("manager.kandy@sribeesonline.lk",   "Kandy Branch Manager",   "BRANCH_MANAGER",    "KDY"),
-    ("manager.galle@sribeesonline.lk",   "Galle Branch Manager",   "BRANCH_MANAGER",    "GLE"),
-    ("staff1.colombo@sribeesonline.lk",  "Colombo Staff",          "CUSTOMER_SUPPORT",  "CMB"),
-    ("inventory@sribeesonline.lk",       "Inventory Manager",      "INVENTORY_MANAGER", None),
-    ("support@sribeesonline.lk",         "Customer Support",       "CUSTOMER_SUPPORT",  None),
-]
-
-_SEED_PASSWORD = "Admin@123"
-
-
-async def _seed_admin_accounts() -> None:
-    """
-    Seed the documented demo branches and admin accounts.
-
-    Idempotent: each row is created only when absent, so this is safe to run on
-    every boot and will not overwrite a password that has since been changed.
-
-    Hashing goes through the app's own hash_password (Argon2) rather than
-    embedding precomputed hashes in a SQL migration, so the code that writes a
-    hash is always the code that verifies it.
-    """
-    from sqlalchemy import select, text
-
-    from app.core.security import hash_password
-    from app.models.admin import Admin, AdminRole
-    from app.models.branch import Branch
-
-    async with get_db_context() as db:
-        # Acquire Postgres advisory transaction lock to serialize demo seeding across workers
-        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext('sribees_seed_admin_lock'))"))
-
-        # Production is marked `ALTER DATABASE ... SET sribees.demo_seed =
-        # 'off'`, the same switch the seed migrations obey. Without this, every
-        # boot re-creates the demo admins, whose shared password is in this
-        # file, as soon as anyone deletes them.
-        demo_seed = (
-            await db.execute(text("SELECT current_setting('sribees.demo_seed', true)"))
-        ).scalar()
-        if demo_seed == "off":
-            logger.info("Demo admin/branch seed skipped (sribees.demo_seed = off)")
-            return
-
-        # Resolve the system roles migration 037 seeds, so a new admin can be
-        # given the role_id that migration eventually makes NOT NULL.
-        #
-        # This is load-bearing, and its absence took the service down rather
-        # than just skipping a seed. The deploy boots the app BEFORE running
-        # migrations, so on the very first deploy role_id is still nullable and
-        # inserting without it works. On every deploy after that 037 has already
-        # run, the column is NOT NULL, and this function — which runs on EVERY
-        # boot — died on the constraint. A failed startup means the container
-        # never reports healthy, so the whole API stays down.
-        #
-        # The lookup is deliberately tolerant: on a database where 037 has not
-        # run yet, `roles` is absent or empty, role_ids stays empty, role_id
-        # stays None — and that is fine, because the column is still nullable
-        # at that point and 037's own backfill fills it in afterwards.
-        role_ids: dict[str, object] = {}
-        if (await db.execute(text("SELECT to_regclass('public.roles')"))).scalar() is not None:
-            role_ids = {
-                row.system_key: row.role_id
-                for row in (
-                    await db.execute(
-                        text("SELECT system_key, role_id FROM roles WHERE system_key IS NOT NULL")
-                    )
-                ).all()
-            }
-
-        branch_ids: dict[str, object] = {}
-        created_branches = 0
-
-        for code, name, district, province in _SEED_BRANCHES:
-            existing = (
-                await db.execute(select(Branch).where(Branch.code == code))
-            ).scalar_one_or_none()
-            if existing is None:
-                existing = Branch(
-                    name=name, code=code, district=district,
-                    province=province, is_active=True,
-                )
-                db.add(existing)
-                await db.flush()  # assign branch_id before the admins reference it
-                created_branches += 1
-            branch_ids[code] = existing.branch_id
-
-        created_admins = []
-        for email, full_name, role_name, branch_code in _SEED_ADMINS:
-            # Select only admin_id, not the whole ORM entity. select(Admin)
-            # expands to every mapped column — including role_id/
-            # parent_admin_id, which do not exist in the DB yet at this point
-            # in the deploy (app boots before migration 037 adds them) — and
-            # crashes with UndefinedColumnError, taking startup down with it.
-            # admin_id is present on every schema version this ever runs
-            # against, migrated or not.
-            existing = (
-                await db.execute(select(Admin.admin_id).where(Admin.email == email))
-            ).scalar_one_or_none()
-            if existing is not None:
-                continue
-            db.add(Admin(
-                email=email,
-                password_hash=hash_password(_SEED_PASSWORD),
-                full_name=full_name,
-                role=getattr(AdminRole, role_name),
-                # None until 037 has run and seeded the system roles; NOT NULL
-                # from then on. See the lookup above.
-                role_id=role_ids.get(role_name.lower()),
-                branch_id=branch_ids.get(branch_code) if branch_code else None,
-                is_active=True,
-            ))
-            created_admins.append(email)
-
-        if created_branches or created_admins:
-            try:
-                await db.commit()
-                logger.info(
-                    "✅ Seeded %d branch(es) and %d admin account(s): %s",
-                    created_branches, len(created_admins), ", ".join(created_admins) or "none",
-                )
-            except Exception as e:
-                await db.rollback()
-                logger.warning(f"⚠️ Demo seed completed by another worker or already present: {e}")
-        else:
-            logger.info("Admin accounts already present — nothing to seed.")
 
 
 async def close_db() -> None:

@@ -31,35 +31,14 @@
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- Demo seed: skipped on a database marked
---     ALTER DATABASE <db> SET sribees.demo_seed = 'off';
--- which production is. Deploys replay every migration, so without this the
--- seed re-creates demo customers, orders, admins and catalog rows every time
--- they are cleared. Unmarked databases (dev, QA, a fresh local one) still seed.
+-- Demo seed REMOVED (2026-11-07, owner's decision).
+--
+-- This file used to insert demo branches (Colombo Main, Kandy City, Galle Fort, Negombo Beach, Kurunegala Hub). Every deploy replays every migration,
+-- so test branches and test admin accounts kept coming back on any database
+-- not marked sribees.demo_seed = 'off'. Production was already marked; the
+-- owner asked for the seed data to be gone for good, so the inserts are
+-- deleted rather than switched off. The file stays (empty) so the migration
+-- numbering and the deploy's replay list do not change.
+--
+-- Real branches, staff and catalogue are created from the admin dashboard.
 -- ---------------------------------------------------------------------------
-SELECT coalesce(nullif(current_setting('sribees.demo_seed', true), ''), 'on') <> 'off' AS demo_seed \gset
-\if :demo_seed
-\else
-\echo 'Skipped: sribees.demo_seed is off for this database.'
-\quit
-\endif
-
-INSERT INTO branches (branch_id, name, code, address, post_office, district, province, phone, is_active) VALUES
-    ('b0000000-0000-4000-a000-000000000001', 'Colombo Main',   'CMB',
-     'No. 142, Galle Road, Colombo 03',   'Colombo 03', 'Colombo',    'Western',       '+94112345601', TRUE),
-    ('b0000000-0000-4000-a000-000000000002', 'Kandy City',     'KDY',
-     'No. 27, Peradeniya Road, Kandy',    'Kandy',      'Kandy',      'Central',       '+94812345602', TRUE),
-    ('b0000000-0000-4000-a000-000000000003', 'Galle Fort',     'GLE',
-     'No. 8, Church Street, Galle',       'Galle',      'Galle',      'Southern',      '+94912345603', TRUE),
-    ('b0000000-0000-4000-a000-000000000004', 'Negombo Beach',  'NGB',
-     'No. 55, Lewis Place, Negombo',      'Negombo',    'Gampaha',    'Western',       '+94312345604', TRUE),
-    ('b0000000-0000-4000-a000-000000000005', 'Kurunegala Hub', 'KUR',
-     'No. 19, Colombo Road, Kurunegala',  'Kurunegala', 'Kurunegala', 'North Western', '+94372345605', TRUE)
-ON CONFLICT (code) DO UPDATE SET
-    name        = EXCLUDED.name,
-    address     = EXCLUDED.address,
-    post_office = EXCLUDED.post_office,
-    district    = EXCLUDED.district,
-    province    = EXCLUDED.province,
-    phone       = EXCLUDED.phone,
-    updated_at  = NOW();

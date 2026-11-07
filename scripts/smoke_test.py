@@ -88,12 +88,12 @@ def main() -> int:
     status, body = request(
         f"{api}/admin/auth/login", payload={"email": args.email, "password": args.password}
     )
-    ok = check("seeded admin can log in", status == 200, status if status != 200 else "")
+    ok = check("smoke admin can log in", status == 200, status if status != 200 else "")
     if not ok:
         check(
-            "admin seed applied",
+            "smoke admin account",
             False,
-            "login failed — check that migrations/026_seed_full_dataset.sql ran",
+            "login failed — check SMOKE_ADMIN_EMAIL/PASSWORD name a real admin",
         )
         return 1
 
