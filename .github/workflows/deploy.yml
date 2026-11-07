@@ -298,10 +298,15 @@ jobs:
           exit 1
 
       - name: Smoke test (the same script the production deploy runs)
+        # Nothing is seeded any more, so the rehearsal makes its own throwaway
+        # admin first, with a password generated for this run only.
         run: |
+          pw="$(openssl rand -hex 24)"
+          docker exec -e NEW_ADMIN_EMAIL=rehearsal@sribeesonline.lk -e NEW_ADMIN_PASSWORD="$pw" \
+            app python scripts/create_super_admin.py
           docker exec app python scripts/smoke_test.py \
-            --base-url http://127.0.0.1:8000 \
-            --email superadmin@sribeesonline.lk --password 'Admin@123'
+            --base-url http://127.0.0.1:8000 --fresh-database \
+            --email rehearsal@sribeesonline.lk --password "$pw"
 
       - name: Production hardening is live in the image
         run: |

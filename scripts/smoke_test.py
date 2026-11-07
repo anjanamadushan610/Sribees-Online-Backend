@@ -14,7 +14,7 @@ cannot authenticate, a branch table that came back empty.
 
 Usage:
     python scripts/smoke_test.py --base-url http://127.0.0.1:8000 \
-        --email superadmin@sribeesonline.lk --password 'Admin@123'
+        --email you@example.com --password '<the admin password>'
 
 Exits 0 when every check passes, 1 otherwise, so a CI step can gate on it.
 Nothing is written to the database: every request here is a GET or a login.
@@ -71,6 +71,12 @@ def main() -> int:
     ap.add_argument("--base-url", default="http://127.0.0.1:8000")
     ap.add_argument("--email", required=True)
     ap.add_argument("--password", required=True)
+    ap.add_argument(
+        "--fresh-database",
+        action="store_true",
+        help="CI rehearsal on an empty database: nothing is seeded any more, so no "
+        "products or branches is reported (WARN), not failed. Never pass it to a real deploy.",
+    )
     args = ap.parse_args()
 
     base = args.base_url.rstrip("/")
@@ -134,7 +140,9 @@ def main() -> int:
     # honestly be zero (just launched, or every order still unpaid).
     status, body = request(f"{api}/admin/products?limit=1", token=token)
     total = int(((body.get("data") or {}).get("pagination") or {}).get("total") or 0)
-    check("the catalog has products", status == 200 and total > 0, total)
+    must = expect if args.fresh_database else check
+    check("/products responds 200", status == 200, status if status != 200 else "")
+    must("the catalog has products", total > 0, total)
 
     # Trade figures: reported, never failed on.
     expect("revenue is non-zero", revenue > 0, revenue)
@@ -142,7 +150,7 @@ def main() -> int:
     expect("customers is non-zero", int(current.get("customers") or 0) > 0)
 
     branches = results["branches"].get("branches") or []
-    check("branches are configured", len(branches) > 0, len(branches))
+    must("branches are configured", len(branches) > 0, len(branches))
     check(
         "every branch row carries a name and code",
         all(b.get("name") and b.get("code") for b in branches),
