@@ -223,3 +223,9 @@ async def update_support_ticket(
 
     logger.info(f"Support ticket {ticket.ticket_number} updated by admin {admin.admin_id} (status: {ticket.status})")
     return _format_ticket(ticket)
+
+
+# Inherit the same support read permission and branch-scoped staff actions.
+from app.api.v1.admin_whatsapp import router as whatsapp_router
+
+router.include_router(whatsapp_router)

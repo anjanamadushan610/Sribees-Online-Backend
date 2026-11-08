@@ -283,6 +283,8 @@ class WorkerDB:
         pass
 
     async def execute(self, statement):
+        if str(statement).startswith("SELECT pg_advisory"):
+            return None
         if statement.is_select:
             return SimpleNamespace(scalar_one_or_none=lambda: self.job)
         self.updates.append(statement.compile(dialect=postgresql.dialect()).params)
@@ -305,6 +307,7 @@ async def test_send_outcomes_do_not_blindly_retry(monkeypatch, outcome, expected
     job = SimpleNamespace(
         reply_id=uuid.uuid4(),
         phone="94760000000",
+        is_staff=False,
         payload=menu("en"),
         attempts=0,
         expires_at=NOW + timedelta(hours=1),
