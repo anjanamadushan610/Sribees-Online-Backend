@@ -20,7 +20,9 @@ MAX_BODY_BYTES = 1024 * 1024
 async def verify_webhook(request: Request):
     params = request.query_params
     token = settings.whatsapp_verify_token
-    if not settings.whatsapp_enabled or not token:
+    if not settings.whatsapp_enabled:
+        raise HTTPException(404, "Not found")
+    if not token:
         raise HTTPException(503, "WhatsApp is not configured")
     if params.get("hub.mode") != "subscribe" or not hmac.compare_digest(
         params.get("hub.verify_token", "").encode(), token.encode()
@@ -34,11 +36,9 @@ async def verify_webhook(request: Request):
 
 @router.post("/webhook")
 async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    if (
-        not settings.whatsapp_enabled
-        or not settings.whatsapp_app_secret
-        or not settings.whatsapp_phone_number_id
-    ):
+    if not settings.whatsapp_enabled:
+        raise HTTPException(404, "Not found")
+    if not settings.whatsapp_app_secret or not settings.whatsapp_phone_number_id:
         raise HTTPException(503, "WhatsApp is not configured")
     body = bytearray()
     async for chunk in request.stream():

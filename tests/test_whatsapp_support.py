@@ -169,7 +169,13 @@ async def test_disabled_and_oversized(configured, monkeypatch):
             )
         ).status_code == 413
         monkeypatch.setattr(settings, "whatsapp_enabled", False)
+        assert (await client.get("/api/v1/whatsapp/webhook")).status_code == 404
+        assert (await client.post("/api/v1/whatsapp/webhook")).status_code == 404
+        monkeypatch.setattr(settings, "whatsapp_enabled", True)
+        monkeypatch.setattr(settings, "whatsapp_verify_token", "")
+        monkeypatch.setattr(settings, "whatsapp_app_secret", "")
         assert (await client.get("/api/v1/whatsapp/webhook")).status_code == 503
+        assert (await client.post("/api/v1/whatsapp/webhook")).status_code == 503
 
 
 class MemoryDB:
