@@ -20,6 +20,7 @@ from app.api.finance_internal import router as finance_internal_router
 from app.api.legal import router as legal_router
 from app.api.share_links import router as share_links_router
 from app.api.v1.router import router as v1_router
+from app.api.whatsapp import router as whatsapp_router
 from app.config.database import close_db, init_db
 from app.config.redis import close_redis, init_redis
 from app.config.settings import settings
@@ -133,6 +134,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.referral_vesting_worker import run_referral_vesting_worker
     from app.services.return_settlement_worker import run_return_settlement_worker
     from app.services.semantic_search import run_embedding_worker
+    from app.services.whatsapp_worker import run_whatsapp_worker
 
     # Separate loops, not one. They fail for unrelated reasons -- reminders,
     # commissions and order rewards each need their own tables -- and sharing
@@ -140,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # silently stopped looks exactly like "the money never vested", which is
     # the one failure nobody reports as a bug.
     background = [
+        asyncio.create_task(run_whatsapp_worker()),
         asyncio.create_task(run_reminder_worker()),
         asyncio.create_task(run_apple_revocation_worker()),
         asyncio.create_task(run_referral_vesting_worker()),
@@ -344,6 +347,7 @@ app.include_router(v1_router, prefix="/api")
 
 # Product share links + Android App Links proof (site root, see share_links.py)
 app.include_router(share_links_router)
+app.include_router(whatsapp_router)
 
 # Privacy policy (site root, see legal.py) — the store-listing URL
 app.include_router(legal_router)

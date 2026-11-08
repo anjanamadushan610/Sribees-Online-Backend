@@ -64,6 +64,8 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("POST", "/api/v1/partner/auth/reset-password"),
     # --- signed or static callbacks -----------------------------------------
     ("POST", "/api/v1/payments/webhook"),  # Stripe signature, see test_webhooks
+    ("GET", "/api/v1/whatsapp/webhook"),  # Meta verification token
+    ("POST", "/api/v1/whatsapp/webhook"),  # Meta HMAC, test_whatsapp_support
     ("GET", "/api/v1/payments/marx/return"),  # static "return to the app" page
     ("POST", "/api/v1/courier/webhooks/shipment-status"),  # HMAC, see test_webhooks
     # Sribees Finance's feed: service token (SHA-256 compared), refused through

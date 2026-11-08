@@ -88,9 +88,12 @@ from app.models.user import (
     UserPhoneChangeHistory,
 )
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
+from app.models.whatsapp import WhatsAppConversation, WhatsAppReply
 from app.models.wishlist import WishlistItem
 
 __all__ = [
+    "WhatsAppConversation",
+    "WhatsAppReply",
     "ReferralBenefit", "ReferralDeliveryRedemption", "ReferralPromotion",
     "FreeDeliveryBranchOffer",
     "FreeDeliveryGrant",
