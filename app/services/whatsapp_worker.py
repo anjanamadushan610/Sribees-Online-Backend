@@ -5,16 +5,18 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from app.config.database import async_session_maker
 from app.config.settings import settings
-from app.models.whatsapp import WhatsAppReply
+from app.models.support_ticket import SupportTicket
+from app.models.whatsapp import WhatsAppConversation, WhatsAppReply
 
 
 async def send_next(client: httpx.AsyncClient) -> bool:
     now = datetime.now(timezone.utc)
     async with async_session_maker() as db:
+        await db.execute(text("SELECT pg_advisory_xact_lock(8767000836)"))
         # A process stopped after recording 'sending' might have delivered the
         # message already. Do not resend it without checking Meta's receipts.
         await db.execute(
@@ -44,6 +46,24 @@ async def send_next(client: httpx.AsyncClient) -> bool:
             job.status = "expired"
             await db.commit()
             return True
+        if job.is_staff:
+            conversation = await db.get(WhatsAppConversation, job.phone)
+            ticket = await db.get(SupportTicket, job.ticket_id)
+            if (
+                conversation is None
+                or ticket is None
+                or conversation.ticket_id != job.ticket_id
+                or not conversation.staff_active
+                or ticket.assigned_admin_id != job.admin_id
+                or ticket.status not in {"pending", "in_progress"}
+            ):
+                job.status = "cancelled"
+                await db.commit()
+                return True
+            if conversation.last_message_at + timedelta(seconds=86100) <= now:
+                job.status = "expired"
+                await db.commit()
+                return True
         job.status = "sending"
         job.attempts += 1
         job_id, phone, payload = job.reply_id, job.phone, job.payload
@@ -52,15 +72,23 @@ async def send_next(client: httpx.AsyncClient) -> bool:
 
     result = "uncertain"
     retry_at = now
+    provider_id = None
     try:
         response = await client.post(
             f"https://graph.facebook.com/{settings.whatsapp_graph_version}/{settings.whatsapp_phone_number_id}/messages",
             headers={"Authorization": "Bearer " + settings.whatsapp_access_token},
-            json={"messaging_product": "whatsapp", "to": phone, **payload},
+            json={
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "biz_opaque_callback_data": str(job_id),
+                **payload,
+            },
         )
         if response.status_code == 200:
             data = response.json()
-            if data.get("messages", [{}])[0].get("id"):
+            candidate = data.get("messages", [{}])[0].get("id")
+            if isinstance(candidate, str) and 1 <= len(candidate) <= 255:
+                provider_id = candidate
                 result = "accepted"
         elif response.status_code == 429 and attempts < 5:
             result = "pending"
@@ -78,13 +106,16 @@ async def send_next(client: httpx.AsyncClient) -> bool:
         # Never log response bodies, recipient numbers or access tokens.
         result = "uncertain"
     async with async_session_maker() as db:
+        await db.execute(text("SELECT pg_advisory_xact_lock(8767000836)"))
         await db.execute(
             update(WhatsAppReply)
             .where(
                 WhatsAppReply.reply_id == job_id,
                 WhatsAppReply.status == "sending",
             )
-            .values(status=result, next_attempt_at=retry_at)
+            .values(
+                status=result, next_attempt_at=retry_at, provider_message_id=provider_id
+            )
         )
         await db.commit()
     if result in {"failed", "uncertain"}:

@@ -9,6 +9,7 @@ from app.api.v1.support import _generate_ticket_number
 from app.models.support_ticket import SupportTicket, TicketStatus
 from app.models.whatsapp import WhatsAppConversation, WhatsAppReply
 from app.services.whatsapp_menu import answer, incoming_messages, menu, text_reply
+from app.services.whatsapp_receipts import receive_statuses
 
 
 async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
@@ -16,6 +17,7 @@ async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
     # Serialize menu state transitions across concurrent webhook deliveries.
     # This lock is released at transaction end, and never covers an HTTP send.
     await db.execute(sql_text("SELECT pg_advisory_xact_lock(8767000836)"))
+    await receive_statuses(db, payload, phone_number_id)
     for message_id, phone, received_at, body, kind in incoming_messages(
         payload, phone_number_id, now
     ):
@@ -25,6 +27,9 @@ async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
                 .values(
                     message_id=message_id,
                     phone=phone,
+                    inbound_text=body,
+                    inbound_type=kind,
+                    received_at=received_at,
                     status="ignored",
                     expires_at=received_at + timedelta(seconds=86100),
                 )
@@ -47,15 +52,29 @@ async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
         elif (received_at - conversation.last_message_at).total_seconds() >= 86400:
             conversation.awaiting_details = False
             conversation.ticket_id = None
+            conversation.staff_active = False
         conversation.last_message_at = max(conversation.last_message_at, received_at)
         command = body.casefold()
-        if command in {"menu", "start", "hi", "hello", "si", "en", "සිංහල", "english"}:
+        reset_commands = {
+            "menu",
+            "start",
+            "hi",
+            "hello",
+            "si",
+            "en",
+            "සිංහල",
+            "english",
+        }
+        if command == "menu" or (
+            not conversation.staff_active and command in reset_commands
+        ):
             if command in {"si", "සිංහල"}:
                 conversation.language = "si"
             elif command in {"en", "english"}:
                 conversation.language = "en"
             conversation.awaiting_details = False
             conversation.ticket_id = None
+            conversation.staff_active = False
             reply.payload = menu(conversation.language)
         elif conversation.ticket_id:
             ticket = await db.get(SupportTicket, conversation.ticket_id)
@@ -63,6 +82,7 @@ async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
                 TicketStatus.PENDING.value,
                 TicketStatus.IN_PROGRESS.value,
             }:
+                reply.ticket_id = ticket.ticket_id
                 addition = (
                     body
                     or "[Customer sent a non-text message; request details by phone.]"
@@ -73,6 +93,7 @@ async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
                 )[-16000:]
             else:
                 conversation.ticket_id = None
+                conversation.staff_active = False
                 reply.payload = menu(conversation.language)
         elif command == "support":
             conversation.awaiting_details = True
@@ -96,6 +117,7 @@ async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
                 )
                 db.add(ticket)
                 await db.flush()
+                reply.ticket_id = ticket.ticket_id
                 conversation.ticket_id = ticket.ticket_id
                 conversation.awaiting_details = False
                 reply.payload = text_reply(
