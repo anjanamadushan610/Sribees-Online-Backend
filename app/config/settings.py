@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     debug: bool = Field(default=False, description="Debug mode")
     api_version: str = Field(default="v1", description="API version prefix")
 
+    # WhatsApp is opt-in. Secrets are server environment values only.
+    whatsapp_enabled: bool = False
+    whatsapp_verify_token: str = Field(default="", repr=False)
+    whatsapp_app_secret: str = Field(default="", repr=False)
+    whatsapp_access_token: str = Field(default="", repr=False)
+    whatsapp_phone_number_id: str = Field(default="", pattern=r"^\d*$")
+    whatsapp_graph_version: str = Field(default="", pattern=r"^(v\d+\.\d+)?$")
+
     # =========================================================================
     # Wallet & Cashback
     # =========================================================================
