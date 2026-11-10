@@ -120,3 +120,22 @@ async def test_same_checkout_resumed_without_another_gateway_request(monkeypatch
     action = await door.start(db, row, SimpleNamespace(email="test@example.com"), lang="en")
     assert action["url"] == "https://pay.test/1"
     db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_late_payment_after_definitive_failure_is_refunded_once(monkeypatch):
+    from app.payments import service
+
+    refund = AsyncMock()
+    monkeypatch.setattr(service, "_give_back", refund)
+    courier = AsyncMock()
+    monkeypatch.setattr(door.CourierService, "delivery_card_payment", courier)
+    row = order(delivery_card_state="failed", delivery_card_reference="DOOR-123")
+    pay = attempt(status="failed", courier_synced="yes")
+    db = AsyncMock()
+    await door.apply_answer(db, row, pay, GatewayAnswer(Outcome.PAID))
+    await door.apply_answer(db, row, pay, GatewayAnswer(Outcome.PAID))
+    refund.assert_awaited_once_with(db, row, pay, second=True)
+    assert pay.raw["delivery_refunded_to_wallet"] is True
+    assert row.payment_method == "COD" and row.delivery_card_state == "failed"
+    courier.assert_not_awaited()

@@ -16,6 +16,7 @@ from tests.integration.test_online_payments import _place, marx  # noqa: F401
 async def test_cod_at_door_captures_once_without_rebooking(
     api, db, app_redis, world, make_customer, make_product, fake_courier, marx, monkeypatch,  # noqa: F811
 ):
+    monkeypatch.setattr(settings, "finance_outbox_enabled", True)
     customer = await make_customer()
     product = await make_product(price="500.00", stock=10)
     response = await _place(api, app_redis, world, customer, product, method="COD")
@@ -59,3 +60,20 @@ async def test_cod_at_door_captures_once_without_rebooking(
     assert await db.scalar(select(func.count()).select_from(PaymentAttempt).where(
         PaymentAttempt.order_id == fresh.order_id, PaymentAttempt.purpose == "delivery_card")) == 1
     assert [call.kwargs["operation"] for call in mock.await_args_list] == ["reserve", "paid"]
+    # The existing Finance feed sees the gateway receipt once, before Express
+    # can complete delivery. It must not book rider cash for this payment.
+    from app.models.finance_outbox import FinanceOutbox
+
+    receipts = (await db.execute(select(FinanceOutbox).where(
+        FinanceOutbox.aggregate_id == fresh.order_id,
+        FinanceOutbox.event_type == "payment.received"))).scalars().all()
+    assert len(receipts) == 1
+    assert Decimal(receipts[0].payload["amount"]) == fresh.total_amount
+    assert receipts[0].payload["method_code"] == "MARX_OTHER"
+    fresh.status = "delivered"
+    await db.commit()
+    delivered = (await db.execute(select(FinanceOutbox).where(
+        FinanceOutbox.aggregate_id == fresh.order_id,
+        FinanceOutbox.event_type == "order.status"))).scalars().all()
+    delivered = [event for event in delivered if event.payload.get("to_status") == "delivered"]
+    assert len(delivered) == 1 and receipts[0].seq < delivered[0].seq

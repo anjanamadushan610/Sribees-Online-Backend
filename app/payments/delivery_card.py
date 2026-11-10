@@ -191,6 +191,8 @@ async def apply_answer(db, order, attempt, answer):
         order.payment_id = attempt.gateway_ref
         order.gateway_tr_id = attempt.gateway_ref
         order.gateway_status = "SUCCESS"
+        order.gateway_response_code = (answer.code or "")[:50] or None
+        order.gateway_confirmed_at = _now()
         order.gateway_raw_response = answer.raw or None
     await db.commit()
     await sync_courier(db, order, attempt)
@@ -204,7 +206,7 @@ async def sweep(db, now):
     ids = (await db.execute(select(PaymentAttempt.attempt_id).where(
         PaymentAttempt.purpose == PURPOSE,
         (PaymentAttempt.courier_synced.is_(None)) | (PaymentAttempt.status.in_(("started", "pending"))),
-    ).order_by(PaymentAttempt.created_at).limit(200))).scalars().all()
+    ).order_by(PaymentAttempt.created_at))).scalars().all()
     for attempt_id in ids:
         try:
             attempt = await db.get(PaymentAttempt, attempt_id)
