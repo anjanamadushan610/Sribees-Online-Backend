@@ -45,6 +45,19 @@ on:
         required: false
         default: false
         type: boolean
+      lookup_only:
+        description: "Read the selected development customer/rider identities without deploying."
+        required: false
+        default: false
+        type: boolean
+      test_customer_code:
+        description: "Customer profile code for a read-only lookup (SR followed by six characters)."
+        required: false
+        type: string
+      test_rider_name:
+        description: "Exact development rider name for the read-only lookup."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -67,7 +80,7 @@ jobs:
   # ---------------------------------------------------------------------------
   verify:
     name: CI gate
-    if: ${{ inputs.image_ref == '' }}
+    if: ${{ inputs.image_ref == '' && !inputs.lookup_only }}
     uses: ./.github/workflows/deploy.yml
     permissions:
       contents: read
@@ -77,7 +90,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build:
     name: Build & push image
-    if: ${{ inputs.image_ref == '' }}
+    if: ${{ inputs.image_ref == '' && !inputs.lookup_only }}
     needs: [verify]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -132,7 +145,7 @@ jobs:
     needs: [build]
     # always() + an explicit result check so a manual redeploy (which skips
     # build) still runs, while a *failed* build never reaches the server.
-    if: ${{ always() && (needs.build.result == 'success' || inputs.image_ref != '') }}
+    if: ${{ always() && !cancelled() && (inputs.lookup_only || needs.build.result == 'success' || inputs.image_ref != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -152,6 +165,7 @@ jobs:
           persist-credentials: false
 
       - name: Resolve image reference
+        if: ${{ !inputs.lookup_only }}
         id: image
         env:
           BUILT: ${{ needs.build.outputs.image }}
@@ -194,7 +208,33 @@ jobs:
           chmod 600 ~/.ssh/config
           ssh target "echo connected as \$(id -un) on \$(hostname)"
 
+      - name: Inspect selected development test accounts
+        if: ${{ inputs.lookup_only }}
+        env:
+          TEST_CUSTOMER_CODE: ${{ inputs.test_customer_code }}
+          TEST_RIDER_NAME: ${{ inputs.test_rider_name }}
+        run: |
+          selection=$(python3 - <<'PY'
+          import base64
+          import json
+          import os
+          from scripts.inspect_delivery_card_test_accounts import validate_selection
+
+          code, rider = validate_selection({"customer_code": os.environ["TEST_CUSTOMER_CODE"], "rider_name": os.environ["TEST_RIDER_NAME"]})
+          print(base64.b64encode(json.dumps({"customer_code": code, "rider_name": rider}).encode()).decode())
+          PY
+          )
+          online=$(ssh target "docker ps --filter label=com.docker.compose.project=sribees-online-dev --filter label=com.docker.compose.service=app --format '{{.ID}}'")
+          express=$(ssh target "cd /opt/sribees-express-dev && docker compose -f docker-compose.deploy.yml ps -q app-1")
+          [[ "$online" =~ ^[0-9a-f]{12,64}$ ]] && [[ "$express" =~ ^[0-9a-f]{12,64}$ ]] || {
+            echo "::error::expected one Online and one Express development app container"
+            exit 1
+          }
+          ssh target "CARD_TEST_SELECTION_B64='$selection' docker exec -i -e CARD_TEST_SELECTION_B64 '$online' python - online" < scripts/inspect_delivery_card_test_accounts.py
+          ssh target "CARD_TEST_SELECTION_B64='$selection' docker exec -i -e CARD_TEST_SELECTION_B64 '$express' python - express" < scripts/inspect_delivery_card_test_accounts.py
+
       - name: Prepare the remote directory
+        if: ${{ !inputs.lookup_only }}
         # /opt is root-owned and the deploy account has no sudo, by design. On
         # a fresh box `install -d` therefore fails and the deploy dies here.
         # Creating it by hand once is not an answer: the next rebuilt VPS
@@ -222,6 +262,7 @@ jobs:
           REMOTE
 
       - name: Sync deploy bundle
+        if: ${{ !inputs.lookup_only }}
         run: |
           # Only what the server needs to RUN the stack. Application code is
           # never copied here; it arrives exclusively inside the image.
@@ -230,7 +271,7 @@ jobs:
           ssh target "chmod 0750 '$DEPLOY_PATH/deploy-dev.sh'"
 
       - name: Require the latest development changes before gateway preparation
-        if: ${{ inputs.reuse_existing_marx }}
+        if: ${{ inputs.reuse_existing_marx && !inputs.lookup_only }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -251,7 +292,7 @@ jobs:
           }
 
       - name: Refuse a gateway switch while development payments are in flight
-        if: ${{ inputs.reuse_existing_marx }}
+        if: ${{ inputs.reuse_existing_marx && !inputs.lookup_only }}
         run: |
           ssh target 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
@@ -288,6 +329,7 @@ jobs:
           REMOTE
 
       - name: Install the environment file (0600, never echoed)
+        if: ${{ !inputs.lookup_only }}
         env:
           DEV_ENV_FILE: ${{ secrets.DEV_ENV_FILE }}
           REUSE_EXISTING_MARX: ${{ inputs.reuse_existing_marx }}
@@ -359,6 +401,7 @@ jobs:
             "umask 077 && cat > '$DEPLOY_PATH/.env.new' && chmod 600 '$DEPLOY_PATH/.env.new' && mv '$DEPLOY_PATH/.env.new' '$DEPLOY_PATH/.env'"
 
       - name: Registry login on the server (short-lived job token)
+        if: ${{ !inputs.lookup_only }}
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
@@ -367,6 +410,7 @@ jobs:
             "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
 
       - name: Roll out
+        if: ${{ !inputs.lookup_only }}
         id: rollout
         env:
           IMAGE: ${{ steps.image.outputs.image }}
@@ -374,6 +418,7 @@ jobs:
           ssh target "cd '$DEPLOY_PATH' && APP_IMAGE='$IMAGE' ./deploy-dev.sh deploy"
 
       - name: Report development payment readiness without secrets
+        if: ${{ !inputs.lookup_only }}
         env:
           EXPECTED_RETURN_URL: ${{ inputs.reuse_existing_marx && secrets.MARX_IPG_RETURN_URL || '' }}
         run: |
@@ -415,6 +460,7 @@ jobs:
           REMOTE
 
       - name: Smoke test through the public edge
+        if: ${{ !inputs.lookup_only }}
         env:
           DOMAIN: ${{ secrets.DEV_DOMAIN }}
         run: |
@@ -437,5 +483,5 @@ jobs:
             || echo "::warning::automatic rollback failed - investigate on the host"
 
       - name: Drop the registry credential from the server
-        if: always()
+        if: ${{ always() && !inputs.lookup_only }}
         run: ssh target "docker logout ghcr.io" || true
