@@ -225,7 +225,7 @@ jobs:
           PY
           )
           online=$(ssh target "docker ps --filter label=com.docker.compose.project=sribees-online-dev --filter label=com.docker.compose.service=app --format '{{.ID}}'")
-          express=$(ssh target "cd /opt/sribees-express-dev && docker compose -f docker-compose.deploy.yml ps -q app-1")
+          express=$(ssh target 'cd /opt/sribees-express-dev && APP_IMAGE="$(cat .image)" docker compose -f docker-compose.deploy.yml ps -q app-1')
           [[ "$online" =~ ^[0-9a-f]{12,64}$ ]] && [[ "$express" =~ ^[0-9a-f]{12,64}$ ]] || {
             echo "::error::expected one Online and one Express development app container"
             exit 1
