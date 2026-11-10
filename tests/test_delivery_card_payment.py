@@ -11,10 +11,21 @@ from app.payments.gateways.base import GatewayAnswer, Outcome
 from app.services.courier_service import CourierUnavailableError
 
 
+@pytest.fixture(autouse=True)
+def courier_scope(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def scoped(db, branch_id):
+        yield
+
+    monkeypatch.setattr(door.courier_credentials, "for_branch", scoped)
+
+
 def order(**kwargs):
     return SimpleNamespace(**{
         "delivery_card_state": None, "delivery_card_reference": None,
-        "order_id": uuid4(), "order_number": "TEST-1", "payment_method": "COD",
+        "branch_id": uuid4(), "order_id": uuid4(), "order_number": "TEST-1", "payment_method": "COD",
         "payment_status": "pending", "status": "out_for_delivery", "total_amount": Decimal("1500"),
         "courier_shipment_id": "SXP1", "courier_cod_collected": False, **kwargs,
     })

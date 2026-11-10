@@ -31,6 +31,9 @@ async def test_cod_at_door_captures_once_without_rebooking(
     monkeypatch.setattr(settings, "delivery_card_payment_enabled", True)
 
     async def courier(shipment_id, **kwargs):
+        from app.services import courier_credentials
+
+        assert courier_credentials.current().branch_id == world.branch_id
         assert shipment_id == "SXP-DOOR-TEST"
         assert Decimal(kwargs["amount"]) == Decimal(str(original["total_amount"]))
         return {"state": "pending" if kwargs["operation"] == "reserve" else kwargs["operation"]}

@@ -22,6 +22,8 @@ from app.payments.gateways.base import (
     Outcome,
     PayerDetailsMissing,
 )
+from app.services import courier_credentials
+from app.services.courier_credentials import CourierNotConfiguredError
 from app.services.courier_service import (
     CourierError,
     CourierService,
@@ -106,8 +108,7 @@ async def start(db, order, user, *, lang):
                      .with_for_update())
     order = await lock_order(db, order.order_id)
     try:
-        await CourierService.delivery_card_payment(
-            order.courier_shipment_id, operation="reserve", reference=attempt.reference,
+        await courier_change(db, order, operation="reserve", reference=attempt.reference,
             amount=str(attempt.amount),
         )
         checkout = await open_checkout(method=method, reference=attempt.reference,
@@ -119,7 +120,7 @@ async def start(db, order, user, *, lang):
         attempt.checkout_url = checkout.redirect_url
         order.delivery_card_state = "pending"
         await db.commit()
-    except (CourierError, CourierUnavailableError, GatewayError, PayerDetailsMissing) as exc:
+    except (CourierError, CourierUnavailableError, CourierNotConfiguredError, GatewayError, PayerDetailsMissing) as exc:
         # No checkout URL has been handed out. A durable failed start is
         # released by reconciliation; a lost reserve response is not guessed.
         attempt.status = "failed"
@@ -132,18 +133,22 @@ async def start(db, order, user, *, lang):
     return action(attempt)
 
 
+async def courier_change(db, order, **payload):
+    async with courier_credentials.for_branch(db, order.branch_id):
+        return await CourierService.delivery_card_payment(order.courier_shipment_id, **payload)
+
+
 async def sync_courier(db, order, attempt):
     if attempt.courier_synced == "yes":
         return
     operation = "paid" if attempt.status == "paid" else "failed"
     try:
-        answer = await CourierService.delivery_card_payment(
-            order.courier_shipment_id, operation=operation, reference=attempt.reference,
+        answer = await courier_change(db, order, operation=operation, reference=attempt.reference,
             amount=str(attempt.amount), gateway_reference=attempt.gateway_ref,
         )
         if answer.get("state") != operation:
             raise CourierUnavailableError("Unexpected delivery payment acknowledgement")
-    except (CourierError, CourierUnavailableError):
+    except (CourierError, CourierUnavailableError, CourierNotConfiguredError):
         logger.warning(f"Delivery card acknowledgement pending for {attempt.reference}; cash remains blocked")
         return
     attempt.courier_synced = "yes"
