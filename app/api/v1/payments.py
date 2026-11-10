@@ -122,6 +122,14 @@ async def pay_order(
     """Pay (again) for an order still waiting for its money, by the method it
     was placed with or another online one. Answers with where to go."""
     order = await _own_order(db, order_id, current_user)
+    if (order.payment_method or "").upper() == "COD":
+        from app.payments.delivery_card import start
+
+        try:
+            action = await start(db, order, current_user, lang=current_language())
+        except online_payments.PaymentError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        return {"success": True, "data": {"payment_action": action}}
     try:
         action = await online_payments.pay_again(
             db, order, current_user, method_code=data.method, lang=current_language()

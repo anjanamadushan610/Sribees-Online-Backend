@@ -2145,6 +2145,11 @@ class OrderService:
         context: Optional[dict] = None,
     ) -> Order:
         """Cancel an order, refund what was paid, and record who did it."""
+        from app.payments.delivery_card import lock_order
+
+        order = await lock_order(db, order.order_id)
+        if order.delivery_card_state in ("preparing", "pending", "syncing", "review"):
+            raise ValueError("Card payment is being verified. Please wait before cancelling.")
         # The same rule the customer's button is drawn from. A parcel a rider
         # is carrying CAN be cancelled -- it becomes a request the rider acts on
         # (see _cancel_courier_shipment) -- and this list used to say otherwise,

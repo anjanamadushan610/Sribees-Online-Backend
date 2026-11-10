@@ -17,6 +17,9 @@ _ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
+    # Enable only after Express migration and the updated Rider app are deployed.
+    delivery_card_payment_enabled: bool = False
+
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(

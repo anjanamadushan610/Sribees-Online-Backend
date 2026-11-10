@@ -113,6 +113,8 @@ class Order(Base):
 
     status = Column(String(30), default=OrderStatus.PENDING.value)
     payment_status = Column(String(30), default=PaymentStatus.PENDING.value)
+    delivery_card_state = Column(String(20), nullable=True)
+    delivery_card_reference = Column(String(80), nullable=True)
     payment_id = Column(String(255), nullable=True)
     payment_method = Column(String(50), nullable=True)
 
