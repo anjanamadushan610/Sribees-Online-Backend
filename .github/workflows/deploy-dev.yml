@@ -45,6 +45,11 @@ on:
         required: false
         default: false
         type: boolean
+      preview_catalog:
+        description: "Copy owner-approved bounded production catalog sample to development only (requires lookup_only)."
+        required: false
+        default: false
+        type: boolean
       lookup_only:
         description: "Read the selected development customer/rider identities without deploying."
         required: false
@@ -216,8 +221,19 @@ jobs:
           chmod 600 ~/.ssh/config
           ssh target "echo connected as \$(id -un) on \$(hostname)"
 
+      - name: Copy aisle catalog sample to development
+        if: ${{ inputs.lookup_only && inputs.preview_catalog }}
+        run: |
+          python3 - <<'PYCODE'
+          import pathlib
+          import shlex
+          import subprocess
+          code = pathlib.Path("scripts/preview_aisle_catalog.py").read_text()
+          subprocess.run(["ssh", "target", "python3 -c " + shlex.quote(code) + " copy"], input=code, text=True, check=True)
+          PYCODE
+
       - name: Inspect selected development test accounts
-        if: ${{ inputs.lookup_only }}
+        if: ${{ inputs.lookup_only && !inputs.preview_catalog }}
         env:
           TEST_CUSTOMER_CODE: ${{ inputs.test_customer_code }}
           TEST_RIDER_NAME: ${{ inputs.test_rider_name }}
