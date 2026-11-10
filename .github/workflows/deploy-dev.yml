@@ -230,8 +230,11 @@ jobs:
             echo "::error::expected one Online and one Express development app container"
             exit 1
           }
-          ssh target "CARD_TEST_SELECTION_B64='$selection' docker exec -i -e CARD_TEST_SELECTION_B64 '$online' python - online" < scripts/inspect_delivery_card_test_accounts.py
-          ssh target "CARD_TEST_SELECTION_B64='$selection' docker exec -i -e CARD_TEST_SELECTION_B64 '$express' python - express" < scripts/inspect_delivery_card_test_accounts.py
+          online_status=0
+          rider_status=0
+          ssh target "CARD_TEST_SELECTION_B64='$selection' docker exec -i -e CARD_TEST_SELECTION_B64 '$online' python - online" < scripts/inspect_delivery_card_test_accounts.py || online_status=$?
+          ssh target "CARD_TEST_SELECTION_B64='$selection' docker exec -i -e CARD_TEST_SELECTION_B64 '$express' python - express" < scripts/inspect_delivery_card_test_accounts.py || rider_status=$?
+          [ "$online_status" -eq 0 ] && [ "$rider_status" -eq 0 ]
 
       - name: Prepare the remote directory
         if: ${{ !inputs.lookup_only }}
