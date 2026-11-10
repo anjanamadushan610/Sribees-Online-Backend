@@ -18,6 +18,7 @@ from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
 from app.api.finance_internal import router as finance_internal_router
 from app.api.legal import router as legal_router
+from app.api.offer_images import router as offer_images_router
 from app.api.share_links import router as share_links_router
 from app.api.v1.router import router as v1_router
 from app.api.whatsapp import router as whatsapp_router
@@ -352,6 +353,8 @@ app.include_router(v1_router, prefix="/api")
 
 # Product share links + Android App Links proof (site root, see share_links.py)
 app.include_router(share_links_router)
+# Festival offer product pictures (site root, see offer_images.py)
+app.include_router(offer_images_router)
 app.include_router(whatsapp_router)
 
 # Privacy policy (site root, see legal.py) — the store-listing URL

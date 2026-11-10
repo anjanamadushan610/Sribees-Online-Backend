@@ -18,7 +18,7 @@ from app.core.dependencies import get_current_user
 from app.core.media import media_url
 from app.models.product import BranchInventory
 from app.schemas.cart import WishlistItemAdd
-from app.services import branch_service
+from app.services import branch_service, festival_offer
 from app.services.product_service import ProductService
 from app.services.wishlist_service import WishlistService
 
@@ -87,7 +87,13 @@ def format_wishlist_item(
             "average_rating": float(item.product.average_rating) if getattr(item.product, "average_rating", None) else 0,
             "review_count": int(item.product.review_count) if getattr(item.product, "review_count", None) else 0,
             "images": [
-                {"image_url": media_url(img.image_url), "is_primary": img.is_primary}
+                {
+                    # A running festival offer (11.11) shows its design.
+                    "image_url": festival_offer.offer_image_url(
+                        img.image_url, cashback_map.get(str(item.product.product_id)) if cashback_map else None
+                    ),
+                    "is_primary": img.is_primary,
+                }
                 for img in (item.product.images or [])[:1]  # Just primary image
             ]
         }
