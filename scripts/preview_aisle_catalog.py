@@ -57,7 +57,7 @@ async def export_catalog():
                     image["image_url"] = urljoin("https://api.sribeesonline.com/", image["image_url"])
                     images.append(image)
             payload = {"categories": [dict(row) for row in categories], "products": products, "images": images}
-            print(json.dumps(payload, default=str))
+            print("SRIBEES_CATALOG_JSON=" + json.dumps(payload, default=str))
     finally:
         await engine.dispose()
 
@@ -142,7 +142,10 @@ if __name__ == "__main__":
         source = container("sribees-online-prod")
         destination = container("sribees-online-dev")
         sample = subprocess.check_output(["docker", "exec", source, "python", "-c", code, "export"], text=True)
-        payload = json.loads(sample)
+        records = [line.removeprefix("SRIBEES_CATALOG_JSON=") for line in sample.splitlines() if line.startswith("SRIBEES_CATALOG_JSON=")]
+        if len(records) != 1:
+            raise ValueError("Expected exactly one catalog export payload")
+        payload = json.loads(records[0])
         print(json.dumps({"source_sample": {key: len(value) for key, value in payload.items()}}))
         subprocess.run(["docker", "exec", "-i", destination, "python", "-c", code, "import"],
                        input=json.dumps(payload), text=True, check=True)
