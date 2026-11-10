@@ -140,6 +140,19 @@ _ORDER_TITLE = {
 
 # key → {"title": {lang: str}, "message": {lang: str}, "standalone": bool}
 TEMPLATES: Dict[str, dict] = {
+    "free_delivery.granted": {
+        "standalone": False,
+        "title": {
+            "en": "Congratulations! Free delivery is yours",
+            "si": "සුභ පැතුම්! ඔබට නොමිලේ බෙදාහැරීම ලැබුණා",
+            "ta": "வாழ்த்துகள்! உங்களுக்கு இலவச டெலிவரி கிடைத்துள்ளது",
+        },
+        "message": {
+            "en": "Enjoy free delivery until {expires} (Sri Lanka time). {scope}{minimum}",
+            "si": "{expires} දක්වා (ලංකාවේ වේලාවෙන්) නොමිලේ බෙදාහැරීම භුක්ති විඳින්න. {scope}{minimum}",
+            "ta": "{expires} வரை (இலங்கை நேரம்) இலவச டெலிவரியைப் பெறுங்கள். {scope}{minimum}",
+        },
+    },
     "order.placed": {
         "standalone": True,
         "title": {
