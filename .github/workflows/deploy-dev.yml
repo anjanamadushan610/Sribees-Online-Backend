@@ -304,20 +304,41 @@ jobs:
 
       - name: Refuse a gateway switch while development payments are in flight
         if: ${{ inputs.reuse_existing_marx && !inputs.lookup_only }}
+        env:
+          APPROVED_MARX_KEY: ${{ secrets.MARX_IPG_API_KEY }}
+          APPROVED_MARX_BASE: ${{ secrets.MARX_IPG_BASE_URL }}
+          APPROVED_MARX_RETURN: ${{ secrets.MARX_IPG_RETURN_URL }}
+          APPROVED_TEST_ORDER: ${{ inputs.live_test_order }}
+          APPROVED_TEST_CUSTOMER: ${{ inputs.live_test_customer }}
         run: |
-          ssh target 'bash -s' <<'REMOTE'
+          fingerprint=$(python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+
+          values = [os.environ[key] for key in ("APPROVED_MARX_KEY", "APPROVED_MARX_BASE", "APPROVED_MARX_RETURN", "APPROVED_TEST_ORDER", "APPROVED_TEST_CUSTOMER")]
+          print(hashlib.sha256(json.dumps(values).encode()).hexdigest())
+          PY
+          )
+          ssh target "APPROVED_PAYMENT_FINGERPRINT='$fingerprint' bash -s" <<'REMOTE'
           set -Eeuo pipefail
           mapfile -t online < <(docker ps --filter label=com.docker.compose.project=sribees-online-dev --filter label=com.docker.compose.service=app --format '{{.ID}}')
           [ "${#online[@]}" -eq 1 ] || { echo "expected one development app container"; exit 1; }
-          docker exec -i "${online[0]}" python - <<'PY'
+          docker exec -i -e APPROVED_PAYMENT_FINGERPRINT "${online[0]}" python - <<'PY'
           import asyncio
+          import hashlib
+          import json
+          import os
           from sqlalchemy import text
           from sqlalchemy.ext.asyncio import create_async_engine
           from app.config.settings import settings
 
           if settings.app_env != "development":
               raise SystemExit("gateway preparation requires development")
-          if settings.marx_gateway_methods_enabled or getattr(settings, "delivery_card_payment_enabled", False):
+          values = [settings.marx_ipg_api_key, settings.marx_ipg_base_url, settings.marx_ipg_return_url,
+                    getattr(settings, "delivery_card_test_order", ""), getattr(settings, "delivery_card_test_customer", "")]
+          same_test = hashlib.sha256(json.dumps(values).encode()).hexdigest() == os.environ["APPROVED_PAYMENT_FINGERPRINT"]
+          if settings.marx_gateway_methods_enabled or (getattr(settings, "delivery_card_payment_enabled", False) and not same_test):
               raise SystemExit("disable development payment methods before switching gateway configuration")
 
           async def check():
