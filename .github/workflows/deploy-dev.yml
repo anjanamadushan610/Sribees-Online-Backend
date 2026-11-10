@@ -350,9 +350,9 @@ jobs:
                           "SELECT COUNT(*) FROM payment_attempts "
                           "WHERE gateway = 'marx' AND status IN ('started', 'pending')"
                       ))
-                      if pending:
+                      if pending and not same_test:
                           raise SystemExit("resolve open development Marx attempts before switching configuration")
-                      print("No open development Marx payment attempts")
+                      print(f"Development gateway preflight passed; preserving {pending} open attempts")
               finally:
                   await engine.dispose()
 
