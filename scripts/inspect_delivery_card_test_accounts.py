@@ -6,6 +6,7 @@ import os
 import re
 import sys
 
+
 def validate_selection(selection):
     code = str(selection.get("customer_code", "")).strip().upper()
     rider = str(selection.get("rider_name", "")).strip()
@@ -22,8 +23,9 @@ async def inspect_accounts(kind):
     selection = json.loads(base64.b64decode(os.environ["CARD_TEST_SELECTION_B64"], validate=True))
     code, rider = validate_selection(selection)
     if kind == "online":
-        from app.config.settings import settings
         from sqlalchemy.ext.asyncio import create_async_engine
+
+        from app.config.settings import settings
 
         if settings.app_env != "development":
             raise ValueError("Customer lookup requires development")
