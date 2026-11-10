@@ -60,12 +60,30 @@ async def inspect_accounts(kind):
             row = rows[0]
             if kind == "online":
                 result = {"customer_code": code, "customer_id": str(row["user_id"]), "has_email": row["has_email"]}
+                result["profile_email_status"] = "configured" if row["has_email"] else "missing"
                 orders = (await connection.execute(text(
                     "SELECT order_number, status, payment_method, payment_status, total_amount, "
                     "courier_shipment_id, branch_id FROM orders "
                     "WHERE user_id = :user_id ORDER BY created_at DESC LIMIT 5"
                 ), {"user_id": row["user_id"]})).mappings().all()
                 result["recent_orders"] = [dict(order) for order in orders]
+                from types import SimpleNamespace
+
+                from app.payments.delivery_card import payment_view
+
+                payment_orders = (await connection.execute(text(
+                    "SELECT order_number, user_id, status, payment_method, payment_status, total_amount, "
+                    "courier_shipment_id, courier_cod_collected, delivery_card_state "
+                    "FROM orders WHERE user_id = :user_id ORDER BY created_at DESC LIMIT 5"
+                ), {"user_id": row["user_id"]})).mappings().all()
+                result["payment_actions"] = []
+                for payment_order in payment_orders:
+                    view = payment_view(SimpleNamespace(**payment_order), "en")
+                    result["payment_actions"].append({
+                        "order_number": payment_order["order_number"],
+                        "state": view["state"] if view else None,
+                        "action": "available" if view and view["can_pay"] else "unavailable",
+                    })
             else:
                 result = {"rider_id": row["id"], "rider_name": row["name"]}
             print(json.dumps(result, default=str))
