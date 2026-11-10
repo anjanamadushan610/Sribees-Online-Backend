@@ -50,6 +50,14 @@ on:
         required: false
         default: false
         type: boolean
+      live_test_order:
+        description: "Owner-approved unpaid COD order to enable for live card-at-delivery testing."
+        required: false
+        type: string
+      live_test_customer:
+        description: "Full development customer UUID owning the selected live test order."
+        required: false
+        type: string
       test_customer_code:
         description: "Customer profile code for a read-only lookup (SR followed by six characters)."
         required: false
@@ -336,6 +344,8 @@ jobs:
         env:
           DEV_ENV_FILE: ${{ secrets.DEV_ENV_FILE }}
           REUSE_EXISTING_MARX: ${{ inputs.reuse_existing_marx }}
+          LIVE_TEST_ORDER: ${{ inputs.live_test_order }}
+          LIVE_TEST_CUSTOMER: ${{ inputs.live_test_customer }}
           MARX_IPG_API_KEY: ${{ inputs.reuse_existing_marx && secrets.MARX_IPG_API_KEY || '' }}
           MARX_IPG_BASE_URL: ${{ inputs.reuse_existing_marx && secrets.MARX_IPG_BASE_URL || '' }}
           MARX_IPG_RETURN_URL: ${{ inputs.reuse_existing_marx && secrets.MARX_IPG_RETURN_URL || '' }}
@@ -382,10 +392,26 @@ jobs:
             export MARX_GATEWAY_METHODS_ENABLED=false
             export DELIVERY_CARD_PAYMENT_ENABLED=false
           fi
+          if [ -n "$LIVE_TEST_ORDER" ] || [ -n "$LIVE_TEST_CUSTOMER" ]; then
+            [ "$REUSE_EXISTING_MARX" = "true" ] || { echo "::error::live test requires approved existing Marx configuration"; exit 1; }
+            python3 - <<'PY'
+          import os
+          import re
+          from uuid import UUID
+
+          if not re.fullmatch(r"FC-[0-9]{8}-[A-Z0-9]{6}", os.environ["LIVE_TEST_ORDER"]):
+              raise SystemExit("invalid test order number")
+          if str(UUID(os.environ["LIVE_TEST_CUSTOMER"])) != os.environ["LIVE_TEST_CUSTOMER"]:
+              raise SystemExit("test customer must be a canonical UUID")
+          PY
+            export DELIVERY_CARD_TEST_ORDER="$LIVE_TEST_ORDER"
+            export DELIVERY_CARD_TEST_CUSTOMER="$LIVE_TEST_CUSTOMER"
+            export DELIVERY_CARD_PAYMENT_ENABLED=true
+          fi
           # The SMS gateway keys live as their own secrets, so they can be set
           # or rotated without rebuilding DEV_ENV_FILE. Each set one replaces
           # the same key in it; nothing is echoed.
-          for key in MARX_IPG_API_KEY MARX_IPG_BASE_URL MARX_IPG_RETURN_URL MARX_GATEWAY_METHODS_ENABLED DELIVERY_CARD_PAYMENT_ENABLED SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID APPLE_BUNDLE_ID APPLE_TEAM_ID APPLE_KEY_ID APPLE_PRIVATE_KEY OTP_TEST_PHONES FINANCE_OUTBOX_ENABLED FINANCE_SERVICE_TOKEN_SHA256; do
+          for key in MARX_IPG_API_KEY MARX_IPG_BASE_URL MARX_IPG_RETURN_URL MARX_GATEWAY_METHODS_ENABLED DELIVERY_CARD_PAYMENT_ENABLED DELIVERY_CARD_TEST_ORDER DELIVERY_CARD_TEST_CUSTOMER SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID APPLE_BUNDLE_ID APPLE_TEAM_ID APPLE_KEY_ID APPLE_PRIVATE_KEY OTP_TEST_PHONES FINANCE_OUTBOX_ENABLED FINANCE_SERVICE_TOKEN_SHA256; do
             value=$(printenv "$key" || true)
             if [ "$key" = "APPLE_PRIVATE_KEY" ] && [ -n "$value" ]; then
               # A .p8 spans lines; the .env wants one. Settings unescape it.
@@ -424,16 +450,20 @@ jobs:
         if: ${{ !inputs.lookup_only }}
         env:
           EXPECTED_RETURN_URL: ${{ inputs.reuse_existing_marx && secrets.MARX_IPG_RETURN_URL || '' }}
+          EXPECTED_TEST_ORDER: ${{ inputs.live_test_order }}
+          EXPECTED_TEST_CUSTOMER: ${{ inputs.live_test_customer }}
         run: |
           expected_return_hash=""
           if [ -n "$EXPECTED_RETURN_URL" ]; then
             expected_return_hash=$(printf '%s' "$EXPECTED_RETURN_URL" | sha256sum | awk '{print $1}')
           fi
-          ssh target "EXPECTED_RETURN_SHA256='$expected_return_hash' bash -s" <<'REMOTE'
+          selection=$(python3 -c 'import base64,json,os; print(base64.b64encode(json.dumps([os.environ["EXPECTED_TEST_ORDER"],os.environ["EXPECTED_TEST_CUSTOMER"]]).encode()).decode())')
+          ssh target "EXPECTED_RETURN_SHA256='$expected_return_hash' EXPECTED_TEST_SELECTION='$selection' bash -s" <<'REMOTE'
           set -Eeuo pipefail
           mapfile -t online < <(docker ps --filter label=com.docker.compose.project=sribees-online-dev --filter label=com.docker.compose.service=app --format '{{.ID}}')
           [ "${#online[@]}" -eq 1 ] || { echo "expected one development app container"; exit 1; }
-          docker exec -i -e EXPECTED_RETURN_SHA256 "${online[0]}" python - <<'PY'
+          docker exec -i -e EXPECTED_RETURN_SHA256 -e EXPECTED_TEST_SELECTION "${online[0]}" python - <<'PY'
+          import base64
           import hashlib
           import json
           import os
@@ -443,13 +473,18 @@ jobs:
           if settings.app_env != "development":
               raise SystemExit("payment readiness check requires development")
           expected_hash = os.environ.get("EXPECTED_RETURN_SHA256", "")
+          test_order, test_customer = json.loads(base64.b64decode(os.environ["EXPECTED_TEST_SELECTION"]))
           matches_existing = None
           if expected_hash:
               matches_existing = hashlib.sha256(settings.marx_ipg_return_url.encode()).hexdigest() == expected_hash
               if not matches_existing:
                   raise SystemExit("configured Return URL differs from the existing approved URL")
-              if settings.marx_gateway_methods_enabled or settings.delivery_card_payment_enabled:
-                  raise SystemExit("live gateway preparation must leave payment methods disabled")
+              if settings.marx_gateway_methods_enabled:
+                  raise SystemExit("general checkout payment methods must remain disabled")
+              if settings.delivery_card_payment_enabled != bool(test_order and test_customer):
+                  raise SystemExit("delivery card activation differs from the selected test")
+              if test_order and (settings.delivery_card_test_order != test_order or settings.delivery_card_test_customer != test_customer):
+                  raise SystemExit("delivery card test scope differs from the approved selection")
           print(json.dumps({
               "environment": settings.app_env,
               "delivery_card_enabled": settings.delivery_card_payment_enabled,
@@ -458,6 +493,7 @@ jobs:
               "return_hostname": urlsplit(settings.marx_ipg_return_url).hostname,
               "gateway_key_configured": bool(settings.marx_ipg_api_key),
               "return_url_matches_existing": matches_existing,
+              "selected_test_order": test_order or None,
           }))
           PY
           REMOTE

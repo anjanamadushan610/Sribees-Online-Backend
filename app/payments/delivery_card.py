@@ -33,14 +33,29 @@ from app.services.courier_service import (
 PURPOSE = "delivery_card"
 
 
+def enabled_for(order):
+    if not settings.delivery_card_payment_enabled:
+        return False
+    test_order = settings.delivery_card_test_order
+    test_customer = settings.delivery_card_test_customer
+    if test_order or test_customer:
+        return bool(
+            settings.app_env == "development"
+            and test_order and test_customer
+            and order.order_number == test_order
+            and str(getattr(order, "user_id", "")) == test_customer
+            and settings.marx_ipg_api_key and settings.marx_ipg_return_url
+        )
+    return catalog.get_method("MARX_OTHER").enabled()
+
+
 def payment_view(order, lang):
     state = getattr(order, "delivery_card_state", None)
-    offered = (settings.delivery_card_payment_enabled
+    offered = (enabled_for(order)
                and (order.payment_method or "").upper() == "COD"
                and order.status == "out_for_delivery"
                and order.payment_status != "paid" and order.courier_shipment_id
-               and not order.courier_cod_collected and Decimal(str(order.total_amount or 0)) > 0
-               and catalog.get_method("MARX_OTHER").enabled())
+               and not order.courier_cod_collected and Decimal(str(order.total_amount or 0)) > 0)
     if not state and not offered:
         return None
     if state == "failed" and not offered:
@@ -73,7 +88,7 @@ async def start(db, order, user, *, lang):
     from app.payments.service import PaymentError, _now, open_checkout, payer_for
 
     order = await lock_order(db, order.order_id)
-    if not settings.delivery_card_payment_enabled:
+    if not enabled_for(order):
         raise PaymentError(texts.text("error.methodUnavailable", lang))
     view = payment_view(order, lang)
     # A second tap resumes the SAME checkout, never another card charge.

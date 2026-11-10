@@ -53,6 +53,26 @@ def test_feature_off_then_eligible_and_pending_copy(monkeypatch, lang):
         assert not view["can_pay"] and view["message"] and view["state"] == "delivery_card_pending"
 
 
+def test_live_development_payment_is_limited_to_selected_customer_and_order(monkeypatch):
+    user_id = uuid4()
+    row = order(user_id=user_id)
+    monkeypatch.setattr(settings, "app_env", "development")
+    monkeypatch.setattr(settings, "delivery_card_payment_enabled", True)
+    monkeypatch.setattr(settings, "marx_gateway_methods_enabled", False)
+    monkeypatch.setattr(settings, "delivery_card_test_order", row.order_number)
+    monkeypatch.setattr(settings, "delivery_card_test_customer", str(user_id))
+    monkeypatch.setattr(settings, "marx_ipg_api_key", "fixture-only-key")
+    monkeypatch.setattr(settings, "marx_ipg_return_url", "https://approved.example/return")
+    assert door.payment_view(row, "en")["can_pay"]
+    assert door.payment_view(order(user_id=uuid4()), "en") is None
+    assert door.payment_view(order(user_id=user_id, order_number="OTHER"), "en") is None
+    monkeypatch.setattr(settings, "app_env", "production")
+    assert door.payment_view(row, "en") is None
+    monkeypatch.setattr(settings, "app_env", "development")
+    monkeypatch.setattr(settings, "delivery_card_test_customer", "")
+    assert door.payment_view(row, "en") is None
+
+
 @pytest.mark.asyncio
 async def test_paid_updates_money_before_express_and_does_not_rebook(monkeypatch):
     row = order(delivery_card_state="pending", delivery_card_reference="DOOR-123")
