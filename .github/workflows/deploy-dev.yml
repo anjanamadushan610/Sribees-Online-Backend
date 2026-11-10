@@ -45,6 +45,11 @@ on:
         required: false
         default: false
         type: boolean
+      preview_main_categories:
+        description: "Copy owner-approved production main category metadata and images to development preview."
+        required: false
+        default: false
+        type: boolean
       preview_offers:
         description: "Configure owner-approved synthetic Quick Sale discounts in the development preview branch only."
         required: false
@@ -227,9 +232,10 @@ jobs:
           ssh target "echo connected as \$(id -un) on \$(hostname)"
 
       - name: Copy aisle catalog sample to development
-        if: ${{ inputs.lookup_only && (inputs.preview_catalog || inputs.preview_offers) }}
+        if: ${{ inputs.lookup_only && (inputs.preview_catalog || inputs.preview_offers || inputs.preview_main_categories) }}
         env:
           PREVIEW_OFFERS: ${{ inputs.preview_offers }}
+          PREVIEW_MAIN_CATEGORIES: ${{ inputs.preview_main_categories }}
         run: |
           python3 - <<'PYCODE'
           import os
@@ -237,11 +243,11 @@ jobs:
           import shlex
           import subprocess
           code = pathlib.Path("scripts/preview_aisle_catalog.py").read_text()
-          subprocess.run(["ssh", "target", "python3 -c " + shlex.quote(code) + (" offers" if os.environ["PREVIEW_OFFERS"] == "true" else " copy")], input=code, text=True, check=True)
+          subprocess.run(["ssh", "target", "python3 -c " + shlex.quote(code) + (" offers" if os.environ["PREVIEW_OFFERS"] == "true" else " copy-main" if os.environ["PREVIEW_MAIN_CATEGORIES"] == "true" else " copy")], input=code, text=True, check=True)
           PYCODE
 
       - name: Inspect selected development test accounts
-        if: ${{ inputs.lookup_only && !inputs.preview_catalog && !inputs.preview_offers }}
+        if: ${{ inputs.lookup_only && !inputs.preview_catalog && !inputs.preview_offers && !inputs.preview_main_categories }}
         env:
           TEST_CUSTOMER_CODE: ${{ inputs.test_customer_code }}
           TEST_RIDER_NAME: ${{ inputs.test_rider_name }}
