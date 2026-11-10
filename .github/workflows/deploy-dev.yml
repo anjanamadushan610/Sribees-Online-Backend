@@ -148,6 +148,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve image reference
@@ -228,6 +229,27 @@ jobs:
           scp scripts/deploy-dev.sh "target:$DEPLOY_PATH/deploy-dev.sh"
           ssh target "chmod 0750 '$DEPLOY_PATH/deploy-dev.sh'"
 
+      - name: Require the latest development changes before gateway preparation
+        if: ${{ inputs.reuse_existing_marx }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          development_sha=$(python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"] + "/git/ref/heads/development"
+          request = urllib.request.Request(url, headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"]})
+          with urllib.request.urlopen(request, timeout=20) as response:
+              print(json.load(response)["object"]["sha"])
+          PY
+          )
+          git merge-base --is-ancestor "$development_sha" HEAD || {
+            echo "::error::include the latest development changes before deploying the gateway test"
+            exit 1
+          }
+
       - name: Refuse a gateway switch while development payments are in flight
         if: ${{ inputs.reuse_existing_marx }}
         run: |
@@ -243,7 +265,7 @@ jobs:
 
           if settings.app_env != "development":
               raise SystemExit("gateway preparation requires development")
-          if settings.marx_gateway_methods_enabled or settings.delivery_card_payment_enabled:
+          if settings.marx_gateway_methods_enabled or getattr(settings, "delivery_card_payment_enabled", False):
               raise SystemExit("disable development payment methods before switching gateway configuration")
 
           async def check():
@@ -345,6 +367,7 @@ jobs:
             "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
 
       - name: Roll out
+        id: rollout
         env:
           IMAGE: ${{ steps.image.outputs.image }}
         run: |
@@ -408,7 +431,7 @@ jobs:
           exit 1
 
       - name: Roll back on failure
-        if: failure()
+        if: ${{ failure() && (steps.rollout.outcome == 'success' || steps.rollout.outcome == 'failure') }}
         run: |
           ssh target "cd '$DEPLOY_PATH' && ./deploy-dev.sh rollback" \
             || echo "::warning::automatic rollback failed - investigate on the host"
