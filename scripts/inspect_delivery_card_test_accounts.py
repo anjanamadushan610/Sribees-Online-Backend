@@ -60,9 +60,15 @@ async def inspect_accounts(kind):
             row = rows[0]
             if kind == "online":
                 result = {"customer_code": code, "customer_id": str(row["user_id"]), "has_email": row["has_email"]}
+                orders = (await connection.execute(text(
+                    "SELECT order_number, status, payment_method, payment_status, total_amount, "
+                    "courier_shipment_id, branch_id FROM orders "
+                    "WHERE user_id = :user_id ORDER BY created_at DESC LIMIT 5"
+                ), {"user_id": row["user_id"]})).mappings().all()
+                result["recent_orders"] = [dict(order) for order in orders]
             else:
                 result = {"rider_id": row["id"], "rider_name": row["name"]}
-            print(json.dumps(result))
+            print(json.dumps(result, default=str))
     finally:
         await engine.dispose()
 
