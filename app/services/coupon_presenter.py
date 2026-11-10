@@ -24,7 +24,7 @@ Pure: no database, no request. The endpoint gathers the facts and passes
 them in, which is what keeps this testable line by line.
 """
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
@@ -79,6 +79,17 @@ _COPY: dict[str, dict[str, str]] = {
         "notice.select_items": "Select items in your cart to see which coupons apply.",
         "message.collected": "Offer added to My Coupons",
         "message.applied": "Coupon applied",
+        "expiry.timer": "Ends in",
+        "expiry.days_one": "Ends tomorrow",
+        "expiry.days": "Ends in {count} days",
+        "expiry.date": "Expires {date} {time}",
+        "badge.new": "NEW",
+        "filter.all": "All",
+        "filter.expiring": "Expiring soon",
+        "filter.new": "New",
+        "spotlight.title": "Special offers for you!",
+        "spotlight.button": "Collect & shop now",
+        "spotlight.collected": "{count} coupons added to My Coupons",
     },
     "si": {
         "label.percentage": "{value}% වට්ටම්",
@@ -120,6 +131,17 @@ _COPY: dict[str, dict[str, str]] = {
         "notice.select_items": "යෙදිය හැකි කූපන් බැලීමට ඔබේ කරත්තයේ භාණ්ඩ තෝරන්න.",
         "message.collected": "දීමනාව මගේ කූපන් වෙත එකතු කළා",
         "message.applied": "කූපනය යෙදුවා",
+        "expiry.timer": "අවසන් වීමට",
+        "expiry.days_one": "හෙට අවසන් වේ",
+        "expiry.days": "තව දින {count}යි",
+        "expiry.date": "{date} {time} දක්වා",
+        "badge.new": "අලුත්",
+        "filter.all": "සියල්ල",
+        "filter.expiring": "ඉක්මනින් අවසන් වන",
+        "filter.new": "අලුත්",
+        "spotlight.title": "ඔබට විශේෂ වට්ටම්!",
+        "spotlight.button": "එකතු කර දැන් මිලදී ගන්න",
+        "spotlight.collected": "කූපන {count}ක් My Coupons වලට එකතු විය",
     },
     "ta": {
         "label.percentage": "{value}% தள்ளுபடி",
@@ -161,6 +183,17 @@ _COPY: dict[str, dict[str, str]] = {
         "notice.select_items": "எந்த கூப்பன்கள் பொருந்தும் என்பதைப் பார்க்க உங்கள் கூடையில் பொருட்களைத் தேர்ந்தெடுக்கவும்.",
         "message.collected": "சலுகை எனது கூப்பன்களில் சேர்க்கப்பட்டது",
         "message.applied": "கூப்பன் சேர்க்கப்பட்டது",
+        "expiry.timer": "முடிவடைய",
+        "expiry.days_one": "நாளை முடிவடைகிறது",
+        "expiry.days": "இன்னும் {count} நாட்கள்",
+        "expiry.date": "{date} {time} வரை",
+        "badge.new": "புதியது",
+        "filter.all": "அனைத்தும்",
+        "filter.expiring": "விரைவில் முடிவடைபவை",
+        "filter.new": "புதியவை",
+        "spotlight.title": "உங்களுக்கான சிறப்பு சலுகைகள்!",
+        "spotlight.button": "சேகரித்து இப்போதே வாங்குங்கள்",
+        "spotlight.collected": "{count} கூப்பன்கள் எனது கூப்பன்களில் சேர்க்கப்பட்டன",
     },
 }
 
@@ -196,6 +229,64 @@ def day(dt: datetime, lang: str) -> str:
     return local.strftime("%Y-%m-%d")
 
 
+# When a coupon's end is shown as a live HH:MM:SS timer, as "N days", or as a
+# date (owner, 2026-11-10: timer from 72 hours). Server-side so the windows
+# can move without an app release.
+TIMER_WINDOW = timedelta(hours=72)
+DAYS_WINDOW = timedelta(days=7)
+NEW_WINDOW = timedelta(hours=48)
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def expiry(coupon, lang: str, now: datetime) -> Optional[dict[str, Any]]:
+    """
+    How the card shows its end.
+
+    ``mode`` is ``timer`` (the client counts down ``ends_at`` against the
+    server clock, with ``text`` as the prefix), ``days`` or ``date`` (``text``
+    is the whole line). ``None`` for a coupon with no end.
+    """
+    if coupon.valid_until is None:
+        return None
+    ends = _aware(coupon.valid_until)
+    left = ends - _aware(now)
+    if left <= TIMER_WINDOW:
+        mode, line = "timer", text(lang, "expiry.timer")
+    elif left <= DAYS_WINDOW:
+        # Whole Colombo calendar days, so "3 days" never changes at a random hour.
+        days = (ends.astimezone(COLOMBO).date() - _aware(now).astimezone(COLOMBO).date()).days
+        mode = "days"
+        line = text(lang, "expiry.days_one") if days <= 1 else text(lang, "expiry.days", count=days)
+    else:
+        local = ends.astimezone(COLOMBO)
+        mode = "date"
+        line = text(lang, "expiry.date", date=day(ends, lang), time=local.strftime("%H:%M"))
+    return {"ends_at": ends.astimezone(timezone.utc).isoformat(), "mode": mode, "text": line}
+
+
+def is_new(coupon, now: datetime) -> bool:
+    created = getattr(coupon, "created_at", None)
+    return created is not None and _aware(now) - _aware(created) <= NEW_WINDOW
+
+
+def expiring_soon(coupon, now: datetime) -> bool:
+    if coupon.valid_until is None:
+        return False
+    return _aware(coupon.valid_until) - _aware(now) <= TIMER_WINDOW
+
+
+def filters(lang: str) -> list[dict[str, str]]:
+    """The chips above the list. ``key`` matches a card flag (all = every card)."""
+    return [
+        {"key": "all", "title": text(lang, "filter.all")},
+        {"key": "expiring_soon", "title": text(lang, "filter.expiring")},
+        {"key": "is_new", "title": text(lang, "filter.new")},
+    ]
+
+
 def label(coupon, lang: str) -> str:
     value = Decimal(str(coupon.discount_value or 0))
     if coupon.discount_type == "percentage":
@@ -210,7 +301,13 @@ def _tier_name(tier, lang: str) -> str:
     return localized(tier, "name", lang) or ""
 
 
-def terms(coupon, lang: str, *, category_names: Optional[dict[str, str]] = None) -> list[str]:
+def terms(
+    coupon,
+    lang: str,
+    *,
+    category_names: Optional[dict[str, str]] = None,
+    with_end: bool = True,
+) -> list[str]:
     """The fine print, one short line each, in the order a customer checks it."""
     lines: list[str] = []
     min_order = Decimal(str(coupon.min_order_value or 0))
@@ -240,7 +337,8 @@ def terms(coupon, lang: str, *, category_names: Optional[dict[str, str]] = None)
         )
     if getattr(coupon, "min_tier", None) is not None:
         lines.append(text(lang, "term.tier", level=_tier_name(coupon.min_tier, lang)))
-    if coupon.valid_until is not None:
+    # Clients that draw ``expiry`` ask for the end to be left out here.
+    if with_end and coupon.valid_until is not None:
         lines.append(text(lang, "term.valid_until", date=day(coupon.valid_until, lang)))
     return lines
 
@@ -377,6 +475,8 @@ def present(
     applied: bool = False,
     basket: bool = True,
     category_names: Optional[dict[str, str]] = None,
+    now: Optional[datetime] = None,
+    expiry_line: bool = False,
 ) -> dict[str, Any]:
     """
     One card, ready to draw.
@@ -416,12 +516,19 @@ def present(
         reason(error, lang, restricted=evaluation.restricted) if error is not None else None
     )
 
+    now = now or datetime.now(timezone.utc)
+    fresh = is_new(coupon, now) and not ended
+
     return {
         "coupon_id": str(coupon.coupon_id),
         "code": coupon.code,
         "label": label(coupon, lang),
+        "expiry": expiry(coupon, lang, now) if not ended else None,
+        "expiring_soon": expiring_soon(coupon, now) and not ended,
+        "is_new": fresh,
+        "badge": text(lang, "badge.new") if fresh else None,
         "description": coupon.description,
-        "terms": terms(coupon, lang, category_names=category_names),
+        "terms": terms(coupon, lang, category_names=category_names, with_end=not expiry_line),
         "valid_until": coupon.valid_until.isoformat() if coupon.valid_until else None,
         "section": section,
         "action": action,

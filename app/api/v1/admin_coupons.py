@@ -104,6 +104,8 @@ def _format_coupon(c: Coupon, performance: dict | None = None) -> dict:
         "first_order_only": c.first_order_only,
         "per_user_limit": c.per_user_limit,
         "is_public": c.is_public,
+        "show_in_popup": bool(getattr(c, "show_in_popup", False)),
+        "popup_priority": getattr(c, "popup_priority", 0) or 0,
         "min_tier_id": str(c.min_tier_id) if getattr(c, "min_tier_id", None) else None,
         "target_customer_type": _target_type(c),
         "whitelisted_customers": [
@@ -488,6 +490,8 @@ async def create_coupon(
         first_order_only=data.first_order_only,
         per_user_limit=data.per_user_limit,
         is_public=data.is_public,
+        show_in_popup=data.show_in_popup,
+        popup_priority=data.popup_priority,
         min_tier_id=data.min_tier_id,
         description=data.description,
         discount_type=data.discount_type.value,
@@ -578,6 +582,10 @@ async def update_coupon(
     # Applied after the plain columns, below, because it reads min_tier_id.
     target = fields.pop("target_customer_type", None)
     fields.pop("whitelisted_customers", None)
+    # NOT NULL columns: an explicit null means "leave as is".
+    for key in ("show_in_popup", "popup_priority"):
+        if key in fields and fields[key] is None:
+            fields.pop(key)
     if fields.get("min_tier_id") is not None:
         await _require_tier(db, fields["min_tier_id"])
 

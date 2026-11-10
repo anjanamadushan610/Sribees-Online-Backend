@@ -66,6 +66,9 @@ class CouponCreate(BaseModel):
     first_order_only: bool = False
     per_user_limit: Optional[int] = Field(default=None, ge=1)
     is_public: bool = True
+    # App-open "special offers" popup (migration 107). Higher priority first.
+    show_in_popup: bool = False
+    popup_priority: int = Field(default=0, ge=0, le=1000)
     # Members-only: redeemable from this loyalty level up. NULL = everyone.
     min_tier_id: Optional[UUID] = None
     # 'specific' limits it to whitelisted_customers; 'tier' to min_tier_id.
@@ -122,6 +125,8 @@ class CouponUpdate(BaseModel):
     first_order_only: Optional[bool] = None
     per_user_limit: Optional[int] = Field(default=None, ge=1)
     is_public: Optional[bool] = None
+    show_in_popup: Optional[bool] = None
+    popup_priority: Optional[int] = Field(default=None, ge=0, le=1000)
     # An explicit null opens a members-only coupon to everyone again.
     min_tier_id: Optional[UUID] = None
     target_customer_type: Optional[TargetCustomerType] = None

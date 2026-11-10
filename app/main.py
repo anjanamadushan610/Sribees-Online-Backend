@@ -128,6 +128,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.apple_revocation_worker import run_apple_revocation_worker
     from app.services.assistant_reminder_worker import run_reminder_worker
     from app.services.campaign_service import run_campaign_worker
+    from app.services.coupon_reminder_worker import run_coupon_reminder_worker
     from app.services.courier_coverage_worker import run_postal_city_worker
     from app.services.hybrid.miner import run_learning_worker
     from app.services.order_reward_worker import run_order_reward_worker
@@ -149,6 +150,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         asyncio.create_task(run_order_reward_worker()),
         asyncio.create_task(run_return_settlement_worker()),
         asyncio.create_task(run_campaign_worker()),
+        asyncio.create_task(run_coupon_reminder_worker()),
         asyncio.create_task(run_content_watcher()),
         asyncio.create_task(run_payment_worker()),
         asyncio.create_task(run_postal_city_worker()),
@@ -253,6 +255,9 @@ app.add_middleware(
     allow_credentials=settings.cors_allow_credentials,
     allow_methods=settings.cors_allow_methods,
     allow_headers=settings.cors_allow_headers,
+    # Browsers hide `Date` from cross-origin scripts unless it is exposed. The
+    # web store and admin anchor "now" (coupon countdowns, reports) to it.
+    expose_headers=["Date"],
 )
 
 

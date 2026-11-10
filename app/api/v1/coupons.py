@@ -418,6 +418,9 @@ class EvaluateCouponsRequest(BaseModel):
     use_cart: bool = False
     applied_code: Optional[str] = Field(None, max_length=50)
     include_offers: bool = True
+    # Sent by clients that draw the ``expiry`` line (countdown); the "Valid
+    # till" term is then left out so the end is not shown twice.
+    expiry_line: bool = False
 
 
 async def _branch_id_for(redis: Optional[Redis], current_user) -> Optional[UUID]:
@@ -586,6 +589,8 @@ async def evaluate_coupons(
             applied=is_applied,
             basket=basket,
             category_names=names,
+            now=now,
+            expiry_line=payload.expiry_line,
         )
         if is_applied:
             applied_block = {
@@ -630,7 +635,183 @@ async def evaluate_coupons(
                 else None
             ),
             "sections": coupon_presenter.sections(cards, lang),
+            "filters": coupon_presenter.filters(lang),
             "coupons": cards,
             "applied": applied_block,
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# App-open "special offers" popup (2026-11-10)
+# ---------------------------------------------------------------------------
+
+SPOTLIGHT_LIMIT = 3
+# Owner: once a day; the same day again only when a coupon not yet shown
+# appears. Keyed by the Colombo calendar day, kept a little past midnight.
+_SPOTLIGHT_TTL = 36 * 3600
+
+
+def _spotlight_key(user_id, now: datetime) -> str:
+    day = now.astimezone(coupon_presenter.COLOMBO).date().isoformat()
+    return f"user:{user_id}:coupon_spotlight:{day}"
+
+
+async def _spotlight_candidates(db, redis, current_user, now: datetime) -> list:
+    rows = await db.execute(
+        select(Coupon).where(
+            Coupon.is_active.is_(True),
+            Coupon.is_public.is_(True),
+            Coupon.show_in_popup.is_(True),
+            Coupon.target_user_id.is_(None),
+            await _redeemable_here(redis, current_user),
+        )
+    )
+    points = await LoyaltyService.get_points(db, current_user.user_id)
+    branch_id = await _branch_id_for(redis, current_user)
+    picked = []
+    for c in rows.scalars().all():
+        if not _in_window(c, now) or not _level_allows(c, points):
+            continue
+        if not _audience_allows(c, current_user):
+            continue
+        evaluation = coupon_presenter.evaluate(
+            c,
+            None,
+            now=now,
+            branch_id=branch_id,
+            user_id=current_user.user_id,
+            user_phone=getattr(current_user, "phone", None),
+            user_points=points,
+            user_redemptions=await CouponService.redemptions_by_user(
+                db, c.code, current_user.user_id
+            ),
+        )
+        # Browsing: an error here means the coupon can never be used by this
+        # customer (used up, budget gone, ...) -- not worth a popup.
+        if evaluation.error is not None:
+            continue
+        picked.append((c, evaluation))
+    picked.sort(
+        key=lambda pair: (
+            -(pair[0].popup_priority or 0),
+            -float(pair[0].discount_value or 0),
+            _as_utc(pair[0].valid_until) or datetime.max.replace(tzinfo=timezone.utc),
+        )
+    )
+    return picked[:SPOTLIGHT_LIMIT]
+
+
+@router.get("/spotlight", response_model=dict)
+async def coupon_spotlight(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    redis: Optional[Redis] = Depends(get_redis_optional),
+    current_user=Depends(get_current_user_optional),
+):
+    """
+    The coupons for the app-open popup, and whether to show it now.
+
+    The client shows the popup only when ``show`` is true and then calls
+    ``/spotlight/seen``; the server owns the once-a-day rule. Guests get
+    ``show: false`` (collecting needs an account).
+    """
+    lang = resolve_language(request.headers.get("accept-language"))
+    empty = {"success": True, "data": {"show": False, "coupons": []}}
+    if current_user is None:
+        return empty
+    now = datetime.now(timezone.utc)
+    picked = await _spotlight_candidates(db, redis, current_user, now)
+    if not picked:
+        return empty
+
+    seen: set = set()
+    if redis is not None:
+        try:
+            seen = set(await redis.smembers(_spotlight_key(current_user.user_id, now)) or [])
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Spotlight seen-set unavailable: {exc}")
+    show = any(str(c.coupon_id) not in seen for c, _ in picked)
+
+    collected = await _get_collected_codes(str(current_user.user_id))
+    cards = [
+        coupon_presenter.present(
+            c,
+            lang,
+            evaluation=evaluation,
+            collected=c.code.upper() in collected,
+            basket=False,
+            now=now,
+            expiry_line=True,
+        )
+        for c, evaluation in picked
+    ]
+    return {
+        "success": True,
+        "data": {
+            "show": show,
+            "title": coupon_presenter.text(lang, "spotlight.title"),
+            "button": coupon_presenter.text(lang, "spotlight.button"),
+            "coupons": cards,
+        },
+    }
+
+
+class SpotlightSeenRequest(BaseModel):
+    coupon_ids: List[str] = Field(default_factory=list, max_length=SPOTLIGHT_LIMIT * 4)
+
+
+@router.post("/spotlight/seen", response_model=dict)
+async def coupon_spotlight_seen(
+    payload: SpotlightSeenRequest,
+    redis: Optional[Redis] = Depends(get_redis_optional),
+    current_user=Depends(get_current_user),
+):
+    """The popup was drawn with these coupons; do not show them again today."""
+    if redis is not None and payload.coupon_ids:
+        key = _spotlight_key(current_user.user_id, datetime.now(timezone.utc))
+        try:
+            await redis.sadd(key, *[str(UUID(i)) for i in payload.coupon_ids])
+            await redis.expire(key, _SPOTLIGHT_TTL)
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid coupon id.")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Spotlight seen-set not saved: {exc}")
+    return {"success": True, "data": {}}
+
+
+class CollectManyRequest(BaseModel):
+    codes: List[str] = Field(..., min_length=1, max_length=10)
+
+
+@router.post("/collect-many", response_model=dict)
+async def collect_many(
+    payload: CollectManyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    "Collect & shop now" on the popup: save every listed offer the customer may
+    have. Ones they may not (ended, another level, not on the list) are skipped
+    silently -- the popup only ever lists coupons that passed these checks.
+    """
+    lang = resolve_language(request.headers.get("accept-language"))
+    now = datetime.now(timezone.utc)
+    points = await LoyaltyService.get_points(db, current_user.user_id)
+    saved: list[str] = []
+    for raw in dict.fromkeys(c.strip().upper() for c in payload.codes if c and c.strip()):
+        coupon = await CouponService.get_by_code(db, raw)
+        if coupon is None or not coupon.is_active or not _in_window(coupon, now):
+            continue
+        if coupon.target_user_id is not None and coupon.target_user_id != current_user.user_id:
+            continue
+        if not _audience_allows(coupon, current_user) or not _level_allows(coupon, points):
+            continue
+        await _add_collected_code(str(current_user.user_id), coupon.code)
+        saved.append(coupon.code)
+    return {
+        "success": True,
+        "data": {"collected": saved},
+        "message": coupon_presenter.text(lang, "spotlight.collected", count=len(saved)),
     }

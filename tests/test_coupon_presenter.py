@@ -257,3 +257,85 @@ def test_sections_come_in_display_order_with_titles():
         {"key": "locked", "title": "மற்ற கூப்பன்கள்"},
         {"key": "wallet", "title": "எனது கூப்பன்கள்"},
     ]
+
+
+# --- countdown, badges, filters (2026-11-10) ---------------------------------
+
+
+def _ending_in(delta: timedelta, **over) -> Coupon:
+    return _coupon(valid_until=NOW + delta, created_at=NOW - timedelta(days=10), **over)
+
+
+def test_under_72_hours_the_card_counts_down():
+    e = cp.expiry(_ending_in(timedelta(hours=71, minutes=59)), "en", NOW)
+    assert e["mode"] == "timer"
+    assert e["text"] == "Ends in"
+    assert e["ends_at"] == (NOW + timedelta(hours=71, minutes=59)).isoformat()
+
+
+def test_exactly_72_hours_is_already_a_timer():
+    assert cp.expiry(_ending_in(timedelta(hours=72)), "en", NOW)["mode"] == "timer"
+
+
+def test_three_to_seven_days_reads_in_colombo_calendar_days():
+    # NOW is 11:30 on 26 Sep in Colombo; +4 days 12 h ends 30 Sep 23:30 there.
+    e = cp.expiry(_ending_in(timedelta(days=4, hours=12)), "si", NOW)
+    assert e["mode"] == "days"
+    assert e["text"] == "තව දින 4යි"
+
+
+def test_beyond_a_week_shows_the_date_and_time_in_colombo():
+    e = cp.expiry(_coupon(valid_until=datetime(2026, 11, 18, 17, 36, tzinfo=timezone.utc)), "en", NOW)
+    assert e["mode"] == "date"
+    assert e["text"] == "Expires 18 Nov 2026 23:06"
+
+
+def test_no_end_date_means_no_expiry_line():
+    assert cp.expiry(_coupon(valid_until=None), "en", NOW) is None
+
+
+def test_a_card_carries_countdown_new_badge_and_soon_flags():
+    fresh = _coupon(valid_until=NOW + timedelta(hours=5), created_at=NOW - timedelta(hours=3))
+    card = cp.present(
+        fresh,
+        "ta",
+        evaluation=cp.Evaluation(True, Decimal("0"), None, False),
+        collected=False,
+        basket=False,
+        now=NOW,
+    )
+    assert card["expiry"]["mode"] == "timer"
+    assert card["expiring_soon"] is True
+    assert card["is_new"] is True
+    assert card["badge"] == "புதியது"
+
+
+def test_an_ended_coupon_has_no_countdown_or_badge():
+    gone = _coupon(valid_until=NOW + timedelta(hours=5), created_at=NOW)
+    card = cp.present(
+        gone,
+        "en",
+        evaluation=cp.Evaluation(False, Decimal("0"), CouponValidationError("x", "expired"), False),
+        collected=True,
+        basket=False,
+        now=NOW,
+    )
+    assert card["expiry"] is None
+    assert card["expiring_soon"] is False
+    assert card["badge"] is None
+
+
+def test_filters_match_card_flags_in_every_language():
+    for lang in ("en", "si", "ta"):
+        keys = [f["key"] for f in cp.filters(lang)]
+        assert keys == ["all", "expiring_soon", "is_new"]
+
+
+def test_a_client_drawing_the_expiry_line_gets_no_valid_till_term():
+    c = _coupon()
+    ev = cp.Evaluation(True, Decimal("0"), None, False)
+    old = cp.present(c, "en", evaluation=ev, collected=False, basket=False, now=NOW)
+    new = cp.present(c, "en", evaluation=ev, collected=False, basket=False, now=NOW, expiry_line=True)
+    assert any(t.startswith("Valid till") for t in old["terms"])
+    assert not any(t.startswith("Valid till") for t in new["terms"])
+    assert new["expiry"] is not None

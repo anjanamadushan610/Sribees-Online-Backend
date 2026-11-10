@@ -270,6 +270,19 @@ TEMPLATES: Dict[str, dict] = {
             "ta": "{code} குறியீட்டுடன் {off}. {days} நாட்களுக்குச் செல்லுபடியாகும்.",
         },
     },
+    "coupon.expiring": {
+        "standalone": True,
+        "title": {
+            "en": "Your coupon ends soon ⏰",
+            "si": "ඔබේ කූපනය ඉක්මනින් අවසන් වේ ⏰",
+            "ta": "உங்கள் கூப்பன் விரைவில் முடிவடைகிறது ⏰",
+        },
+        "message": {
+            "en": "{off} with {code} ends in {hours} hours. Use it before it's gone!",
+            "si": "{code} සමඟ {off} තව පැය {hours}කින් අවසන් වේ. කලින්ම පාවිච්චි කරන්න!",
+            "ta": "{code} உடன் {off} இன்னும் {hours} மணி நேரத்தில் முடிவடைகிறது. முன்பே பயன்படுத்துங்கள்!",
+        },
+    },
     "price.drop": {
         "standalone": True,
         "title": {
