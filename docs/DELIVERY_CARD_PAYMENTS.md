@@ -75,3 +75,12 @@ They do not require a registered Return URL or changes to deployed settings.
 This verifies application payment handling. Real hosted checkout, 3DS, merchant
 authorization and a physical two-device handover remain separate acceptance
 checks before production activation.
+
+For an owner-approved live test using the existing merchant registration,
+development deployment accepts `reuse_existing_marx=true`. It copies the three
+existing Marx secret values to the development environment without printing
+them, requires no in-flight development payment attempts, and checks that the
+configured Return URL exactly matches the existing value using a digest.
+Gateway methods and delivery-card payments remain disabled during preparation.
+An ordinary development deployment restores the original development settings.
+Live payment activation and the test customer/rider must be arranged separately.
