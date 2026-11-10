@@ -139,3 +139,19 @@ async def test_late_payment_after_definitive_failure_is_refunded_once(monkeypatc
     assert pay.raw["delivery_refunded_to_wallet"] is True
     assert row.payment_method == "COD" and row.delivery_card_state == "failed"
     courier.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_rechecks_payment_under_lock(monkeypatch):
+    from app.services.order_service import OrderService
+
+    stale = order(delivery_card_state=None)
+    current = order(delivery_card_state="pending", order_id=stale.order_id)
+    lock = AsyncMock(return_value=current)
+    monkeypatch.setattr(door, "lock_order", lock)
+    refund = AsyncMock()
+    monkeypatch.setattr(OrderService, "_apply_cancellation_effects", refund)
+    with pytest.raises(ValueError, match="Card payment"):
+        await OrderService.cancel_order(AsyncMock(), stale)
+    lock.assert_awaited_once()
+    refund.assert_not_awaited()
