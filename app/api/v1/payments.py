@@ -112,6 +112,23 @@ async def complete_payment(
     return _outcome_body(online_payments.CompleteResult(result.outcome, order, result.message))
 
 
+@router.get("/orders/{order_id}/methods", response_model=dict)
+async def order_payment_methods(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    order = await _own_order(db, order_id, current_user)
+    if (order.payment_method or "").upper() == "COD":
+        from app.payments.delivery_card import methods_for_order
+
+        methods = await methods_for_order(db, order, current_language())
+    else:
+        view = online_payments.payment_view(order, current_language())
+        methods = [method for method in payment_catalog.offered() if method["kind"] == "online"] if view and view["can_pay"] else []
+    return {"success": True, "data": {"methods": methods}}
+
+
 @router.post("/orders/{order_id}/pay", response_model=dict)
 async def pay_order(
     order_id: str,
@@ -122,6 +139,14 @@ async def pay_order(
     """Pay (again) for an order still waiting for its money, by the method it
     was placed with or another online one. Answers with where to go."""
     order = await _own_order(db, order_id, current_user)
+    if (order.payment_method or "").upper() == "COD":
+        from app.payments.delivery_card import start
+
+        try:
+            action = await start(db, order, current_user, lang=current_language(), method_code=data.method)
+        except online_payments.PaymentError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        return {"success": True, "data": {"payment_action": action}}
     try:
         action = await online_payments.pay_again(
             db, order, current_user, method_code=data.method, lang=current_language()

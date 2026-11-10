@@ -142,6 +142,11 @@ def payment_view(order: Order, lang: str, now: Optional[datetime] = None) -> dic
     """The order's payment as the app draws it: a title, a line, a tone, and
     whether to offer "Pay now". Decided here so the app needs no rules."""
     now = now or _now()
+    from app.payments.delivery_card import payment_view as delivery_view
+
+    delivery = delivery_view(order, lang)
+    if delivery is not None:
+        return delivery
     method = catalog.get_method(order.payment_method)
     view = {
         "method": {
@@ -354,6 +359,8 @@ async def complete(db: AsyncSession, order: Order, params: dict, lang: str) -> C
         raise PaymentError(texts.text("error.returnMismatch", lang))
 
     if attempt.status == PaymentAttemptStatus.PAID.value:
+        if (attempt.raw or {}).get("delivery_refunded_to_wallet"):
+            return CompleteResult(Outcome.FAILED, order, texts.text("door.refunded", lang))
         return CompleteResult(Outcome.PAID, order, texts.text("result.paid", lang))
 
     try:
@@ -366,6 +373,8 @@ async def complete(db: AsyncSession, order: Order, params: dict, lang: str) -> C
 
     outcome = await apply_answer(db, attempt.attempt_id, answer)
     fresh = await db.get(Order, order.order_id, populate_existing=True)
+    if (attempt.raw or {}).get("delivery_refunded_to_wallet"):
+        return CompleteResult(Outcome.FAILED, fresh, texts.text("door.refunded", lang))
     key = {Outcome.PAID: "result.paid", Outcome.FAILED: "result.failed"}.get(outcome, "result.pending")
     return CompleteResult(outcome, fresh, texts.text(key, lang))
 
@@ -391,6 +400,11 @@ async def apply_answer(db: AsyncSession, attempt_id, answer: GatewayAnswer) -> O
             .execution_options(populate_existing=True)
         )
     ).scalar_one()
+
+    if getattr(attempt, "purpose", None) == "delivery_card":
+        from app.payments.delivery_card import apply_answer as apply_delivery_answer
+
+        return await apply_delivery_answer(db, order, attempt, answer)
 
     if attempt.status == PaymentAttemptStatus.PAID.value:
         await db.commit()
@@ -523,6 +537,9 @@ async def sweep(db: AsyncSession, now: Optional[datetime] = None) -> dict:
     now = now or _now()
     result = {"checked": 0, "paid": 0, "failed": 0, "still_pending": 0, "expired_orders": 0}
 
+    from app.payments.delivery_card import sweep as delivery_sweep
+
+    await delivery_sweep(db, now)
     await _adopt_legacy(db)
 
     open_tries = (
@@ -531,6 +548,7 @@ async def sweep(db: AsyncSession, now: Optional[datetime] = None) -> dict:
                    PaymentAttempt.gateway_ref, PaymentAttempt.created_at)
             .where(
                 PaymentAttempt.status.in_(OPEN_ATTEMPT_STATUSES),
+                PaymentAttempt.purpose != "delivery_card",
                 PaymentAttempt.gateway_ref.isnot(None),
                 PaymentAttempt.created_at < now - _SETTLE_AFTER,
             )

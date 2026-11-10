@@ -34,9 +34,19 @@ def _order(**extra):
         "shipping_amount": Decimal("0"),
         "courier_quote_amount": None,
         "courier_shipment_id": None,
+        "delivery_card_state": None,
     }
     fields.update(extra)
     return SimpleNamespace(**fields)
+
+
+def _mock_order_lock(monkeypatch, order):
+    # These tests exercise cancellation decisions without a DB; the separate
+    # integration suite owns the real row-lock/concurrency assertions.
+    async def locked(*args, **kwargs):
+        return order
+
+    monkeypatch.setattr("app.payments.delivery_card.lock_order", locked)
 
 
 # --- who still owns the decision -------------------------------------------
@@ -322,12 +332,14 @@ async def test_the_service_accepts_what_the_button_offers(status, monkeypatch):
         commit = refresh = staticmethod(_noop)
 
     order = _order(status=status, courier_shipment_id="WB-1", notes=None, cancelled_at=None)
+    _mock_order_lock(monkeypatch, order)
     await OrderService.cancel_order(_Db(), order, cancelled_by="customer")
     assert order.status == OrderStatus.CANCELLED.value
 
 
-async def test_the_service_still_refuses_a_delivered_order():
+async def test_the_service_still_refuses_a_delivered_order(monkeypatch):
     order = _order(status=OrderStatus.DELIVERED.value, notes=None, cancelled_at=None)
+    _mock_order_lock(monkeypatch, order)
     with pytest.raises(ValueError):
         await OrderService.cancel_order(None, order)
 
@@ -372,6 +384,8 @@ def _spy_courier(monkeypatch, spy):
 
 
 async def _cancel(order, monkeypatch, cancelled_by="customer"):
+    _mock_order_lock(monkeypatch, order)
+
     async def _noop(*args, **kwargs):
         return None
 

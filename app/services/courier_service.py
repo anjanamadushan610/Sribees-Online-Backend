@@ -492,6 +492,12 @@ class CourierService:
         return data if isinstance(data, list) else []
 
     @staticmethod
+    async def delivery_card_payment(shipment_id: str, **payload: Any) -> dict:
+        return await CourierService._request(
+            "POST", f"/shipments/{shipment_id}/card-payment", json=payload
+        )
+
+    @staticmethod
     async def patch_shipment(shipment_id: str, **fields: Any) -> dict:
         """
         ``PATCH /ecommerce/shipments/{id}`` (section 8a) — correct a typo'd

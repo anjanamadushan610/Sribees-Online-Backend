@@ -32,6 +32,17 @@ STATUS_LABELS: dict[str, dict[str, str]] = {
 }
 
 TEXTS: dict[str, dict[str, str]] = {
+    "door.method": {"en": "Online payment", "si": "Online ගෙවීම", "ta": "ஆன்லைன் கட்டணம்"},
+    "door.refunded": {"en": "A late online payment was credited back to your Sribees Wallet. This order remains Cash on Delivery.", "si": "ප්‍රමාද වී ලැබුණු online ගෙවීම ඔබගේ Sribees Wallet වෙත ආපසු බැර කළා. ඇණවුම තවම Cash on Delivery ලෙස පවතී.", "ta": "தாமதமான ஆன்லைன் கட்டணம் உங்கள் Sribees Wallet-க்கு திருப்பி வரவு வைக்கப்பட்டது. இந்த ஆர்டர் இன்னும் Cash on Delivery ஆக உள்ளது."},
+    "door.available": {"en": "Pay securely at delivery", "si": "භාරගන්නා විට ආරක්ෂිතව ගෙවන්න", "ta": "டெலிவரியின்போது பாதுகாப்பாகச் செலுத்துங்கள்"},
+    "door.available.message": {"en": "With your rider present, choose an available online payment method. Wait for payment confirmation before handing over any cash.", "si": "Rider පැමිණි විට ලබාදී ඇති online ගෙවීම් ක්‍රමයක් තෝරන්න. Cash ලබාදීමට පෙර ගෙවීමේ තත්ත්වය තහවුරු කරගන්න.", "ta": "ரைடர் வந்ததும் கிடைக்கும் ஆன்லைன் கட்டண முறையைத் தேர்ந்தெடுக்கவும். பணம் கொடுக்கும் முன் கட்டணம் உறுதிப்படுத்தப்படும் வரை காத்திருக்கவும்."},
+    "door.pending": {"en": "Verifying your payment", "si": "ගෙවීම තහවුරු කරමින්", "ta": "கட்டணம் சரிபார்க்கப்படுகிறது"},
+    "door.pending.message": {"en": "Please wait. Do not pay cash or start another payment while we verify and update your rider. Contact support if this does not clear.", "si": "මඳක් රැඳී සිටින්න. ගෙවීම තහවුරු කර rider වෙත දන්වන තෙක් cash හෝ තවත් ගෙවීමක් නොකරන්න. මෙය දිගටම පවතී නම් support අමතන්න.", "ta": "காத்திருக்கவும். சரிபார்த்து ரைடருக்குத் தெரிவிக்கும் வரை பணம் கொடுக்கவோ மற்றொரு கட்டணம் தொடங்கவோ வேண்டாம். நீடித்தால் உதவியைத் தொடர்புகொள்ளவும்."},
+    "door.paid": {"en": "Paid online", "si": "Online ගෙවීම සම්පූර්ණයි", "ta": "ஆன்லைனில் செலுத்தப்பட்டது"},
+    "door.paid.message": {"en": "Payment confirmed and your rider updated. No cash is due for this order.", "si": "ගෙවීම තහවුරු කර rider වෙත දන්වා තිබෙනවා. මෙම ඇණවුමට cash ගෙවීම අවශ්‍ය නැහැ.", "ta": "கட்டணம் உறுதிப்படுத்தப்பட்டு ரைடருக்கு அறிவிக்கப்பட்டது. இந்த ஆர்டருக்குப் பணம் கொடுக்க வேண்டாம்."},
+    "door.resume": {"en": "Continue Payment", "si": "ගෙවීම ඉදිරියට ගෙනයන්න", "ta": "கட்டணத்தைத் தொடருங்கள்"},
+    "door.pay": {"en": "Pay Online", "si": "Online ගෙවන්න", "ta": "ஆன்லைனில் செலுத்துங்கள்"},
+    "door.email": {"en": "Add your email in Profile before paying online.", "si": "Online ගෙවීමට පෙර Profile හි email එක ඇතුළත් කරන්න.", "ta": "ஆன்லைனில் செலுத்தும் முன் சுயவிவரத்தில் மின்னஞ்சலைச் சேர்க்கவும்."},
     "processing.message": {
         "en": "We'll place your order as soon as the payment is confirmed.",
         "si": "ගෙවීම තහවුරු වූ විගස ඔබේ ඇණවුම යොමු කෙරේ.",

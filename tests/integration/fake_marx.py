@@ -19,7 +19,7 @@ MERCHANT_KEY = "marx_test_merchant_key"
 
 @dataclass
 class MarxState:
-    outcome: str = "SUCCESS"  # SUCCESS | FAILURE | DOWN
+    outcome: str = "SUCCESS"  # SUCCESS | FAILURE | PENDING | DOWN
     orders: dict = field(default_factory=dict)
     captures: list = field(default_factory=list)
 
@@ -47,7 +47,14 @@ def build_app(state: MarxState) -> FastAPI:
         _auth(merchant_api_key)
         if tr_id not in state.orders:
             return {"status": 1, "message": "UNKNOWN_ORDER", "data": None}
+        if state.outcome == "DOWN":
+            raise HTTPException(status_code=503, detail="maintenance")
         state.captures.append(tr_id)
+        if state.outcome == "PENDING":
+            return {"status": 0, "message": "OK", "data": {
+                "summaryResult": "PENDING",
+                "gatewayResponse": {"order": {"status": "PENDING"}},
+            }}
         ok = state.outcome == "SUCCESS"
         return {"status": 0, "message": "OK", "data": {
             "summaryResult": "SUCCESS" if ok else "FAILURE",
@@ -58,8 +65,14 @@ def build_app(state: MarxState) -> FastAPI:
     @app.get("/api/v4/ipg/orders/{tr_id}/summary")
     async def summary(tr_id: str, merchant_api_key: str | None = Header(None, alias="merchant-api-key")):
         _auth(merchant_api_key)
+        if state.outcome == "DOWN":
+            raise HTTPException(status_code=503, detail="maintenance")
         paid = tr_id in state.captures and state.outcome == "SUCCESS"
-        return {"status": 0, "message": "OK", "data": {"summaryResult": "SUCCESS" if paid else "PENDING"}}
+        failed = tr_id in state.captures and state.outcome == "FAILURE"
+        return {"status": 0, "message": "OK", "data": {
+            "summaryResult": "SUCCESS" if paid else "FAILURE" if failed else "PENDING",
+            "order": {"status": "CAPTURED" if paid else "FAILED" if failed else "PENDING"},
+        }}
 
     return app
 
