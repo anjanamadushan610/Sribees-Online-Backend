@@ -60,3 +60,18 @@ receipt is created. Repeated customer taps resume the same checkout.
 
 Local validation cannot replace the two-device development test. The Rider CI
 APK uses debug signing; it is a test artifact, not a Play Store release.
+
+## Validation when sandbox credentials are unavailable
+
+The disposable CI database can exercise the customer payment endpoints with
+`tests/integration/fake_marx.py` as an in-process HTTP simulator. The actual
+Marx request builder, response parser and payment reconciliation service run.
+`tests/integration/test_delivery_card.py` covers success, pending/declined
+answers, gateway outages, lost courier acknowledgements and forged returns.
+Express's own database tests exercise the rider cash/card exclusion and paid
+response. These suites use synthetic credentials and fixture return URLs only.
+They do not require a registered Return URL or changes to deployed settings.
+
+This verifies application payment handling. Real hosted checkout, 3DS, merchant
+authorization and a physical two-device handover remain separate acceptance
+checks before production activation.

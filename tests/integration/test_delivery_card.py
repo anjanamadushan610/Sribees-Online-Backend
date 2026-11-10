@@ -1,6 +1,7 @@
 """Real Online DB + fake gateway; Express arbitration is tested in its repo."""
 from decimal import Decimal
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from sqlalchemy import func, select
@@ -22,8 +23,6 @@ async def test_cod_at_door_captures_once_without_rebooking(
     response = await _place(api, app_redis, world, customer, product, method="COD")
     assert response.status_code == 201, response.text
     original = response.json()["data"]
-    from uuid import UUID
-
     order = await db.get(Order, UUID(original["order_id"]))
     order.status = "out_for_delivery"
     order.courier_shipment_id = "SXP-DOOR-TEST"
@@ -80,3 +79,136 @@ async def test_cod_at_door_captures_once_without_rebooking(
         FinanceOutbox.event_type == "order.status"))).scalars().all()
     delivered = [event for event in delivered if event.payload.get("to_status") == "delivered"]
     assert len(delivered) == 1 and receipts[0].seq < delivered[0].seq
+
+
+@pytest.fixture
+async def door_checkout(
+    api, db, app_redis, world, make_customer, make_product, fake_courier, marx, monkeypatch,  # noqa: F811
+):
+    """Exercise the customer API and Marx HTTP adapter using disposable data."""
+    customer = await make_customer()
+    product = await make_product(price="500.00", stock=10)
+    response = await _place(api, app_redis, world, customer, product, method="COD")
+    assert response.status_code == 201, response.text
+    order = await db.get(Order, UUID(response.json()["data"]["order_id"]))
+    order.status = "out_for_delivery"
+    order.courier_shipment_id = "SXP-DOOR-SIMULATOR"
+    await db.commit()
+    monkeypatch.setattr(settings, "delivery_card_payment_enabled", True)
+    monkeypatch.setattr(settings, "finance_outbox_enabled", True)
+    shipment_id = order.courier_shipment_id
+    amount = order.total_amount
+
+    async def courier(requested_shipment_id, **payload):
+        assert requested_shipment_id == shipment_id
+        assert Decimal(payload["amount"]) == amount
+        return {"state": "pending" if payload["operation"] == "reserve" else payload["operation"]}
+
+    courier_mock = AsyncMock(side_effect=courier)
+    monkeypatch.setattr(CourierService, "delivery_card_payment", courier_mock)
+    response = await api.post(f"/api/v1/payments/orders/{order.order_id}/pay", headers=customer.headers)
+    assert response.status_code == 200, response.text
+    action = response.json()["data"]["payment_action"]
+    attempt = await db.scalar(select(PaymentAttempt).where(PaymentAttempt.order_id == order.order_id))
+    assert marx.orders[attempt.gateway_ref]["returnUrl"] == action["return_url"]
+    return customer, order.order_id, attempt.attempt_id, action, courier_mock
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gateway_outcome,expected_outcome", [("PENDING", "pending"), ("FAILURE", "failed")])
+async def test_door_simulator_keeps_cod_until_gateway_answer(
+    api, db, door_checkout, marx, gateway_outcome, expected_outcome,  # noqa: F811
+):
+    customer, order_id, attempt_id, action, courier = door_checkout
+    attempt = await db.get(PaymentAttempt, attempt_id)
+    marx.outcome = gateway_outcome
+    response = await api.post(f"/api/v1{action['complete_path']}", headers=customer.headers,
+        json={"return_url": f"{action['return_url']}?trId={attempt.gateway_ref}&merchantRID={attempt.reference}"})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["outcome"] == expected_outcome
+    db.expire_all()
+    order = await db.get(Order, order_id)
+    assert order.payment_method == "COD" and order.payment_status != "paid"
+    assert order.status == "out_for_delivery"
+    operations = [call.kwargs["operation"] for call in courier.await_args_list]
+    assert operations == (["reserve"] if expected_outcome == "pending" else ["reserve", "failed"])
+    shown = await api.get(f"/api/v1/orders/{order_id}", headers=customer.headers)
+    assert shown.status_code == 200, shown.text
+    expected_state = "delivery_card_pending" if expected_outcome == "pending" else "on_delivery"
+    assert shown.json()["data"]["payment"]["state"] == expected_state
+
+
+@pytest.mark.asyncio
+async def test_door_simulator_recovers_after_gateway_outage(api, db, door_checkout, marx):  # noqa: F811
+    from app.payments.delivery_card import sweep
+    from app.payments.service import _now
+
+    customer, order_id, attempt_id, action, courier = door_checkout
+    attempt = await db.get(PaymentAttempt, attempt_id)
+    marx.outcome = "PENDING"
+    response = await api.post(f"/api/v1{action['complete_path']}", headers=customer.headers,
+        json={"return_url": f"{action['return_url']}?trId={attempt.gateway_ref}&merchantRID={attempt.reference}"})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["outcome"] == "pending"
+
+    marx.outcome = "DOWN"
+    await sweep(db, _now())
+    db.expire_all()
+    order = await db.get(Order, order_id)
+    assert order.delivery_card_state == "pending" and order.payment_status != "paid"
+    assert [call.kwargs["operation"] for call in courier.await_args_list] == ["reserve"]
+
+    marx.outcome = "SUCCESS"
+    await sweep(db, _now())
+    await sweep(db, _now())
+    db.expire_all()
+    order = await db.get(Order, order_id)
+    assert order.delivery_card_state == "paid" and order.payment_status == "paid"
+    assert order.status == "out_for_delivery"
+    assert len(marx.orders) == 1
+    assert [call.kwargs["operation"] for call in courier.await_args_list] == ["reserve", "paid"]
+
+
+@pytest.mark.asyncio
+async def test_door_simulator_retries_lost_rider_acknowledgement(api, db, door_checkout, marx):  # noqa: F811
+    from app.models.finance_outbox import FinanceOutbox
+    from app.payments.delivery_card import sweep
+    from app.payments.service import _now
+    from app.services.courier_service import CourierUnavailableError
+
+    customer, order_id, attempt_id, action, courier = door_checkout
+    courier.side_effect = CourierUnavailableError("simulated lost acknowledgement")
+    attempt = await db.get(PaymentAttempt, attempt_id)
+    response = await api.post(f"/api/v1{action['complete_path']}", headers=customer.headers,
+        json={"return_url": f"{action['return_url']}?trId={attempt.gateway_ref}&merchantRID={attempt.reference}"})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["outcome"] == "paid"
+    db.expire_all()
+    order = await db.get(Order, order_id)
+    assert order.payment_status == "paid" and order.delivery_card_state == "syncing"
+
+    courier.side_effect = None
+    courier.return_value = {"state": "paid"}
+    await sweep(db, _now())
+    await sweep(db, _now())
+    db.expire_all()
+    order = await db.get(Order, order_id)
+    assert order.delivery_card_state == "paid"
+    assert [call.kwargs["operation"] for call in courier.await_args_list] == ["reserve", "paid", "paid"]
+    assert len(marx.captures) == 1
+    receipts = await db.scalar(select(func.count()).select_from(FinanceOutbox).where(
+        FinanceOutbox.aggregate_id == order_id, FinanceOutbox.event_type == "payment.received"))
+    assert receipts == 1
+
+
+@pytest.mark.asyncio
+async def test_door_simulator_rejects_forged_return(api, db, door_checkout, marx):  # noqa: F811
+    customer, order_id, _, action, courier = door_checkout
+    response = await api.post(f"/api/v1{action['complete_path']}", headers=customer.headers,
+        json={"return_url": f"{action['return_url']}?trId=WRONG&merchantRID=WRONG"})
+    assert response.status_code == 400, response.text
+    assert marx.captures == []
+    db.expire_all()
+    order = await db.get(Order, order_id)
+    assert order.delivery_card_state == "pending" and order.payment_status != "paid"
+    assert [call.kwargs["operation"] for call in courier.await_args_list] == ["reserve"]
