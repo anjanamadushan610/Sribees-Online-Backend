@@ -172,6 +172,10 @@ async def _priced(
             items = await OrderService._attach_server_prices(
                 db, items, applied_branch_id, strict=False
             )
+            # Cashback too: the rate the cart shows must be the one checkout
+            # freezes, not the one stored when the item was added (a festival
+            # offer starting or ending in between would otherwise disagree).
+            items = await OrderService._attach_cashback_rates(db, items, applied_branch_id)
             cart["items"] = await CouponService.enrich_items(db, items, applied_branch_id)
             items = cart["items"]
         except Exception:

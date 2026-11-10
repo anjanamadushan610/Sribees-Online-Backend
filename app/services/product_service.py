@@ -40,6 +40,7 @@ from app.schemas.product import (
     ProductVariantCreate,
 )
 from app.services import catalog_search_service as catalog_search
+from app.services import festival_offer
 from app.services import weight_options_service as weight_options
 from app.services.category_service import CategoryService
 from app.services.storage import get_storage
@@ -1190,7 +1191,9 @@ class ProductService:
         for pid in product_ids:
             resolved.setdefault(str(pid), platform_default)
 
-        return resolved
+        # A running festival offer (11.11) sets every non-zero rate to its own;
+        # outside one this changes nothing. See festival_offer.
+        return {pid: float(festival_offer.apply_cashback(rate)) for pid, rate in resolved.items()}
 
     @staticmethod
     async def get_price_map(
