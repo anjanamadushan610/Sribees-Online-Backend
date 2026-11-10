@@ -122,6 +122,37 @@ async def import_catalog(payload):
         await engine.dispose()
 
 
+
+async def configure_preview_offers():
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from app.config.settings import settings
+
+    if settings.app_env != "development":
+        raise ValueError("Preview offers require development")
+    engine = create_async_engine(settings.async_database_url, echo=False)
+    try:
+        async with engine.begin() as db:
+            await db.execute(text("SELECT pg_advisory_xact_lock(784102119)"))
+            result = await db.execute(text(
+                "WITH selected AS (SELECT p.product_id, "
+                "row_number() OVER (PARTITION BY p.subcategory_id ORDER BY p.name) AS rank "
+                "FROM products p JOIN branch_inventory b ON b.product_id = p.product_id "
+                "WHERE p.category_id IN (:a,:b) AND b.branch_id = :branch "
+                "AND p.is_active = true AND b.is_active = true AND b.stock_quantity > 0) "
+                "UPDATE branch_inventory b SET is_on_sale = true, "
+                "discount_percentage = 10 + selected.rank * 5 "
+                "FROM selected WHERE b.product_id = selected.product_id "
+                "AND b.branch_id = :branch AND selected.rank <= 3 "
+                "AND b.is_on_sale = false AND b.discount_percentage IS NULL "
+                "RETURNING b.product_id"
+            ), {"a": uuid.UUID(PARENTS[0]), "b": uuid.UUID(PARENTS[1]), "branch": uuid.UUID(BRANCH)})
+            print(json.dumps({"development_preview_offers_added": len(result.all()),
+                              "test_discount_percentages": [15, 20, 25], "branch": BRANCH}))
+    finally:
+        await engine.dispose()
+
+
 def container(project):
     result = subprocess.check_output(["docker", "ps", "--filter", f"label=com.docker.compose.project={project}",
                                       "--filter", "label=com.docker.compose.service=app", "--format", "{{.ID}}"], text=True).split()
@@ -136,6 +167,12 @@ if __name__ == "__main__":
         asyncio.run(export_catalog())
     elif mode == "import":
         asyncio.run(import_catalog(json.load(sys.stdin)))
+    elif mode == "configure-offers":
+        asyncio.run(configure_preview_offers())
+    elif mode == "offers":
+        code = sys.stdin.read()
+        destination = container("sribees-online-dev")
+        subprocess.run(["docker", "exec", destination, "python", "-c", code, "configure-offers"], check=True)
     elif mode == "copy":
         # The same reviewed script is passed as code, without creating server files.
         code = sys.stdin.read()

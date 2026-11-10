@@ -45,6 +45,11 @@ on:
         required: false
         default: false
         type: boolean
+      preview_offers:
+        description: "Configure owner-approved synthetic Quick Sale discounts in the development preview branch only."
+        required: false
+        default: false
+        type: boolean
       preview_catalog:
         description: "Copy owner-approved bounded production catalog sample to development only (requires lookup_only)."
         required: false
@@ -222,18 +227,21 @@ jobs:
           ssh target "echo connected as \$(id -un) on \$(hostname)"
 
       - name: Copy aisle catalog sample to development
-        if: ${{ inputs.lookup_only && inputs.preview_catalog }}
+        if: ${{ inputs.lookup_only && (inputs.preview_catalog || inputs.preview_offers) }}
+        env:
+          PREVIEW_OFFERS: ${{ inputs.preview_offers }}
         run: |
           python3 - <<'PYCODE'
+          import os
           import pathlib
           import shlex
           import subprocess
           code = pathlib.Path("scripts/preview_aisle_catalog.py").read_text()
-          subprocess.run(["ssh", "target", "python3 -c " + shlex.quote(code) + " copy"], input=code, text=True, check=True)
+          subprocess.run(["ssh", "target", "python3 -c " + shlex.quote(code) + (" offers" if os.environ["PREVIEW_OFFERS"] == "true" else " copy")], input=code, text=True, check=True)
           PYCODE
 
       - name: Inspect selected development test accounts
-        if: ${{ inputs.lookup_only && !inputs.preview_catalog }}
+        if: ${{ inputs.lookup_only && !inputs.preview_catalog && !inputs.preview_offers }}
         env:
           TEST_CUSTOMER_CODE: ${{ inputs.test_customer_code }}
           TEST_RIDER_NAME: ${{ inputs.test_rider_name }}
