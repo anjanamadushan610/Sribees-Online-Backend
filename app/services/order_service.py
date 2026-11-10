@@ -43,6 +43,7 @@ from app.services import (
     courier_location_service,
     delivery_quote_service,
     delivery_verification_service,
+    festival_offer,
     free_delivery_service,
     weight_options_service,
 )
@@ -778,7 +779,11 @@ class OrderService:
                 display_size=item.get("display_size"),
                 display_size_unit=item.get("display_size_unit"),
                 product_sku=item.get("sku") or item.get("product_sku"),
-                product_image=item.get("image") or item.get("imageUrl") or item.get("product_image"),
+                # A festival-offer picture URL is stored as the plain photo.
+                # (absolute, as the client's URLs always were).
+                product_image=festival_offer.plain_image_url(
+                    item.get("image") or item.get("imageUrl") or item.get("product_image")
+                ),
                 quantity=item["quantity"],
                 unit_price=Decimal(str(unit_price_val)),
                 subtotal=Decimal(str(unit_price_val * item["quantity"])),

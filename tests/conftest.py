@@ -83,6 +83,16 @@ def _assistant_side_paths_off(monkeypatch):
     monkeypatch.setattr(settings, "hybrid_canary_rate", 0.0)
 
 
+@pytest.fixture(autouse=True)
+def _festival_offer_off(monkeypatch):
+    """
+    A dated festival offer (11.11) changes cashback and picture URLs while it
+    runs; tests that are not about it must not depend on the calendar. Its
+    own tests (test_festival_offer.py) switch it back on.
+    """
+    monkeypatch.setenv("FESTIVAL_OFFER_DISABLED", "1")
+
+
 @pytest.fixture
 async def app_redis():
     """

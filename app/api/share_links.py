@@ -53,7 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.config.settings import settings
 from app.core.media import media_url
-from app.services import branch_service, product_imagery
+from app.services import branch_service, festival_offer, offer_imagery, product_imagery
 from app.services.product_service import ProductService
 from app.services.storage import get_storage
 
@@ -111,7 +111,25 @@ def _card_key(image_path: str) -> str:
     """Names one product picture in one card design: a new photo or a new
     design is a new key, so a cached card never outlives either."""
     seed = f"{image_path}|{product_imagery.SHARE_TEMPLATE_VERSION}"
+    offer = festival_offer.active_offer()
+    if offer is not None:
+        # A festival offer (11.11) has its own card; when it ends the key
+        # goes back to the plain card's, which is still cached.
+        seed += f"|offer-{offer.code}-{offer_imagery.OFFER_TEMPLATE_VERSION}"
     return hashlib.sha256(seed.encode()).hexdigest()[:24]
+
+
+def _offer_design(product) -> Optional[offer_imagery.OfferDesign]:
+    """The festival offer's card design for *product*, or None outside one.
+    A 0% product gets no cashback ribbon."""
+    if festival_offer.active_offer() is None:
+        return None
+    rate = product.cashback_percentage
+    if rate is None:
+        rate = float(settings.cashback_rate) * 100
+    if float(festival_offer.apply_cashback(rate)) > 0:
+        return offer_imagery.DEFAULT_DESIGN
+    return offer_imagery.OfferDesign(ribbon="")
 
 
 def _card_dir() -> Path:
@@ -300,9 +318,15 @@ async def product_share_card(product_id: str, db: AsyncSession = Depends(get_db)
     source = await run_in_threadpool(get_storage().read, image_path)
     if source is None:
         return RedirectResponse(fallback, status_code=302)
+    design = _offer_design(product)
     async with _render_slots:
         try:
-            card = await run_in_threadpool(product_imagery.render_share_card, source)
+            if design is not None:
+                card = await run_in_threadpool(
+                    offer_imagery.render_offer_picture, source, design, "JPEG"
+                )
+            else:
+                card = await run_in_threadpool(product_imagery.render_share_card, source)
         except product_imagery.ImageryError as exc:
             logger.warning(f"Share card for {product_id!r} not drawn: {exc}")
             return RedirectResponse(fallback, status_code=302)

@@ -111,6 +111,12 @@ def media_path(url: Optional[str]) -> Optional[str]:
     if not cleaned:
         return None
 
+    # A festival-offer picture URL (11.11) handed out by the API is never
+    # stored: it reduces to the plain picture behind it.
+    from app.services.festival_offer import strip_offer_url
+
+    cleaned = strip_offer_url(cleaned)
+
     base = (settings.media_base_url or "").rstrip("/")
     if base and cleaned.startswith(base):
         cleaned = cleaned[len(base):] or "/"

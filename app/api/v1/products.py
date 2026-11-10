@@ -39,7 +39,12 @@ from app.schemas.product import (
     ProductUpdate,
     ProductVariantCreate,
 )
-from app.services import branch_service, search_insights_service, weight_options_service
+from app.services import (
+    branch_service,
+    festival_offer,
+    search_insights_service,
+    weight_options_service,
+)
 from app.services.category_service import CategoryService
 from app.services.product_review_service import ProductReviewService
 from app.services.product_service import ProductService
@@ -101,12 +106,14 @@ def format_product(
         "discount_price": eff.get("effective_discount_price", float(product.discount_price) if product.discount_price else None),
         # Branch-resolved cashback for this product, so the storefront badge
         # shows what the customer actually earns here rather than a fixed rate.
-        "cashback_percentage": eff.get(
+        # A running festival offer (11.11) shows its rate, matching what
+        # checkout will freeze (ProductService.get_cashback_map).
+        "cashback_percentage": festival_offer.apply_cashback(eff.get(
             "effective_cashback",
             product.cashback_percentage
             if product.cashback_percentage is not None
             else float(settings.cashback_rate) * 100,
-        ),
+        )),
         # The raw, unresolved override on the product itself (null = none set,
         # inherits the platform rate). Distinct from the resolved value above —
         # the admin edit form needs this one so saving without touching the
@@ -176,11 +183,17 @@ def format_product(
     else:
         data["subcategory"] = None
 
-    # Images
+    # Images. Shoppers see a running festival offer's design (11.11); the
+    # admin console (include_translations) always gets the stored picture.
+    def _picture(path):
+        if include_translations:
+            return media_url(path)
+        return festival_offer.offer_image_url(path, data["cashback_percentage"])
+
     data["images"] = [
         {
             "image_id": str(img.image_id),
-            "image_url": media_url(img.image_url),
+            "image_url": _picture(img.image_url),
             "alt_text": img.alt_text,
             "is_primary": img.is_primary,
             "sort_order": img.sort_order,
