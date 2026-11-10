@@ -285,6 +285,30 @@ jobs:
         run: |
           ssh target "cd '$DEPLOY_PATH' && APP_IMAGE='$IMAGE' ./deploy-dev.sh deploy"
 
+      - name: Report development payment readiness without secrets
+        run: |
+          ssh target 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          mapfile -t online < <(docker ps --filter label=com.docker.compose.project=sribees-online-dev --filter label=com.docker.compose.service=app --format '{{.ID}}')
+          [ "${#online[@]}" -eq 1 ] || { echo "expected one development app container"; exit 1; }
+          docker exec -i "${online[0]}" python - <<'PY'
+          import json
+          from urllib.parse import urlsplit
+          from app.config.settings import settings
+
+          if settings.app_env != "development":
+              raise SystemExit("payment readiness check requires development")
+          print(json.dumps({
+              "environment": settings.app_env,
+              "delivery_card_enabled": settings.delivery_card_payment_enabled,
+              "gateway_methods_enabled": settings.marx_gateway_methods_enabled,
+              "gateway_hostname": urlsplit(settings.marx_ipg_base_url).hostname,
+              "return_hostname": urlsplit(settings.marx_ipg_return_url).hostname,
+              "gateway_key_configured": bool(settings.marx_ipg_api_key),
+          }))
+          PY
+          REMOTE
+
       - name: Smoke test through the public edge
         env:
           DOMAIN: ${{ secrets.DEV_DOMAIN }}
