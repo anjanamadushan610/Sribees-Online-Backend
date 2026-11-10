@@ -212,3 +212,62 @@ async def test_door_simulator_rejects_forged_return(api, db, door_checkout, marx
     order = await db.get(Order, order_id)
     assert order.delivery_card_state == "pending" and order.payment_status != "paid"
     assert [call.kwargs["operation"] for call in courier.await_args_list] == ["reserve"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code,option,icon", [("MARX_BANK", "PAY_BY_BANK_ACCOUNT", "bank"), ("FUTURE_QR", "TEST_QR", "qr")])
+async def test_delivery_methods_follow_enabled_catalog_and_resume_one_checkout(
+    api, db, app_redis, world, make_customer, make_product, fake_courier, marx, monkeypatch, code, option, icon,  # noqa: F811
+):
+    from app.payments import catalog
+
+    method = catalog.MethodSpec(code=code, kind="online", icon=icon,
+        name=f"Hosted {icon} payment", description="Provider payment page", legacy_type="GATEWAY",
+        gateway="marx", option=option)
+    monkeypatch.setattr(catalog, "METHODS", tuple(m for m in catalog.METHODS if m.code != code) + (method,))
+    monkeypatch.setitem(catalog._BY_CODE, code, method)
+    monkeypatch.setattr(settings, "delivery_card_payment_enabled", True)
+    customer = await make_customer()
+    other_customer = await make_customer()
+    response = await _place(api, app_redis, world, customer, await make_product(), method="COD")
+    assert response.status_code == 201, response.text
+    order_id = UUID(response.json()["data"]["order_id"])
+    order = await db.get(Order, order_id)
+    order.status = "out_for_delivery"
+    order.courier_shipment_id = "SXP-METHODS"
+    await db.commit()
+    courier = AsyncMock(return_value={"state": "pending"})
+    monkeypatch.setattr(CourierService, "delivery_card_payment", courier)
+    path = f"/api/v1/payments/orders/{order_id}"
+    response = await api.get(path + "/methods", headers=customer.headers)
+    assert response.status_code == 200, response.text
+    methods = response.json()["data"]["methods"]
+    assert code in [m["code"] for m in methods]
+    assert "MARX_AMEX" not in [m["code"] for m in methods]
+    response = await api.get(path + "/methods", headers=other_customer.headers)
+    assert response.status_code == 404
+    refused = await api.post(path + "/pay", headers=customer.headers, json={"method": "MARX_AMEX"})
+    assert refused.status_code == 400
+    assert not marx.orders and courier.await_count == 0
+
+    response = await api.post(path + "/pay", headers=customer.headers, json={"method": code})
+    assert response.status_code == 200, response.text
+    action = response.json()["data"]["payment_action"]
+    assert list(marx.orders.values())[0]["paymentMethod"] == option
+    response = await api.get(path + "/methods", headers=customer.headers)
+    assert [m["code"] for m in response.json()["data"]["methods"]] == [code]
+    refused = await api.post(path + "/pay", headers=customer.headers, json={"method": "MARX_OTHER"})
+    assert refused.status_code == 409
+    response = await api.post(path + "/pay", headers=customer.headers, json={"method": code})
+    assert response.json()["data"]["payment_action"] == action
+    assert len(marx.orders) == 1
+    db.expire_all()
+    attempt = await db.scalar(select(PaymentAttempt).where(PaymentAttempt.order_id == order_id))
+    assert attempt.method_code == code
+    courier.return_value = {"state": "paid"}
+    response = await api.post(path + "/complete", headers=customer.headers,
+        json={"return_url": f"{action['return_url']}?trId={attempt.gateway_ref}&merchantRID={attempt.reference}"})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["outcome"] == "paid"
+    assert response.json()["data"]["payment_method"] == code
+    assert [call.kwargs["operation"] for call in courier.await_args_list] == ["reserve", "paid"]

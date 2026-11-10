@@ -15,7 +15,7 @@ from app.config.settings import settings
 from app.models.order import Order, PaymentStatus
 from app.models.payment import PaymentAttempt
 from app.payments import catalog, texts
-from app.payments.gateways import get_gateway
+from app.payments.gateways import GATEWAYS, get_gateway
 from app.payments.gateways.base import (
     GatewayAnswer,
     GatewayError,
@@ -33,14 +33,51 @@ from app.services.courier_service import (
 PURPOSE = "delivery_card"
 
 
+def available_methods(order):
+    if not settings.delivery_card_payment_enabled:
+        return []
+    test_order = settings.delivery_card_test_order
+    test_customer = settings.delivery_card_test_customer
+    if test_order or test_customer:
+        allowed = bool(
+            settings.app_env == "development"
+            and test_order and test_customer
+            and order.order_number == test_order
+            and str(getattr(order, "user_id", "")) == test_customer
+            and settings.marx_ipg_api_key and settings.marx_ipg_return_url
+        )
+        if not allowed:
+            return []
+    return [method for method in catalog.METHODS
+            if method.is_online and method.gateway in GATEWAYS
+            and (method.enabled() or (test_order and method.code == "MARX_OTHER"))]
+
+
+def enabled_for(order):
+    return bool(available_methods(order))
+
+
+async def methods_for_order(db, order, lang):
+    view = payment_view(order, lang)
+    if not view or not view["can_pay"]:
+        return []
+    methods = available_methods(order)
+    if order.delivery_card_state == "pending" and order.delivery_card_reference:
+        previous = await db.scalar(select(PaymentAttempt).where(
+            PaymentAttempt.reference == order.delivery_card_reference))
+        method = catalog.get_method(previous.method_code) if previous is not None else None
+        methods = [method] if method is not None else []
+    return [{"code": method.code, "name": method.name, "description": method.description,
+             "icon": method.icon, "kind": method.kind, "is_active": True} for method in methods]
+
+
 def payment_view(order, lang):
     state = getattr(order, "delivery_card_state", None)
-    offered = (settings.delivery_card_payment_enabled
+    offered = (enabled_for(order)
                and (order.payment_method or "").upper() == "COD"
                and order.status == "out_for_delivery"
                and order.payment_status != "paid" and order.courier_shipment_id
-               and not order.courier_cod_collected and Decimal(str(order.total_amount or 0)) > 0
-               and catalog.get_method("MARX_OTHER").enabled())
+               and not order.courier_cod_collected and Decimal(str(order.total_amount or 0)) > 0)
     if not state and not offered:
         return None
     if state == "failed" and not offered:
@@ -49,7 +86,7 @@ def payment_view(order, lang):
     paid = state == "paid"
     key = "door.paid" if paid else "door.pending" if pending else "door.available"
     return {
-        "method": {"code": order.payment_method, "name": "Visa / Mastercard / UnionPay", "icon": "card"},
+        "method": {"code": order.payment_method, "name": texts.text("door.method", lang), "icon": "other"},
         "state": "delivery_card_paid" if paid else "delivery_card_pending" if pending else "on_delivery",
         "title": texts.text(key, lang), "message": texts.text(key + ".message", lang),
         "tone": "success" if paid else "warning" if pending else "info",
@@ -69,11 +106,11 @@ async def lock_order(db, order_id):
                             .execution_options(populate_existing=True))).scalar_one()
 
 
-async def start(db, order, user, *, lang):
+async def start(db, order, user, *, lang, method_code=None):
     from app.payments.service import PaymentError, _now, open_checkout, payer_for
 
     order = await lock_order(db, order.order_id)
-    if not settings.delivery_card_payment_enabled:
+    if not enabled_for(order):
         raise PaymentError(texts.text("error.methodUnavailable", lang))
     view = payment_view(order, lang)
     # A second tap resumes the SAME checkout, never another card charge.
@@ -81,6 +118,8 @@ async def start(db, order, user, *, lang):
         previous = await db.scalar(select(PaymentAttempt).where(
             PaymentAttempt.reference == order.delivery_card_reference))
         if previous is not None and previous.checkout_url and previous.status in ("started", "pending"):
+            if method_code and method_code.upper() != previous.method_code:
+                raise PaymentError(texts.text("door.pending.message", lang), 409)
             return action(previous)
         raise PaymentError(texts.text("door.pending.message", lang), 409)
     if view is None or not view["can_pay"]:
@@ -91,7 +130,10 @@ async def start(db, order, user, *, lang):
         PaymentAttempt.order_id == order.order_id))
     if tries >= settings.payment_max_attempts:
         raise PaymentError(texts.text("error.tooManyTries", lang))
-    method = catalog.get_method("MARX_OTHER")
+    # Older apps omit a method and keep the original card checkout behavior.
+    method = catalog.get_method(method_code or "MARX_OTHER")
+    if method is None or method not in available_methods(order):
+        raise PaymentError(texts.text("error.methodUnavailable", lang))
     attempt = PaymentAttempt(
         attempt_id=uuid4(), order_id=order.order_id, attempt_no=tries + 1,
         method_code=method.code, gateway=method.gateway, reference=f"DOOR-{uuid4().hex}",

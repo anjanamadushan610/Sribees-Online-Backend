@@ -84,3 +84,20 @@ configured Return URL exactly matches the existing value using a digest.
 Gateway methods and delivery-card payments remain disabled during preparation.
 An ordinary development deployment restores the original development settings.
 Live payment activation and the test customer/rider must be arranged separately.
+
+## Hosted payment methods at delivery
+
+`GET /payments/orders/{order_id}/methods` returns the authenticated owner's
+currently available online methods. The updated mobile client displays their
+names, descriptions and generic icons, then sends the chosen `method` to the
+existing `/pay` endpoint. Omitting a method retains the original card behavior.
+A pending attempt returns only its original method and resumes the same page.
+Switching methods during verification is rejected.
+
+Methods come from the shared enabled catalog and registered gateway adapters.
+Bank Transfer remains disabled until Marx enables the merchant service. A QR
+provider must have a real hosted checkout adapter, verified settlement and an
+enabled catalog entry before appearing. No speculative QR provider is enabled.
+After this mobile version is installed, additional supported hosted methods
+can appear through backend changes. Native QR scanning would require separate
+mobile functionality.
