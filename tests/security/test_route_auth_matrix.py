@@ -111,6 +111,8 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     # The offers a guest may browse, as /coupons/available shows them. Pricing
     # an order (`items` / `use_cart`) is a 401 without a login.
     ("POST", "/api/v1/coupons/evaluate"),
+    # App-open offers popup: a guest gets {show: false}, nothing else.
+    ("GET", "/api/v1/coupons/spotlight"),
     ("GET", "/api/v1/banners"),
     ("POST", "/api/v1/banners/events"),
     ("POST", "/api/v1/branch/resolve-by-location"),

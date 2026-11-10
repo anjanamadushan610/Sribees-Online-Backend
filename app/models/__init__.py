@@ -21,6 +21,7 @@ from app.models.coupon import (
     Coupon,
     CouponCategory,
     CouponDiscountType,
+    CouponExpiryReminder,
     CouponProduct,
 )
 from app.models.escalation import (
@@ -142,6 +143,7 @@ __all__ = [
     # Coupon
     "Coupon",
     "CouponCategory",
+    "CouponExpiryReminder",
     "CouponProduct",
     "CouponDiscountType",
     # Order escalations (B4)
