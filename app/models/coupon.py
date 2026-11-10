@@ -145,6 +145,11 @@ class Coupon(Base):
 
     is_active = Column(Boolean, nullable=False, default=True)
 
+    # Shown in the app-open "special offers" popup (migration 107). Higher
+    # priority first; ties go to the bigger discount.
+    show_in_popup = Column(Boolean, nullable=False, default=False, server_default="false")
+    popup_priority = Column(Integer, nullable=False, default=0, server_default="0")
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -237,3 +242,21 @@ class CouponProduct(Base):
         ForeignKey("products.product_id", ondelete="CASCADE"),
         primary_key=True,
     )
+
+
+class CouponExpiryReminder(Base):
+    """One "your coupon ends soon" push per customer per coupon (migration 107)."""
+
+    __tablename__ = "coupon_expiry_reminders"
+
+    coupon_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("coupons.coupon_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    sent_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
