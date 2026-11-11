@@ -13,8 +13,11 @@ exact, stable URLs:
                                       ``b`` is the sharer's branch, shown as
                                       "from the Kandy branch" here and in the app.
   GET /p/{product_id}/share.jpg     — The branded picture that goes with it: the
-                                      app attaches it when sharing, and it is the
-                                      link's preview image (og:image).
+                                      app attaches it when sharing.
+  GET /p/{product_id}/share-wide.jpg
+                                    — The same picture on a 1.91:1 canvas: the
+                                      link's preview image (og:image), because
+                                      Facebook crops a square one top and bottom.
 
 How a tap on ``https://<host>/p/<id>`` resolves:
 
@@ -107,10 +110,12 @@ def _primary_path(product) -> Optional[str]:
     return images[0].image_url if images else None
 
 
-def _card_key(image_path: str) -> str:
+def _card_key(image_path: str, wide: bool = False) -> str:
     """Names one product picture in one card design: a new photo or a new
     design is a new key, so a cached card never outlives either."""
     seed = f"{image_path}|{product_imagery.SHARE_TEMPLATE_VERSION}"
+    if wide:
+        seed += "|wide"
     offer = festival_offer.active_offer()
     if offer is not None:
         # A festival offer (11.11) has its own card; when it ends the key
@@ -136,11 +141,26 @@ def _card_dir() -> Path:
     return Path(settings.media_root) / "share-cards"
 
 
-def _public_url(request: Request, path: str, query: str = "") -> str:
-    """An absolute URL on this host. Caddy terminates TLS, so the scheme the
-    shopper used comes from X-Forwarded-Proto, not from our own socket."""
+def _canonical_host(host: str) -> str:
+    """The shop's public host for a share page served on *host*."""
+    for pair in settings.share_canonical_hosts.split(","):
+        api_host, _, public_host = pair.partition("=")
+        if api_host.strip().lower() == host.lower() and public_host.strip():
+            return public_host.strip()
+    return host
+
+
+def _public_url(
+    request: Request, path: str, query: str = "", host: Optional[str] = None
+) -> str:
+    """An absolute URL on this host (or *host*). Caddy terminates TLS, so the
+    scheme the shopper used comes from X-Forwarded-Proto, not our own socket."""
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
-    return str(request.url.replace(scheme=scheme or request.url.scheme, path=path, query=query))
+    url = request.url.replace(scheme=scheme or request.url.scheme, path=path, query=query)
+    if host and host != request.url.hostname:
+        # Another host is reached on its default port, never on ours.
+        url = url.replace(netloc=host)
+    return str(url)
 
 
 @router.get("/.well-known/assetlinks.json")
@@ -216,21 +236,32 @@ async def product_share_page(
         description = "Fresh groceries delivered to your door — SRIBEESonline"
     image_path = _primary_path(product) if product else None
     image = (
-        _public_url(request, f"/p/{product.product_id}/share.jpg", f"v={_card_key(image_path)}")
+        _public_url(
+            request,
+            f"/p/{product.product_id}/share-wide.jpg",
+            f"v={_card_key(image_path, wide=True)}",
+        )
         if image_path
         else None
     )
 
     store = play_store_url(product_id, branch_id)
     open_app = intent_url(product_id, store, branch_id)
-    canonical = _public_url(request, request.url.path, f"b={branch_id}" if branch_id else "")
+    # Named on the shop's own host (Facebook shows it under the preview); that
+    # host proxies /p/* back here, so the address works wherever it is pasted.
+    canonical = _public_url(
+        request,
+        request.url.path,
+        f"b={branch_id}" if branch_id else "",
+        host=_canonical_host(request.url.hostname or ""),
+    )
 
     e = lambda s: escape(s, quote=True)  # noqa: E731
     og_image = (
         f'<meta property="og:image" content="{e(image)}">'
         '<meta property="og:image:type" content="image/jpeg">'
-        f'<meta property="og:image:width" content="{product_imagery.SHARE_SIZE}">'
-        f'<meta property="og:image:height" content="{product_imagery.SHARE_SIZE}">'
+        f'<meta property="og:image:width" content="{product_imagery.SHARE_WIDE_SIZE[0]}">'
+        f'<meta property="og:image:height" content="{product_imagery.SHARE_WIDE_SIZE[1]}">'
         if image
         else ""
     )
@@ -300,6 +331,16 @@ async def product_share_card(product_id: str, db: AsyncSession = Depends(get_db)
     without a backfill. A photo we cannot read (a legacy absolute URL, a
     missing file) sends the caller to the plain photo instead.
     """
+    return await _share_card(product_id, db, wide=False)
+
+
+@router.get("/p/{product_id}/share-wide.jpg")
+async def product_share_card_wide(product_id: str, db: AsyncSession = Depends(get_db)):
+    """The share picture whole on a 1200 x 630 canvas: the og:image."""
+    return await _share_card(product_id, db, wide=True)
+
+
+async def _share_card(product_id: str, db: AsyncSession, *, wide: bool) -> Response:
     product = None
     try:
         product = await ProductService.get_by_id_or_slug(db, product_id)
@@ -310,7 +351,7 @@ async def product_share_card(product_id: str, db: AsyncSession = Depends(get_db)
         return Response(status_code=404)
 
     headers = {"Cache-Control": f"public, max-age={_CARD_CACHE_SECONDS}"}
-    cached = _card_dir() / f"{_card_key(image_path)}.jpg"
+    cached = _card_dir() / f"{_card_key(image_path, wide)}.jpg"
     if cached.is_file():
         return FileResponse(cached, media_type="image/jpeg", headers=headers)
 
@@ -327,6 +368,12 @@ async def product_share_card(product_id: str, db: AsyncSession = Depends(get_db)
                 )
             else:
                 card = await run_in_threadpool(product_imagery.render_share_card, source)
+            if wide:
+                card = await run_in_threadpool(
+                    product_imagery.widen_share_card,
+                    card,
+                    backdrop="blur" if design is not None else "edge",
+                )
         except product_imagery.ImageryError as exc:
             logger.warning(f"Share card for {product_id!r} not drawn: {exc}")
             return RedirectResponse(fallback, status_code=302)
@@ -335,9 +382,9 @@ async def product_share_card(product_id: str, db: AsyncSession = Depends(get_db)
         cached.parent.mkdir(parents=True, exist_ok=True)
         # Written aside and renamed in, so a concurrent request never serves
         # half a file.
-        partial = cached.with_suffix(f".{uuid4().hex}.part")
-        partial.write_bytes(card)
-        partial.replace(cached)
+        part = cached.with_suffix(f".{uuid4().hex}.part")
+        part.write_bytes(card)
+        part.replace(cached)
     except OSError as exc:
         logger.warning(f"Share card cache write failed: {exc}")
     return Response(card, media_type="image/jpeg", headers=headers)
