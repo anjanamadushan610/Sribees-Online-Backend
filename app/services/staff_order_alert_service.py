@@ -20,11 +20,13 @@ reaching the same hook rings nobody twice.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from loguru import logger
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, literal, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,6 +85,56 @@ def render_alert(
     if branch_name:
         parts.append(branch_name)
     return " · ".join(parts)
+
+
+# Ring until accepted (owner, 2026-11-11).
+RING_EVERY = timedelta(minutes=2)
+RING_WINDOW = timedelta(minutes=30)
+MAX_RINGS = 15
+QUIET_FROM_HOUR = 22
+QUIET_UNTIL_HOUR = 7
+COLOMBO = ZoneInfo("Asia/Colombo")
+SWEEP_BATCH = 50
+SWEEP_SECONDS = 30
+
+
+def alert_tag(order_id) -> str:
+    """The Android notification tag: one notification per order on a phone."""
+    return f"new_order:{order_id}"
+
+
+def _quiet(at: datetime) -> bool:
+    hour = at.astimezone(COLOMBO).hour
+    return hour >= QUIET_FROM_HOUR or hour < QUIET_UNTIL_HOUR
+
+
+def _next_morning(at: datetime) -> datetime:
+    """The next 07:00 in Colombo at or after ``at``."""
+    local = at.astimezone(COLOMBO)
+    morning = local.replace(hour=QUIET_UNTIL_HOUR, minute=0, second=0, microsecond=0)
+    if morning < local:
+        morning += timedelta(days=1)
+    return morning.astimezone(timezone.utc)
+
+
+def plan_next_ring(
+    now: datetime, *, window_started_at: datetime, rings: int
+) -> Tuple[Optional[datetime], datetime, int]:
+    """
+    After ring number ``rings`` of the current window at ``now``: when to ring
+    next, the window it belongs to, and the ring count to store.
+
+    Every 2 minutes while the window (30 min, 15 rings) lasts; a ring that
+    would fall in the night moves to 07:00 Colombo and opens a new window
+    there. Returns ``(None, ...)`` when ringing should stop.
+    """
+    candidate = now + RING_EVERY
+    if rings >= MAX_RINGS or candidate > window_started_at + RING_WINDOW:
+        return None, window_started_at, rings
+    if _quiet(candidate):
+        morning = _next_morning(candidate)
+        return morning, morning, 0
+    return candidate, window_started_at, rings
 
 
 class StaffOrderAlertService:
@@ -145,7 +197,6 @@ class StaffOrderAlertService:
         Send the alert for ``order_id`` if it is workable and not sent before.
         Returns how many devices FCM accepted (0 when skipped).
         """
-        from app.services.fcm_service import FCMService
 
         # The latch, taken only while the order is workable -- checked in the
         # same statement, so a cancel landing in between cannot ring. Committed
@@ -153,13 +204,19 @@ class StaffOrderAlertService:
         # crash after the send cannot cause a re-send. A row whose
         # ``recipients`` is still NULL is an alert that was claimed but never
         # finished (FCM down, process restarted): visible, not silent.
+        # The schedule is written with the claim: if the first ring then fails
+        # (or the process dies), the sweep still rings it 2 minutes later.
         claimed = await db.scalar(
             pg_insert(AdminOrderAlert)
             .from_select(
-                ["order_id"],
-                select(Order.order_id).where(
-                    Order.order_id == order_id, Order.status.in_(_WORKABLE)
-                ),
+                ["order_id", "alert_status", "rings", "window_started_at", "next_ring_at"],
+                select(
+                    Order.order_id,
+                    Order.status,
+                    literal(1),
+                    func.now(),
+                    func.now() + RING_EVERY,
+                ).where(Order.order_id == order_id, Order.status.in_(_WORKABLE)),
             )
             .on_conflict_do_nothing(index_elements=["order_id"])
             .returning(AdminOrderAlert.order_id)
@@ -169,20 +226,49 @@ class StaffOrderAlertService:
             return 0
         order = await db.get(Order, order_id)
 
+        alert = await db.get(AdminOrderAlert, order_id)
+        devices, accepted = await StaffOrderAlertService._ring(db, order)
+        # Night: the claim's "2 minutes later" becomes 07:00.
+        next_at, window, rings = plan_next_ring(
+            alert.window_started_at, window_started_at=alert.window_started_at, rings=1
+        )
+        # Only while the row is still as the claim left it: a sweep that cleared
+        # it (accepted meanwhile) or already rang it again must not be undone.
+        await db.execute(
+            update(AdminOrderAlert)
+            .where(
+                AdminOrderAlert.order_id == order_id,
+                AdminOrderAlert.cleared_at.is_(None),
+                AdminOrderAlert.stopped_at.is_(None),
+                AdminOrderAlert.rings == 1,
+            )
+            .values(
+                devices=devices,
+                recipients=accepted,
+                rings=rings,
+                window_started_at=window,
+                next_ring_at=next_at,
+                stopped_at=None if next_at else func.now(),
+            )
+        )
+        await db.commit()
+        logger.info(f"Order {order.order_number}: staff alert to {accepted}/{devices} devices")
+        return accepted
+
+    @staticmethod
+    async def _ring(db: AsyncSession, order: Order) -> Tuple[int, int]:
+        """One ring of ``order`` on every staff phone that should hear it.
+        Returns (devices, accepted by FCM). Dead tokens are switched off."""
+        from app.services.fcm_service import FCMService
+
         devices = await StaffOrderAlertService.recipients(db, order.branch_id)
         if not devices:
-            await db.execute(
-                update(AdminOrderAlert)
-                .where(AdminOrderAlert.order_id == order_id)
-                .values(devices=0, recipients=0)
-            )
-            await db.commit()
             logger.info(f"Order {order.order_number}: no staff device registered for its branch")
-            return 0
+            return 0, 0
 
         item_count = int(
             await db.scalar(
-                select(func.count()).select_from(OrderItem).where(OrderItem.order_id == order_id)
+                select(func.count()).select_from(OrderItem).where(OrderItem.order_id == order.order_id)
             )
             or 0
         )
@@ -223,6 +309,8 @@ class StaffOrderAlertService:
                 data=data,
                 channel_id=STAFF_CHANNEL_ID,
                 sound=STAFF_SOUND,
+                # One notification per order: each ring replaces the last.
+                tag=alert_tag(order.order_id),
             )
             accepted += int(result.get("success_count", 0))
             dead.extend(result.get("invalid_tokens", []))
@@ -233,14 +321,120 @@ class StaffOrderAlertService:
                 .where(AdminPushToken.token.in_(dead))
                 .values(is_active=False)
             )
-        await db.execute(
-            update(AdminOrderAlert)
-            .where(AdminOrderAlert.order_id == order_id)
-            .values(devices=len(devices), recipients=accepted)
-        )
+        return len(devices), accepted
+
+    # ------------------------------------------------------- ring until accepted
+
+    @staticmethod
+    async def sweep(db: AsyncSession) -> int:
+        """
+        One pass: clear the phones for every order someone accepted, then
+        re-ring every unaccepted order that is due. Returns how many rang.
+
+        Safe with several API workers: rows are locked (SKIP LOCKED) and marked
+        before anything is sent, so a due ring or a clear goes out once. A
+        crash after the commit loses that one ring rather than doubling it.
+        """
+        from app.services.fcm_service import FCMService
+
+        now = await db.scalar(select(func.now()))
+
+        # 1. Accepted orders: tell the phones, whenever it happened -- in the
+        # night, after the ringing window ended, it does not matter.
+        accepted_rows = (
+            await db.execute(
+                select(AdminOrderAlert)
+                .join(Order, Order.order_id == AdminOrderAlert.order_id)
+                .where(
+                    AdminOrderAlert.alert_status.isnot(None),
+                    AdminOrderAlert.cleared_at.is_(None),
+                    Order.status != AdminOrderAlert.alert_status,
+                )
+                .limit(SWEEP_BATCH)
+                .with_for_update(of=AdminOrderAlert, skip_locked=True)
+            )
+        ).scalars().all()
+        cleared: List[UUID] = []
+        for alert in accepted_rows:
+            alert.cleared_at = now
+            alert.stopped_at = alert.stopped_at or now
+            alert.next_ring_at = None
+            cleared.append(alert.order_id)
         await db.commit()
-        logger.info(f"Order {order.order_number}: staff alert to {accepted}/{len(devices)} devices")
-        return accepted
+        for order_id in cleared:
+            try:
+                await StaffOrderAlertService._clear(db, order_id, FCMService)
+            except Exception:
+                await db.rollback()
+                logger.exception(f"Clearing the alert for order {order_id} failed")
+
+        # 2. Due re-rings.
+        rows = (
+            await db.execute(
+                select(AdminOrderAlert, Order.status)
+                .join(Order, Order.order_id == AdminOrderAlert.order_id)
+                .where(
+                    AdminOrderAlert.stopped_at.is_(None),
+                    AdminOrderAlert.next_ring_at.isnot(None),
+                    AdminOrderAlert.next_ring_at <= now,
+                )
+                .order_by(AdminOrderAlert.next_ring_at)
+                .limit(SWEEP_BATCH)
+                .with_for_update(of=AdminOrderAlert, skip_locked=True)
+            )
+        ).all()
+        to_ring: List[Tuple[UUID, str]] = []
+        for alert, status in rows:
+            expected = alert.alert_status or OrderStatus.PENDING.value
+            if status != expected:
+                # Accepted: never leave a row due that was not rung (it would
+                # sit at the head of the queue forever). Step 1 sends the clear.
+                alert.stopped_at = now
+                alert.next_ring_at = None
+                continue
+            # Step from when it was due, not from when this sweep ran, so a
+            # sweep running late does not stretch the 2-minute rhythm.
+            due = alert.next_ring_at
+            base = due if due is not None and now - due < RING_EVERY else now
+            next_at, window, rings = plan_next_ring(
+                base, window_started_at=alert.window_started_at or base, rings=alert.rings + 1
+            )
+            alert.rings = rings
+            alert.window_started_at = window
+            alert.next_ring_at = next_at
+            if next_at is None:
+                alert.stopped_at = now
+            to_ring.append((alert.order_id, expected))
+        await db.commit()
+
+        rang = 0
+        for order_id, expected in to_ring:
+            try:
+                db.expire_all()
+                order = await db.get(Order, order_id)
+                # Accepted between the lock and now: do not ring a done order.
+                if order is None or order.status != expected:
+                    continue
+                _, ok = await StaffOrderAlertService._ring(db, order)
+                await db.commit()
+                rang += 1 if ok else 0
+            except Exception:
+                await db.rollback()
+                logger.exception(f"Re-ringing order {order_id} failed")
+        return rang
+
+    @staticmethod
+    async def _clear(db: AsyncSession, order_id: UUID, fcm) -> None:
+        """Tell the phones the order was accepted, so they drop its notification."""
+        order = await db.get(Order, order_id)
+        if order is None:
+            return
+        tokens = [t for t, _ in await StaffOrderAlertService.recipients(db, order.branch_id)]
+        if tokens:
+            await fcm.send_data_to_tokens(
+                tokens,
+                {"type": "order_accepted", "order_id": str(order_id), "tag": alert_tag(order_id)},
+            )
 
     # --------------------------------------------------------------- devices
 
@@ -308,3 +502,22 @@ class StaffOrderAlertService:
         )
         await db.commit()
         return result.rowcount or 0
+
+
+async def run_staff_alert_ring_worker():
+    """Re-ring unaccepted orders every 2 minutes (see plan_next_ring)."""
+    import asyncio
+
+    from app.config.database import async_session_maker
+
+    while True:
+        try:
+            async with async_session_maker() as db:
+                rang = await StaffOrderAlertService.sweep(db)
+                if rang:
+                    logger.info(f"Staff alerts re-rang for {rang} order(s)")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Staff alert ring sweep failed; check migration 110")
+        await asyncio.sleep(SWEEP_SECONDS)

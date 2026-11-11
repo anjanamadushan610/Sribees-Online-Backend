@@ -136,6 +136,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.referral_vesting_worker import run_referral_vesting_worker
     from app.services.return_settlement_worker import run_return_settlement_worker
     from app.services.semantic_search import run_embedding_worker
+    from app.services.staff_order_alert_service import run_staff_alert_ring_worker
     from app.services.whatsapp_worker import run_whatsapp_worker
 
     # Separate loops, not one. They fail for unrelated reasons -- reminders,
@@ -152,6 +153,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         asyncio.create_task(run_return_settlement_worker()),
         asyncio.create_task(run_campaign_worker()),
         asyncio.create_task(run_coupon_reminder_worker()),
+        asyncio.create_task(run_staff_alert_ring_worker()),
         asyncio.create_task(run_content_watcher()),
         asyncio.create_task(run_payment_worker()),
         asyncio.create_task(run_postal_city_worker()),
