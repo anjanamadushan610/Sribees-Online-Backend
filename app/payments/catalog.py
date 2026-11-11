@@ -105,10 +105,6 @@ METHODS: tuple[MethodSpec, ...] = (
         option="PAY_BY_BANK_ACCOUNT",
         name="Bank Transfer",
         description="Pay straight from your bank account",
-        # Off (owner, 2026-11-10): Marx still refuses PAY_BY_BANK_ACCOUNT ("ipg
-        # provider not configured"), so it cannot take a payment. Kept so old
-        # orders still name it; turn back on when Marx enables bank payments.
-        offered=False,
     ),
 )
 
