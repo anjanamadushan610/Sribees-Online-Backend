@@ -1,0 +1,14 @@
+BEGIN;
+ALTER TABLE whatsapp_conversations ADD COLUMN IF NOT EXISTS language_selected BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE whatsapp_conversations ALTER COLUMN language_selected SET DEFAULT FALSE;
+ALTER TABLE whatsapp_conversations ADD COLUMN IF NOT EXISTS menu VARCHAR(30) NOT NULL DEFAULT 'main';
+ALTER TABLE whatsapp_conversations ADD COLUMN IF NOT EXISTS stage VARCHAR(30);
+ALTER TABLE whatsapp_conversations ADD COLUMN IF NOT EXISTS context JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE whatsapp_replies ADD COLUMN IF NOT EXISTS inbound_media JSONB;
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(2);
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS related_order_id UUID REFERENCES orders(order_id) ON DELETE SET NULL;
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS notification_status VARCHAR(20);
+CREATE INDEX IF NOT EXISTS ix_support_tickets_related_order_id ON support_tickets(related_order_id);
+CREATE INDEX IF NOT EXISTS ix_support_tickets_notification ON support_tickets(notification_status) WHERE notification_status = 'pending';
+CREATE INDEX IF NOT EXISTS ix_whatsapp_replies_phone_received ON whatsapp_replies(phone, received_at);
+COMMIT;

@@ -2148,6 +2148,7 @@ class OrderService:
         cancelled_by: str = "customer",
         actor_admin_id=None,
         context: Optional[dict] = None,
+        commit: bool = True,
     ) -> Order:
         """Cancel an order, refund what was paid, and record who did it."""
         # The same rule the customer's button is drawn from. A parcel a rider
@@ -2157,6 +2158,8 @@ class OrderService:
         if OrderService.customer_cancel_state(order) == OrderService.CANCEL_BLOCKED:
             raise ValueError(f"Order cannot be cancelled in {order.status} status")
 
+        if not commit and OrderService.customer_cancel_state(order) != OrderService.CANCEL_FREE:
+            raise ValueError("Transactional cancellation requires an unbooked order")
         previous_status = order.status
         await OrderService._return_stock_to_branch(db, order, previous_status)
         order.status = OrderStatus.CANCELLED.value
@@ -2174,8 +2177,11 @@ class OrderService:
             context=context,
         )
 
-        await db.commit()
-        await db.refresh(order)
+        if commit:
+            await db.commit()
+            await db.refresh(order)
+        else:
+            await db.flush()
 
         if order.courier_shipment_id:
             await OrderService._cancel_courier_shipment(

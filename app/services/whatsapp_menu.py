@@ -55,6 +55,8 @@ def incoming_messages(payload: dict, phone_number_id: str, now: datetime):
                     text = interactive.get(
                         "button_reply", interactive.get("list_reply", {})
                     ).get("id", "")
+                if kind in {"image", "document"}:
+                    text = message.get(kind, {}).get("caption", "")
                 if not isinstance(text, str):
                     text = ""
                 yield message_id, sender, received_at, text.strip()[:4096], kind

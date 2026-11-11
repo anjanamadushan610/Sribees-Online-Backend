@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -187,7 +188,21 @@ class MemoryDB:
         self.tickets = {}
         self.commits = 0
 
+    @asynccontextmanager
+    async def begin_nested(self):
+        yield
+
+    async def refresh(self, row):
+        pass
+
+    async def scalar(self, statement):
+        return None
+
     async def execute(self, statement):
+        if statement.is_select:
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
+        if statement.is_update:
+            return None
         if str(statement).startswith("SELECT pg_advisory"):
             return None
         values = statement.compile(dialect=postgresql.dialect()).params
@@ -236,7 +251,7 @@ async def test_duplicate_event_creates_one_reply():
 async def test_support_ticket_and_followup_without_duplicate_bot_reply():
     db = MemoryDB()
     for number, body in enumerate(
-        ["SI", "support", "My delivery has not arrived", "Please call me"]
+        ["SI", "support", "2", "My delivery has not arrived", "Please call me"]
     ):
         await whatsapp_service.receive_messages(
             db, envelope(body, message_id=f"wamid.{number}"), "123"
@@ -248,26 +263,28 @@ async def test_support_ticket_and_followup_without_duplicate_bot_reply():
         and "Please call me" in ticket.message
     )
     assert ticket.user_id is None
-    assert db.messages["wamid.3"].status == "ignored"
+    assert db.messages["wamid.4"].status == "ignored"
     assert db.conversations["94760000000"].language == "si"
     await whatsapp_service.receive_messages(
-        db, envelope("My delivery has not arrived", message_id="wamid.2"), "123"
+        db, envelope("My delivery has not arrived", message_id="wamid.3"), "123"
     )
     assert len(db.tickets) == 1
 
 
 async def test_menu_resets_handoff_and_media_does_not_create_empty_ticket():
     db = MemoryDB()
+    await whatsapp_service.receive_messages(db, envelope("en", message_id="lang"), "123")
     await whatsapp_service.receive_messages(db, envelope("support"), "123")
+    await whatsapp_service.receive_messages(db, envelope("2", message_id="new"), "123")
     await whatsapp_service.receive_messages(
         db, envelope(kind="image", message_id="image"), "123"
     )
     assert not db.tickets
-    assert db.conversations["94760000000"].awaiting_details
+    assert db.conversations["94760000000"].stage == "description"
     await whatsapp_service.receive_messages(
         db, envelope("MENU", message_id="menu"), "123"
     )
-    assert not db.conversations["94760000000"].awaiting_details
+    assert db.conversations["94760000000"].stage is None
 
 
 class WorkerDB:
