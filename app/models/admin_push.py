@@ -11,6 +11,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     func,
@@ -67,3 +68,29 @@ class AdminOrderAlert(Base):
     # (FCM down, restart mid-send) stays visible as NULL rather than 0.
     devices = Column(Integer, nullable=True)
     recipients = Column(Integer, nullable=True)
+
+    # Ring until accepted (migration 110). ``alert_status`` is the order's
+    # status when it first rang: the order is "accepted" once it has moved on
+    # from it (Confirm for COD; Packing for a card order that arrives
+    # confirmed). ``rings`` counts within the current window, which restarts at
+    # 07:00 Colombo for night orders. ``stopped_at`` set = never rings again.
+    alert_status = Column(String(30), nullable=True)
+    rings = Column(Integer, nullable=False, default=0, server_default="0")
+    window_started_at = Column(DateTime(timezone=True), nullable=True)
+    next_ring_at = Column(DateTime(timezone=True), nullable=True)
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    # Set once the phones were told the order was accepted (clear push).
+    cleared_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_admin_order_alerts_next_ring_at",
+            "next_ring_at",
+            postgresql_where=text("stopped_at IS NULL"),
+        ),
+        Index(
+            "ix_admin_order_alerts_uncleared",
+            "order_id",
+            postgresql_where=text("cleared_at IS NULL AND alert_status IS NOT NULL"),
+        ),
+    )

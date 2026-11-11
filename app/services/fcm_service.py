@@ -30,7 +30,7 @@ ANDROID_CHANNEL_ID = "sribeesonline_notifications"
 
 
 def _android_config(
-    channel_id: str = ANDROID_CHANNEL_ID, sound: str = "default"
+    channel_id: str = ANDROID_CHANNEL_ID, sound: str = "default", tag: Optional[str] = None
 ) -> "messaging.AndroidConfig":
     # High priority is what lets FCM wake a phone in Doze. At normal priority
     # a push to a backgrounded app is held until the device next wakes, which
@@ -45,6 +45,9 @@ def _android_config(
             sound=sound,
             click_action="FLUTTER_NOTIFICATION_CLICK",
             channel_id=channel_id,
+            # Same tag = the new notification replaces the old one (staff
+            # re-rings: one notification per order, not fifteen).
+            tag=tag,
         ),
     )
 
@@ -215,6 +218,7 @@ class FCMService:
         image_url: Optional[str] = None,
         channel_id: str = ANDROID_CHANNEL_ID,
         sound: str = "default",
+        tag: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send push notification to multiple device tokens.
@@ -247,7 +251,7 @@ class FCMService:
             message = messaging.MulticastMessage(
                 notification=notification,
                 data=data or {},
-                android=_android_config(channel_id, sound),
+                android=_android_config(channel_id, sound, tag),
                 apns=_apns_config(image_url),
                 tokens=chunk,
             )
@@ -275,6 +279,31 @@ class FCMService:
             f"{total['failure_count']} failures"
         )
         return total
+
+    @classmethod
+    async def send_data_to_tokens(cls, tokens: List[str], data: Dict[str, str]) -> int:
+        """
+        A silent, data-only message to these devices (nothing is drawn). High
+        priority so it arrives now. Returns how many FCM accepted.
+        """
+        if not tokens:
+            return 0
+        if not cls._initialized:
+            if not cls.initialize():
+                return 0
+        ok = 0
+        for start in range(0, len(tokens), MULTICAST_LIMIT):
+            message = messaging.MulticastMessage(
+                data=data,
+                android=messaging.AndroidConfig(priority="high"),
+                tokens=tokens[start:start + MULTICAST_LIMIT],
+            )
+            try:
+                response = await asyncio.to_thread(messaging.send_each_for_multicast, message)
+                ok += response.success_count
+            except Exception as e:
+                logger.error(f"FCM data multicast failed: {e}")
+        return ok
 
     @classmethod
     async def send_to_topic(
