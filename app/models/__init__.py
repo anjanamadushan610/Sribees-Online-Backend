@@ -46,6 +46,7 @@ from app.models.notification import (
     NotificationType,
     PushToken,
 )
+from app.models.offer_cap import OfferCap, OfferCapItem, OfferCapUsage
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
 from app.models.partner_wallet import (
@@ -99,6 +100,9 @@ __all__ = [
     "ReferralBenefit", "ReferralDeliveryRedemption", "ReferralPromotion",
     "FreeDeliveryBranchOffer",
     "FreeDeliveryGrant",
+    "OfferCap",
+    "OfferCapItem",
+    "OfferCapUsage",
     "AssistantChatLog",
     "AssistantProfile",
     "AssistantReminder",
