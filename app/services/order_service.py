@@ -45,6 +45,7 @@ from app.services import (
     delivery_verification_service,
     festival_offer,
     free_delivery_service,
+    offer_cap_service,
     weight_options_service,
 )
 from app.services.app_settings_service import AppSettingsService
@@ -492,6 +493,16 @@ class OrderService:
         priced_items = await OrderService._attach_weights(db, priced_items)
         priced_items = await OrderService._attach_referral_rates(db, priced_items, branch_id)
 
+        # Offer loss caps (app/services/offer_cap_service.py). Authoritative:
+        # under the customer's row lock, so two checkouts cannot both take the
+        # last of the room, and before the gateway is opened.
+        offer_verdict = offer_cap_service.Verdict()
+        if await offer_cap_service.live_offers(db, branch_id):
+            await db.execute(select(User.user_id).where(User.user_id == user_id).with_for_update())
+            offer_verdict = await offer_cap_service.evaluate(db, user_id, branch_id, priced_items)
+            if offer_verdict.over:
+                raise offer_cap_service.OfferLimitReached()
+
         # Matched against the synced directory now if it never was -- a sync
         # since the address was saved may have added its town.
         postal_city_id = await courier_location_service.postal_city_id_for_address(db, address)
@@ -639,6 +650,7 @@ class OrderService:
 
         db.add(order)
         await db.flush()  # Get order_id
+        offer_cap_service.stage_usage(db, user_id, order.order_id, offer_verdict)
         if delivery_benefit:
             await ReferralPromotionService.reserve(db, order, delivery_benefit[0].benefit_id, original_delivery_fee)
 
@@ -1675,6 +1687,10 @@ class OrderService:
                     # homes and one chance to disagree.
                     cancelled_by="admin",
                 )
+        elif was_cancelled:
+            # An override bringing a cancelled order back takes its offer loss
+            # again: the goods go out, so the room is used.
+            await offer_cap_service.reclaim_for_order(db, order.order_id)
 
         # Log status transition in audit history
         history_note = notes or f"Status updated to {status.value.replace('_', ' ').title()}"
@@ -2253,6 +2269,9 @@ class OrderService:
 
         # Coupon slot, wallet refund, cashback clawback.
         await OrderService._reverse_order_financials(db, order)
+        # Offer loss the order took goes back to the customer (owner: a cancel
+        # gives it back, a return does not).
+        await offer_cap_service.release_for_order(db, order.order_id)
 
         # The card portion. _reverse_order_financials returns what was paid
         # FROM the wallet; this returns what was paid TO the gateway, and

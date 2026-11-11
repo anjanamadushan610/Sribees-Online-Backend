@@ -232,6 +232,34 @@ async def price_map(
     return out
 
 
+async def regular_price_map(
+    db: AsyncSession, variant_ids: Iterable[UUID], branch_id: Optional[UUID]
+) -> Dict[str, Tuple[str, Decimal]]:
+    """
+    ``{variant_id: (product_id, price)}`` before any discount: what price_map
+    charges with the product's discount taken away. An offer's loss is the gap
+    between the two (app/services/offer_cap_service.py).
+    """
+    ids = list(set(variant_ids))
+    if not ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(ProductVariant.variant_id, ProductVariant.product_id, ProductVariant.price).where(
+                ProductVariant.variant_id.in_(ids),
+                ProductVariant.is_active.is_not(False),
+            )
+        )
+    ).all()
+    overrides = await _branch_prices(db, [r.variant_id for r in rows], branch_id)
+    terms = await _terms(db, [r.product_id for r in rows], branch_id)
+    out = {}
+    for vid, pid, price in rows:
+        _, ratio = terms.get(pid, (None, None))
+        out[str(vid)] = (str(pid), overrides[vid] if vid in overrides else _scaled(price, ratio))
+    return out
+
+
 async def replace_options(
     db: AsyncSession, product: Product, options: Sequence[Tuple[int, Decimal]]
 ) -> None:

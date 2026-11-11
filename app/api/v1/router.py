@@ -54,6 +54,7 @@ from app.api.v1 import (
     locations,
     marketing,
     notifications,
+    offer_caps,
     orders,
     partner,
     payments,
@@ -516,3 +517,4 @@ router.include_router(linked_partner_wallet.router)
 
 router.include_router(referral_promotions.router)
 router.include_router(free_delivery.router)
+router.include_router(offer_caps.router)

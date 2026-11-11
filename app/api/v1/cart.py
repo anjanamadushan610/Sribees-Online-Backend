@@ -25,7 +25,12 @@ from app.schemas.cart import (
     ApplyCouponRequest,
     UpdateCartItemRequest,
 )
-from app.services import coupon_presenter, delivery_quote_service, stock_keeping
+from app.services import (
+    coupon_presenter,
+    delivery_quote_service,
+    offer_cap_service,
+    stock_keeping,
+)
 from app.services.app_settings_service import AppSettingsService
 from app.services.cart_service import CartService
 from app.services.coupon_service import CouponService, CouponValidationError
@@ -56,6 +61,35 @@ async def _optional_branch_id(redis: Redis, current_user) -> Optional[UUID]:
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(f"Could not resolve branch context for coupon check: {exc}")
     return None
+
+
+async def _guard_offer_limit(
+    db: AsyncSession,
+    redis: Optional[Redis],
+    current_user,
+    product_id: str,
+    variant_id: Optional[str],
+    quantity: int,
+    *,
+    add: bool,
+) -> None:
+    """
+    400 with the offer-limit message when this change would take the customer
+    above an offer's cap (app/services/offer_cap_service.py). The app shows a
+    400's ``detail`` as the cart's message, so no app release is needed.
+    Checkout re-checks; a failure here never blocks the cart.
+    """
+    try:
+        branch_id = await _optional_branch_id(redis, current_user) if redis else None
+        if branch_id is None:
+            return
+        before = (await CartService.get_cart(str(current_user.user_id))).get("items", [])
+        after = offer_cap_service.with_quantity(before, product_id, variant_id, quantity, add=add)
+        await offer_cap_service.guard_cart_change(db, current_user.user_id, branch_id, before, after)
+    except offer_cap_service.OfferLimitReached as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:  # pragma: no cover - checkout is the gate
+        logger.warning(f"Offer limit check on a cart change failed: {exc}")
 
 
 async def _validate_and_cleanup_coupon(
@@ -165,7 +199,15 @@ async def _priced(
     """
     cart = await _validate_and_cleanup_coupon(db, redis, current_user, cart)
     items = cart.get("items", [])
+    cart["offer_limit"] = offer_cap_service.cart_block(offer_cap_service.Verdict())
     if items:
+        try:
+            limit_branch = await _optional_branch_id(redis, current_user) if redis else None
+            cart["offer_limit"] = offer_cap_service.cart_block(
+                await offer_cap_service.evaluate(db, current_user.user_id, limit_branch, items)
+            )
+        except Exception as exc:  # pragma: no cover - checkout is the gate
+            logger.warning(f"Offer limit check for the cart failed: {exc}")
         try:
             applied_branch_id = await _optional_branch_id(redis, current_user) if redis else None
             # Show what checkout will charge, not the price the client sent.
@@ -300,6 +342,10 @@ async def add_to_cart(
                 except ValueError:
                     pass
 
+        await _guard_offer_limit(
+            db, redis, current_user, data.product_id, data.variant_id, data.quantity, add=True
+        )
+
         cart = await CartService.add_item(
             user_id=str(current_user.user_id),
             product_id=data.product_id,
@@ -355,6 +401,11 @@ async def update_cart_item(
                         )
                 except ValueError:
                     pass
+
+        if data.quantity > 0:
+            await _guard_offer_limit(
+                db, redis, current_user, product_id, variant_id, data.quantity, add=False
+            )
 
         cart = await CartService.update_item_quantity(
             user_id=str(current_user.user_id),
