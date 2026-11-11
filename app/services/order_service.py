@@ -872,6 +872,14 @@ class OrderService:
                 f"Order {order.order_number} placed but confirmation "
                 f"notification failed: {e}"
             )
+        # Ring the branch's staff phones (New Orders app). Background, own
+        # session, send-once -- it can neither slow nor fail the checkout.
+        try:
+            from app.services.staff_order_alert_service import StaffOrderAlertService
+
+            StaffOrderAlertService.schedule(order.order_id)
+        except Exception as e:
+            logger.warning(f"Order {order.order_number}: staff alert not scheduled: {e}")
 
         # Payment already confirmed (WALLET / wallet-fully-covered-gateway
         # orders): run the same "just got paid" side effects a Marx confirm or
@@ -1806,6 +1814,20 @@ class OrderService:
 
         await db.commit()
         await db.refresh(order)
+
+        # Paid just now: only now is it worth packing, so only now staff hear
+        # of it. Scheduled before the paid side effects: if one of them raises,
+        # a retried callback finds the order already paid and never comes back
+        # here, so this is the one chance. The latch stops a second ring.
+        if just_confirmed and was_awaiting:
+            try:
+                from app.services.staff_order_alert_service import (
+                    StaffOrderAlertService,
+                )
+
+                StaffOrderAlertService.schedule(order.order_id)
+            except Exception as e:
+                logger.warning(f"{order.order_number}: staff alert not scheduled: {e}")
 
         if just_confirmed:
             await OrderService._on_payment_confirmed(db, order)
