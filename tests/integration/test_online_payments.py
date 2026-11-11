@@ -320,13 +320,11 @@ async def test_methods_come_from_the_server_in_english(
     assert card["name"] == "Visa / Mastercard / UnionPay", "English whatever the app's language"
     assert card["icon"] == "card" and card["kind"] == "online"
     assert "MARX_AMEX" not in methods, "off: Marx does not carry it for us"
-    assert "MARX_BANK" not in methods, "off: Marx does not carry bank payments for us yet"
+    assert methods["MARX_BANK"]["icon"] == "bank", "on since Marx enabled bank payments"
     assert methods["COD"]["kind"] == "offline" and methods["COD"]["type"] == "OFFLINE", "old apps still read type"
 
     r = await _place(api, app_redis, world, customer, await make_product(), method="MARX_AMEX")
     assert r.status_code == 400, "a switched-off method is refused even if sent"
-    r = await _place(api, app_redis, world, customer, await make_product(), method="MARX_BANK")
-    assert r.status_code == 400, "bank transfer is refused while it is off"
 
     monkeypatch.setattr(settings, "marx_gateway_methods_enabled", False)
     r = await api.get("/api/v1/payment-methods", headers=customer.headers)
