@@ -117,6 +117,12 @@ def _next_morning(at: datetime) -> datetime:
     return morning.astimezone(timezone.utc)
 
 
+def _is_morning_window(window_started_at: datetime) -> bool:
+    """The window opened by the 07:00 restart (07:00:00 Colombo exactly)."""
+    local = window_started_at.astimezone(COLOMBO)
+    return (local.hour, local.minute, local.second, local.microsecond) == (QUIET_UNTIL_HOUR, 0, 0, 0)
+
+
 def plan_next_ring(
     now: datetime, *, window_started_at: datetime, rings: int
 ) -> Tuple[Optional[datetime], datetime, int]:
@@ -126,11 +132,17 @@ def plan_next_ring(
 
     Every 2 minutes while the window (30 min, 15 rings) lasts; a ring that
     would fall in the night moves to 07:00 Colombo and opens a new window
-    there. Returns ``(None, ...)`` when ringing should stop.
+    there. A day window that ends with the order still not accepted gets one
+    more window at the next 07:00 (owner: at 07:00 every still-pending order
+    rings again); a morning window that ends stops for good. Returns
+    ``(None, ...)`` when ringing should stop.
     """
     candidate = now + RING_EVERY
     if rings >= MAX_RINGS or candidate > window_started_at + RING_WINDOW:
-        return None, window_started_at, rings
+        if _is_morning_window(window_started_at):
+            return None, window_started_at, rings
+        morning = _next_morning(now)
+        return morning, morning, 0
     if _quiet(candidate):
         morning = _next_morning(candidate)
         return morning, morning, 0

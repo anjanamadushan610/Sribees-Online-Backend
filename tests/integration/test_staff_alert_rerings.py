@@ -185,7 +185,13 @@ async def test_the_window_ends_after_thirty_minutes(
     await StaffOrderAlertService.sweep(db)
     assert len(_for(fcm, order_id)) == 2, "the last ring still goes out"
     a = await _alert(db, order_id)
-    assert a.stopped_at is not None and a.next_ring_at is None
+    # Still not accepted: parked until the next 07:00 Colombo, a fresh window.
+    assert a.stopped_at is None and a.rings == 0
+    assert a.next_ring_at == a.window_started_at
+    from zoneinfo import ZoneInfo
+
+    local = a.next_ring_at.astimezone(ZoneInfo("Asia/Colombo"))
+    assert (local.hour, local.minute) == (7, 0)
 
 
 async def test_two_workers_ring_a_due_order_once(
