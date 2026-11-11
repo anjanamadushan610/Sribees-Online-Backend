@@ -27,6 +27,7 @@ from app.api.v1 import (
     admin_loyalty,
     admin_orders,
     admin_partners,
+    admin_push_tokens,
     admin_referral_commission,
     admin_roles,
     admin_settings,
@@ -350,6 +351,13 @@ router.include_router(
     admin_orders.router,
     prefix="/admin/orders",
     tags=["Admin Orders"],
+)
+
+# Staff phones for new-order alerts (Sribees New Orders app).
+router.include_router(
+    admin_push_tokens.router,
+    prefix="/admin/push-tokens",
+    tags=["Admin Push Tokens"],
 )
 
 # Admin Analytics (/admin/analytics). Branch-scoped via inject_branch_filter;

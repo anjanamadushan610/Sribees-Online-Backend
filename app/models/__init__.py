@@ -5,6 +5,7 @@ SQLAlchemy ORM models for all database tables.
 """
 
 from app.models.admin import Admin, AdminRole, AdminSession
+from app.models.admin_push import AdminOrderAlert, AdminPushToken
 from app.models.app_content import AppContent
 from app.models.app_settings import AppSetting
 from app.models.app_usage import AppInstall, AppUsageDay
@@ -178,6 +179,8 @@ __all__ = [
     "NotificationType",
     # Admin & RBAC models
     "Admin",
+    "AdminOrderAlert",
+    "AdminPushToken",
     "AdminSession",
     "AdminRole",
     "Role",
