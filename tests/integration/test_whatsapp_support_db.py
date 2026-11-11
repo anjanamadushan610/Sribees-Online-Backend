@@ -40,7 +40,9 @@ async def whatsapp_case(db_session_factory):
 async def test_concurrent_duplicates_make_one_ticket(db_session_factory, whatsapp_case):
     phone, prefix, event = whatsapp_case
     async with db_session_factory() as db:
+        await receive_messages(db, event("en", "language"), "123")
         await receive_messages(db, event("support", "start"), "123")
+        await receive_messages(db, event("2", "inquiry"), "123")
 
     async def deliver():
         async with db_session_factory() as db:
@@ -74,7 +76,10 @@ async def test_concurrent_duplicates_make_one_ticket(db_session_factory, whatsap
 
 async def test_batched_messages_share_conversation(db_session_factory, whatsapp_case):
     phone, _, event = whatsapp_case
-    payload = event("support", "start")
+    async with db_session_factory() as db:
+        await receive_messages(db, event("en", "language"), "123")
+        await receive_messages(db, event("support", "menu"), "123")
+    payload = event("2", "start")
     messages = payload["entry"][0]["changes"][0]["value"]["messages"]
     messages.extend(
         event("My order has not arrived", "details")["entry"][0]["changes"][0]["value"][
@@ -93,7 +98,9 @@ async def test_failed_commit_can_be_retried(
 ):
     phone, prefix, event = whatsapp_case
     async with db_session_factory() as db:
+        await receive_messages(db, event("en", "language"), "123")
         await receive_messages(db, event("support", "start"), "123")
+        await receive_messages(db, event("2", "inquiry"), "123")
     async with db_session_factory() as db:
 
         async def fail_commit():
@@ -135,7 +142,9 @@ async def test_staff_chat_queue_idempotency_scope_and_receipts(
     other_staff = await make_admin(api=api)
     branch_staff = await make_admin("branch_manager", api=api)
     async with db_session_factory() as db:
+        await receive_messages(db, event("en", "language"), "123")
         await receive_messages(db, event("support", "start"), "123")
+        await receive_messages(db, event("2", "inquiry"), "123")
         await receive_messages(
             db, event("Please help with my delivery", "details"), "123"
         )
@@ -207,7 +216,9 @@ async def test_history_cursor_is_ticket_scoped(
     phone, _, event = whatsapp_case
     staff = await make_admin(api=api)
     async with db_session_factory() as db:
+        await receive_messages(db, event("en", "language"), "123")
         await receive_messages(db, event("support", "start"), "123")
+        await receive_messages(db, event("2", "inquiry"), "123")
         await receive_messages(db, event("Please help with my order", "details"), "123")
         for number in range(4):
             await receive_messages(
@@ -244,3 +255,43 @@ async def test_history_cursor_is_ticket_scoped(
     assert (
         await api.get(base, params={"before": other_cursor}, headers=staff.headers)
     ).status_code == 400
+
+
+async def test_verified_account_order_and_ticket_ownership(db, make_customer):
+    from decimal import Decimal
+
+    from app.models.order import Order
+    from app.services.whatsapp_support import owned_order, owned_ticket
+    customer = await make_customer()
+    other = await make_customer()
+    number = "FC-WA-" + uuid.uuid4().hex[:12].upper()
+    order = Order(user_id=customer.user_id, order_number=number,
+        subtotal=Decimal("100"), total_amount=Decimal("100"),
+        status="confirmed", payment_status="pending")
+    ticket = SupportTicket(ticket_number="TKT-20261111-" + uuid.uuid4().hex[:5].upper(),
+        user_id=customer.user_id, contact_phone=customer.phone, category="general",
+        message="Synthetic WhatsApp ownership test", status="pending")
+    db.add_all([order, ticket])
+    await db.commit()
+    assert (await owned_order(db, customer.phone, number)).order_id == order.order_id
+    assert await owned_order(db, other.phone, number) is None
+    assert (await owned_ticket(db, customer.phone, ticket.ticket_number)).ticket_id == ticket.ticket_id
+    assert await owned_ticket(db, other.phone, ticket.ticket_number) is None
+
+
+async def test_new_and_saved_language_preferences(db_session_factory, whatsapp_case):
+    phone, _, event = whatsapp_case
+    async with db_session_factory() as db:
+        await receive_messages(db, event("hello", "hello"), "123")
+        conversation = await db.get(WhatsAppConversation, phone)
+        assert not conversation.language_selected
+        await receive_messages(db, event("lang_ta", "tamil"), "123")
+    async with db_session_factory() as db:
+        conversation = await db.get(WhatsAppConversation, phone)
+        assert conversation.language == "ta" and conversation.language_selected
+        await receive_messages(db, event("orders", "orders"), "123")
+        await receive_messages(db, event("language", "change"), "123")
+        await receive_messages(db, event("lang_si", "sinhala"), "123")
+    async with db_session_factory() as db:
+        conversation = await db.get(WhatsAppConversation, phone)
+        assert conversation.language == "si"
