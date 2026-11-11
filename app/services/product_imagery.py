@@ -22,7 +22,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image, ImageChops, ImageDraw, UnidentifiedImageError
+from PIL import (
+    Image,
+    ImageChops,
+    ImageDraw,
+    ImageEnhance,
+    ImageFilter,
+    UnidentifiedImageError,
+)
 
 # Bump when the share card's look changes: it is part of every cached card's
 # key, so old cards stop being served the moment a new design ships.
@@ -30,6 +37,9 @@ SHARE_TEMPLATE_VERSION = "1"
 
 CATALOG_SIZE = 1200
 SHARE_SIZE = 1200
+# Facebook (and most link previews on the web) draw an og:image at 1.91:1 and
+# crop anything else to it, which cut the top and bottom off the square card.
+SHARE_WIDE_SIZE = (1200, 630)
 
 # A cutout is upscaled at most this far; anything smaller than this on its long
 # side would be visibly soft in the product page hero.
@@ -224,4 +234,43 @@ def render_share_card(data: bytes) -> bytes:
 
     out = io.BytesIO()
     card.convert("RGB").save(out, "JPEG", quality=86, optimize=True, progressive=True)
+    return out.getvalue()
+
+
+def widen_share_card(card: bytes, *, backdrop: str = "edge") -> bytes:
+    """
+    The square share *card* on a 1200 x 630 canvas, for link previews that
+    show a wide picture (Facebook). The whole card stays in view, centred.
+
+    ``backdrop`` fills the sides:
+      * ``"edge"`` -- the card's own outer columns drawn outwards, so the
+        white card stays white and the swoosh runs on to the right edge.
+      * ``"blur"`` -- the card itself, blown up, blurred and dimmed; for a
+        busy design (a festival offer) whose edges are not one colour.
+    """
+    width, height = SHARE_WIDE_SIZE
+    square = _open(card).convert("RGB")
+    front = square.resize((height, height), Image.Resampling.LANCZOS)
+    left = (width - height) // 2
+    right = left + height
+
+    if backdrop == "blur":
+        top = (width - height) // 2
+        wide = square.resize((width, width), Image.Resampling.LANCZOS).crop(
+            (0, top, width, top + height)
+        )
+        wide = ImageEnhance.Brightness(wide.filter(ImageFilter.GaussianBlur(40))).enhance(0.8)
+        shade = Image.new("L", (width, height), 0)
+        ImageDraw.Draw(shade).rectangle((left, 8, right, height + 8), fill=110)
+        wide.paste((0, 0, 0), (0, 0), shade.filter(ImageFilter.GaussianBlur(18)))
+    elif backdrop == "edge":
+        wide = Image.new("RGB", (width, height))
+        wide.paste(front.crop((0, 0, 1, height)).resize((left, height)), (0, 0))
+        wide.paste(front.crop((height - 1, 0, height, height)).resize((width - right, height)), (right, 0))
+    else:
+        raise ValueError(f"unknown backdrop {backdrop!r}")
+
+    wide.paste(front, (left, 0))
+    out = io.BytesIO()
+    wide.save(out, "JPEG", quality=86, optimize=True, progressive=True)
     return out.getvalue()

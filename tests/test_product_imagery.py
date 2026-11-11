@@ -120,6 +120,29 @@ def test_share_card_puts_the_product_above_the_brand_swoosh(source):
     assert product_rows and max(product_rows) < 0.80 * s
 
 
+
+def test_wide_card_keeps_the_whole_square_card_and_runs_the_swoosh_on():
+    square = pi.render_share_card(_cutout(1200, 500, colour=(20, 160, 60)))
+    wide = Image.open(io.BytesIO(pi.widen_share_card(square))).convert("RGB")
+    w, h = pi.SHARE_WIDE_SIZE
+    assert wide.size == (w, h)
+
+    # The product is in the middle, the left side white, and the swoosh
+    # carries on to the right edge at the height it left the square.
+    r, g, b = wide.getpixel((w // 2, int(0.47 * h)))
+    assert g > 120 and r < 60
+    assert wide.getpixel((20, h // 2)) == (255, 255, 255)
+    r, g, b = wide.getpixel((w - 5, int(0.86 * h)))
+    assert r > 190 and g < 50 and 40 < b < 110
+
+
+def test_wide_card_blur_backdrop_and_unknown_backdrop():
+    square = pi.render_share_card(_cutout(1200, 500, colour=(20, 160, 60)))
+    wide = Image.open(io.BytesIO(pi.widen_share_card(square, backdrop="blur")))
+    assert wide.size == pi.SHARE_WIDE_SIZE
+    with pytest.raises(ValueError):
+        pi.widen_share_card(square, backdrop="stripes")
+
 @pytest.mark.asyncio
 async def test_upload_lays_out_a_cutout_and_keeps_an_ordinary_photo(monkeypatch):
     from app.api.v1 import admin_catalog

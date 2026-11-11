@@ -441,6 +441,14 @@ class Settings(BaseSettings):
         default="com.sribeesonline.sribees_mobile",
         description="Android applicationId the /p/{id} share links open",
     )
+    share_canonical_hosts: str = Field(
+        default="api.sribeesonline.com=www.sribeesonline.com,api.sribees.com=www.sribeesonline.com",
+        description=(
+            "Comma-separated api_host=public_host pairs. A share page served on "
+            "api_host names public_host as its og:url, so Facebook shows the "
+            "shop's own address; public_host must proxy /p/* back here."
+        ),
+    )
     android_sha256_cert_fingerprints: str = Field(
         default="",
         description=(

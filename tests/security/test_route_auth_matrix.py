@@ -39,6 +39,8 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/p/{product_id}"),
     # The share picture for that link: what WhatsApp and Facebook fetch.
     ("GET", "/p/{product_id}/share.jpg"),
+    # The same picture at 1.91:1: the og:image Facebook shows uncropped.
+    ("GET", "/p/{product_id}/share-wide.jpg"),
     # Festival offer product pictures: image loads carry no login, like /uploads.
     ("GET", "/offer/{code}/{variant}/{path:path}"),
     # Store-listing legal pages: Play requires them reachable without sign-in.

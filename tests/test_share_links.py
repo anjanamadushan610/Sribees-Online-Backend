@@ -60,11 +60,14 @@ async def test_share_page_has_preview_and_install_fallback(client, monkeypatch):
     assert "<1kg>" not in body
     # The preview is the branded card, keyed to the primary photo; the page
     # itself shows the plain photo.
-    card = share_links._card_key("https://cdn.sribees.lk/a.jpg")
+    card = share_links._card_key("https://cdn.sribees.lk/a.jpg", wide=True)
     assert (
         'og:image" content="https://api.sribees.com/p/'
-        f'9d2b6a3e-1f0c-4c55-9a8e-6f1d2c3b4a59/share.jpg?v={card}"'
+        f'9d2b6a3e-1f0c-4c55-9a8e-6f1d2c3b4a59/share-wide.jpg?v={card}"'
     ) in body
+    # Facebook crops a square og:image; the wide card says its real shape.
+    assert 'og:image:width" content="1200"' in body
+    assert 'og:image:height" content="630"' in body
     assert '<img src="https://cdn.sribees.lk/a.jpg"' in body
     assert "Rs. 1,250.00" in body
     assert f"package={settings.android_package_name}" in body
@@ -200,8 +203,23 @@ async def test_preview_urls_keep_https_behind_the_proxy(client, monkeypatch):
     async with client as c:
         r = await c.get("/p/p1", headers={"x-forwarded-proto": "https"})
 
-    assert 'og:image" content="https://api.sribees.com/p/p1/share.jpg?v=' in r.text
-    assert 'og:url" content="https://api.sribees.com/p/p1"' in r.text
+    assert 'og:image" content="https://api.sribees.com/p/p1/share-wide.jpg?v=' in r.text
+    # The address under the preview is the shop's own, not the API host.
+    assert 'og:url" content="https://www.sribeesonline.com/p/p1"' in r.text
+
+
+@pytest.mark.asyncio
+async def test_canonical_host_follows_the_mapping(client, monkeypatch):
+    product = SimpleNamespace(product_id="p1", name="Tea", price=None, images=[])
+    _stub_product(monkeypatch, product)
+    monkeypatch.setattr(settings, "share_canonical_hosts", "devapionline.sribees.com=dev.example.com")
+
+    async with client as c:
+        unmapped = await c.get("/p/p1")
+        mapped = await c.get("https://devapionline.sribees.com/p/p1")
+
+    assert 'og:url" content="https://api.sribees.com/p/p1"' in unmapped.text
+    assert 'og:url" content="https://dev.example.com/p/p1"' in mapped.text
 
 
 def _png(size, rgba):
@@ -270,5 +288,37 @@ async def test_share_card_404s_without_a_photo(client, monkeypatch, media):
 
     async with client as c:
         r = await c.get("/p/p1/share.jpg")
+
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_wide_card_is_the_square_card_whole_at_1200x630(client, monkeypatch, media):
+    from PIL import Image
+
+    (media / "products").mkdir()
+    (media / "products" / "tea.png").write_bytes(_png((600, 300), (20, 120, 40, 255)))
+    _stub_product(monkeypatch, _product_with("/uploads/products/tea.png"))
+
+    async with client as c:
+        square = await c.get("/p/p1/share.jpg")
+        wide = await c.get("/p/p1/share-wide.jpg")
+        again = await c.get("/p/p1/share-wide.jpg")
+
+    assert square.status_code == wide.status_code == 200
+    assert wide.headers["content-type"] == "image/jpeg"
+    assert Image.open(io.BytesIO(square.content)).size == (1200, 1200)
+    assert Image.open(io.BytesIO(wide.content)).size == (1200, 630)
+    assert again.content == wide.content
+    # Two shapes, two cache files.
+    assert len(list((media / "share-cards").glob("*.jpg"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_wide_card_404s_without_a_photo(client, monkeypatch, media):
+    _stub_product(monkeypatch, SimpleNamespace(product_id="p1", name="Tea", price=None, images=[]))
+
+    async with client as c:
+        r = await c.get("/p/p1/share-wide.jpg")
 
     assert r.status_code == 404
