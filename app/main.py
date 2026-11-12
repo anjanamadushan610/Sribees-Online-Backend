@@ -17,10 +17,10 @@ from sentry_sdk.integrations.redis import RedisIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
 from app.api.finance_internal import router as finance_internal_router
-from app.api.supply_internal import router as supply_internal_router
 from app.api.legal import router as legal_router
 from app.api.offer_images import router as offer_images_router
 from app.api.share_links import router as share_links_router
+from app.api.supply_internal import router as supply_internal_router
 from app.api.v1.router import router as v1_router
 from app.api.whatsapp import router as whatsapp_router
 from app.config.database import close_db, init_db
