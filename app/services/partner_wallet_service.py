@@ -2,7 +2,8 @@
 
 Lock order: user -> commission rows -> partner wallet -> shopping wallet.
 Never infer account ownership from a matching email. Applications originate
-from an authenticated customer, and only a Super Admin can approve them.
+from an authenticated customer or a Super Admin recording customer consent.
+Only a Super Admin can approve them.
 """
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -79,9 +80,6 @@ class PartnerWalletService:
     @staticmethod
     async def apply(db, user_id, password):
         from app.services.referral_service import ReferralService
-        candidate = await db.get(User, user_id)
-        if candidate is not None:
-            await ReferralService.get_or_create_code(db, candidate)
         user = await PartnerWalletService.user_lock(db, user_id)
         if not user.email or not user.full_name:
             fail('Add your email and full name to My Account before applying.')
@@ -93,6 +91,7 @@ class PartnerWalletService:
         collision = (await db.execute(select(Partner.partner_id).where(func.lower(Partner.email) == user.email.lower()))).scalar_one_or_none()
         if collision:
             fail('A Partner account already uses this email. Contact support to verify ownership; it cannot be linked automatically.', 409)
+        await ReferralService.get_or_create_code(db, user, commit=False)
         row = existing or PartnerApplication(user_id=user_id)
         row.password_hash = hash_password(password)
         row.status = 'pending'
@@ -100,6 +99,23 @@ class PartnerWalletService:
         db.add(row)
         await db.flush()
         return row
+
+    @staticmethod
+    async def admin_upgrade(db, user_id, admin_id, password, master_id=None, note=None):
+        # Serialize with customer applications and all referral/wallet operations.
+        await PartnerWalletService.user_lock(db, user_id)
+        existing = (await db.execute(select(PartnerApplication).where(
+            PartnerApplication.user_id == user_id).with_for_update())).scalar_one_or_none()
+        pending = existing is not None and existing.status == 'pending'
+        application = await PartnerWalletService.apply(db, user_id, password)
+        if pending:
+            # The admin form explicitly sets portal credentials after verifying consent.
+            application.password_hash = hash_password(password)
+        partner = await PartnerWalletService.decide_application(
+            db, application.application_id, admin_id, True, master_id,
+            f'Admin upgrade; customer consent confirmed. {note}')
+        await PartnerWalletService.wallet_lock(db, partner.partner_id)
+        return partner
 
     @staticmethod
     async def decide_application(db, application_id, admin_id, approve, master_id=None, note=None):

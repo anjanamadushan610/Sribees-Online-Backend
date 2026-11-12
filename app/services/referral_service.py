@@ -87,7 +87,7 @@ class ReferralService:
         )
 
     @staticmethod
-    async def get_or_create_code(db: AsyncSession, user: User) -> str:
+    async def get_or_create_code(db: AsyncSession, user: User, *, commit: bool = True) -> str:
         """
         Return this user's invite code, generating it on first request.
 
@@ -104,6 +104,18 @@ class ReferralService:
             )
             if exists.scalar_one_or_none() is not None:
                 continue
+
+            if not commit:
+                try:
+                    async with db.begin_nested():
+                        user.referral_code = candidate
+                        await db.flush()
+                    return candidate
+                except IntegrityError:
+                    await db.refresh(user)
+                    if user.referral_code:
+                        return user.referral_code
+                    continue
 
             user.referral_code = candidate
             try:
