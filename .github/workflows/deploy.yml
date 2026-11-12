@@ -37,4 +37,11 @@ jobs:
           mapfile -t online < <(docker ps --filter label=com.docker.compose.project=sribees-online-prod --filter label=com.docker.compose.service=app --format '{{.ID}}')
           [ "${#online[@]}" -eq 1 ] || { echo "Expected one production app container"; exit 1; }
           docker exec "${online[0]}" python -c 'import os,json; print(json.dumps({key: os.getenv(key,"false").lower() == "true" for key in ["LINKED_PARTNER_WALLET_ENABLED","PARTNER_WALLET_FINANCE_READY","FINANCE_OUTBOX_ENABLED"]}))'
+          mapfile -t finance < <(docker ps --filter label=com.docker.compose.project=sribees-finance-prod --filter label=com.docker.compose.service=api --format '{{.ID}}')
+          echo "Production Finance API containers: ${#finance[@]}"
+          echo "Production Finance worker status:"
+          docker ps -a --filter label=com.docker.compose.project=sribees-finance-prod --filter label=com.docker.compose.service=worker --format '{{.Status}}'
+          if [ "${#finance[@]}" -eq 1 ]; then
+            docker exec "${finance[0]}" python -c 'import json,logging; logging.disable(logging.CRITICAL); from app.services.online_feed import HANDLERS; print(json.dumps({"finance_partner_handlers":sorted(k for k in HANDLERS if k.startswith("partner."))}))'
+          fi
           REMOTE
