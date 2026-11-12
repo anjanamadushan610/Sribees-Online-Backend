@@ -103,6 +103,10 @@ class AdminSession(Base):
         index=True,
     )
     refresh_token_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The token replaced by the last rotation, accepted once within a short
+    # grace window when the phone never received the new pair (migration 112).
+    previous_refresh_token_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    rotated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     device_info: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)

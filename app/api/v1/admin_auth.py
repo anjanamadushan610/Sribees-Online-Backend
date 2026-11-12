@@ -1,11 +1,16 @@
 """
 Admin Auth API Endpoints
 """
+from typing import Optional
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import get_current_admin
+from app.core.dependencies import get_current_admin, security
+from app.core.security import verify_token
 from app.schemas.admin_auth import (
     AdminAuthResponse,
     AdminLoginRequest,
@@ -148,11 +153,19 @@ async def change_admin_password(
     description="Logout admin user.",
 )
 async def admin_logout(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     current_admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     """
     Logout current admin.
     """
-    result = await AdminAuthService.logout(current_admin.admin_id, db)
+    session_id = None
+    payload = verify_token(credentials.credentials, "access") if credentials else None
+    if payload and payload.get("session_id"):
+        try:
+            session_id = UUID(payload["session_id"])
+        except ValueError:
+            session_id = None
+    result = await AdminAuthService.logout(current_admin.admin_id, db, session_id)
     return MessageResponse(**result)

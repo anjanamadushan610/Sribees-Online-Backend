@@ -5,8 +5,10 @@ check is also about what an old or stolen token can still do.
 """
 from __future__ import annotations
 
+import asyncio
 import secrets
 import uuid
+from datetime import timedelta
 
 
 def _pw() -> str:
@@ -46,6 +48,60 @@ async def test_refresh_profile_and_logout(api, world, make_admin):
 
     r = await api.post("/api/v1/admin/auth/logout", headers=headers)
     assert r.status_code == 200, r.text
+
+
+def _refresh_of(r) -> str:
+    data = r.json()["data"]
+    return data.get("refresh_token") or data.get("refreshToken")
+
+
+async def test_logout_ends_only_this_device(api, world, make_admin):
+    """Signing out of the web panel must not sign the Price app out."""
+    admin = await make_admin("branch_manager", api=api)
+    web = await _login(api, admin.email, admin.password)
+    phone = await _login(api, admin.email, admin.password)
+    web_headers = {"Authorization": f"Bearer {web.json()['data']['token']}"}
+
+    r = await api.post("/api/v1/admin/auth/logout", headers=web_headers)
+    assert r.status_code == 200, r.text
+
+    r = await api.post("/api/v1/admin/auth/refresh", json={"refresh_token": _refresh_of(web)})
+    assert r.status_code == 401, "the signed-out device stays out"
+    r = await api.post("/api/v1/admin/auth/refresh", json={"refresh_token": _refresh_of(phone)})
+    assert r.status_code == 200, "the other device keeps its session"
+
+
+async def test_a_lost_refresh_response_can_be_retried_once(api, world, make_admin):
+    """The phone sent its refresh token, the server rotated it, the answer was lost."""
+    admin = await make_admin("branch_manager", api=api)
+    old = _refresh_of(await _login(api, admin.email, admin.password))
+    await asyncio.sleep(1.1)  # a new token differs only by its timestamps
+
+    r = await api.post("/api/v1/admin/auth/refresh", json={"refresh_token": old})
+    assert r.status_code == 200, r.text  # this answer never reaches the phone
+
+    r = await api.post("/api/v1/admin/auth/refresh", json={"refresh_token": old})
+    assert r.status_code == 200, "the old token works once inside the grace window"
+    current = _refresh_of(r)
+
+    r = await api.post("/api/v1/admin/auth/refresh", json={"refresh_token": old})
+    assert r.status_code == 401, "only once"
+    r = await api.post("/api/v1/admin/auth/refresh", json={"refresh_token": current})
+    assert r.status_code == 200, r.text
+
+
+async def test_an_old_refresh_token_dies_after_the_grace_window(api, world, make_admin, monkeypatch):
+    from app.services import admin_auth_service
+
+    admin = await make_admin("branch_manager", api=api)
+    old = _refresh_of(await _login(api, admin.email, admin.password))
+    await asyncio.sleep(1.1)
+    r = await api.post("/api/v1/admin/auth/refresh", json={"refresh_token": old})
+    assert r.status_code == 200, r.text
+
+    monkeypatch.setattr(admin_auth_service, "REFRESH_GRACE", timedelta(seconds=-1))
+    r = await api.post("/api/v1/admin/auth/refresh", json={"refresh_token": old})
+    assert r.status_code == 401
 
 
 async def test_changing_an_admin_password(api, world, make_admin):
