@@ -34,22 +34,33 @@ class StaffPushTokenRequest(BaseModel):
     device_id: str = Field(..., min_length=1, max_length=255)
     platform: Optional[str] = None
     language: Optional[str] = Field(None, max_length=16)
-    # Whether the phone can ring (app 0.8.0+); all optional, older apps omit them.
+    # Whether the phone can ring (app 0.8.0+); all optional, older apps omit
+    # them. Display-only: an odd value is dropped, never a reason to refuse the
+    # registration -- that would stop the phone ringing.
     notifications_on: Optional[bool] = None
     channel_state: Optional[str] = None
     background_restricted: Optional[bool] = None
-    app_version: Optional[str] = Field(None, max_length=32)
-    device_model: Optional[str] = Field(None, max_length=64)
+    app_version: Optional[str] = None
+    device_model: Optional[str] = None
 
-    @field_validator("channel_state")
+    @field_validator("channel_state", mode="before")
     @classmethod
-    def _channel(cls, v: Optional[str]) -> Optional[str]:
+    def _channel(cls, v):
+        v = str(v).strip().lower() if v is not None else None
+        return v if v in CHANNEL_STATES else None
+
+    @field_validator("notifications_on", "background_restricted", mode="before")
+    @classmethod
+    def _flag(cls, v):
+        return v if isinstance(v, bool) else None
+
+    @field_validator("app_version", "device_model", mode="before")
+    @classmethod
+    def _short_text(cls, v, info):
         if v is None:
-            return v
-        v = v.strip().lower()
-        if v not in CHANNEL_STATES:
-            raise ValueError("channel_state must be 'on', 'silent' or 'off'")
-        return v
+            return None
+        limit = 32 if info.field_name == "app_version" else 64
+        return str(v).strip()[:limit] or None
 
     @field_validator("platform")
     @classmethod

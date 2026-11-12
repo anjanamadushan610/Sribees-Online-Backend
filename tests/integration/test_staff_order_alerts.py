@@ -447,14 +447,31 @@ async def test_only_super_admins_and_managers_see_staff_phones(api, make_admin):
     assert (await api.get(URL)).status_code in (401, 403)
 
 
-async def test_a_bad_channel_state_is_refused(api, make_admin):
+async def test_odd_health_values_are_dropped_never_refused(api, make_admin):
+    """Display-only fields must never stop a phone from registering (ringing)."""
     boss = await make_admin("super_admin", api=api)
+    device = f"zz-device-{uuid.uuid4().hex[:10]}"
     r = await api.post(
         URL,
-        json={"token": _token(), "device_id": "zz-device-x", "channel_state": "loud"},
+        json={
+            "token": _token(), "device_id": device, "channel_state": "loud",
+            "notifications_on": "yes", "app_version": "9" * 50, "device_model": "M" * 100,
+        },
         headers=boss.headers,
     )
-    assert r.status_code == 422
+    assert r.status_code == 200, r.text
+    phone = _phone((await api.get(URL, headers=boss.headers)).json()["data"], device)
+    assert phone["channel_state"] is None and phone["notifications_on"] is None
+    assert len(phone["app_version"]) == 32 and len(phone["device_model"]) == 64
+
+
+async def test_a_manager_without_a_branch_cannot_list(api, db, make_admin):
+    from app.models.admin import Admin
+
+    lost = await make_admin("branch_manager", api=api)
+    await db.execute(update(Admin).where(Admin.admin_id == lost.admin_id).values(branch_id=None))
+    await db.commit()
+    assert (await api.get(URL, headers=lost.headers)).status_code == 403
 
 
 async def test_a_device_id_is_required(api, make_admin):
