@@ -52,6 +52,14 @@ class AdminPushToken(Base):
     )
     last_seen_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    # Whether this phone can actually ring, as it last reported (migration
+    # 113). NULL = an app older than 0.8.0 that does not say.
+    notifications_on = Column(Boolean, nullable=True)
+    channel_state = Column(String(8), nullable=True)  # on | silent | off
+    background_restricted = Column(Boolean, nullable=True)
+    app_version = Column(String(32), nullable=True)
+    device_model = Column(String(64), nullable=True)
+
 
 class AdminOrderAlert(Base):
     """Present once an order's staff alert has been sent (the send-once latch)."""

@@ -12,7 +12,7 @@ import asyncio
 import uuid
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 
 URL = "/api/v1/admin/push-tokens"
 
@@ -333,6 +333,128 @@ async def test_a_shared_phone_follows_whoever_signed_in_and_logout_stops_it(
 async def test_the_routes_need_a_login(api):
     assert (await api.post(URL, json={"token": "x", "device_id": "d"})).status_code in (401, 403)
     assert (await api.delete(f"{URL}/x")).status_code in (401, 403)
+
+
+def _healthy() -> dict:
+    return {
+        "notifications_on": True,
+        "channel_state": "on",
+        "background_restricted": False,
+        "app_version": "0.8.0+9",
+        "device_model": "ZZ Phone 9",
+    }
+
+
+async def _register_health(api, admin, token, device_id, **health):
+    body = {"token": token, "platform": "android", "language": "si", "device_id": device_id, **health}
+    r = await api.post(URL, json=body, headers=admin.headers)
+    assert r.status_code == 200, r.text
+
+
+def _phone(listing, device_id):
+    return next((p for p in listing["phones"] if p["device_id"] == device_id), None)
+
+
+async def test_a_phone_reports_whether_it_can_ring_and_the_owner_sees_it(api, make_admin):
+    boss = await make_admin("super_admin", api=api)
+    here = await make_admin("branch_manager", api=api)
+    device = f"zz-device-{uuid.uuid4().hex[:10]}"
+    token = _token()
+
+    await _register_health(api, here, token, device, **{**_healthy(), "channel_state": "silent"})
+    r = await api.get(URL, headers=boss.headers)
+    assert r.status_code == 200, r.text
+    phone = _phone(r.json()["data"], device)
+    assert phone["can_ring"] is False and phone["problem"] == "channel_silent"
+    assert phone["device_model"] == "ZZ Phone 9" and phone["app_version"] == "0.8.0+9"
+    assert phone["admin_id"] == str(here.admin_id) and phone["role"] == "branch_manager"
+    assert "token" not in phone, "the FCM token never leaves the server"
+
+    # Fixed on the phone; the app re-registers when it comes back.
+    await _register_health(api, here, token, device, **_healthy())
+    phone = _phone((await api.get(URL, headers=boss.headers)).json()["data"], device)
+    assert phone["can_ring"] is True and phone["problem"] is None
+
+
+@pytest.mark.parametrize(
+    "change, problem",
+    [
+        ({"notifications_on": False}, "notifications_off"),
+        ({"channel_state": "off"}, "channel_off"),
+        ({"background_restricted": True}, "battery_restricted"),
+        # Several at once: the first one the app would fix is named.
+        ({"notifications_on": False, "background_restricted": True}, "notifications_off"),
+    ],
+)
+async def test_each_reason_a_phone_stays_quiet(api, make_admin, change, problem):
+    boss = await make_admin("super_admin", api=api)
+    device = f"zz-device-{uuid.uuid4().hex[:10]}"
+    await _register_health(api, boss, _token(), device, **{**_healthy(), **change})
+    phone = _phone((await api.get(URL, headers=boss.headers)).json()["data"], device)
+    assert phone["can_ring"] is False and phone["problem"] == problem
+
+
+async def test_an_old_app_is_unknown_and_a_stale_phone_is_not_seen(api, db, make_admin):
+    from app.models.admin_push import AdminPushToken
+
+    boss = await make_admin("super_admin", api=api)
+    old_app, stale = f"zz-device-{uuid.uuid4().hex[:10]}", f"zz-device-{uuid.uuid4().hex[:10]}"
+    await _register(api, boss, _token(), old_app)  # 0.7.x sends no health
+    await _register_health(api, boss, _token(), stale, **_healthy())
+    await db.execute(
+        update(AdminPushToken)
+        .where(AdminPushToken.device_id == stale)
+        .values(last_seen_at=text("now() - interval '8 days'"))
+    )
+    await db.commit()
+
+    listing = (await api.get(URL, headers=boss.headers)).json()["data"]
+    assert _phone(listing, old_app)["can_ring"] is None
+    assert _phone(listing, old_app)["problem"] == "unknown"
+    assert _phone(listing, stale)["problem"] == "not_seen"
+    assert _phone(listing, stale)["can_ring"] is False
+
+
+async def test_a_manager_sees_only_their_branch_and_staff_without_a_phone(
+    api, make_admin, second_test_branch
+):
+    here = await make_admin("branch_manager", api=api)
+    colleague = await make_admin("branch_manager", api=api)  # same branch, no phone
+    elsewhere = await make_admin("branch_manager", branch_id=second_test_branch.branch_id, api=api)
+    boss = await make_admin("super_admin", api=api)
+    mine, theirs, bosses = (f"zz-device-{uuid.uuid4().hex[:10]}" for _ in range(3))
+    await _register_health(api, here, _token(), mine, **_healthy())
+    await _register_health(api, elsewhere, _token(), theirs, **_healthy())
+    await _register_health(api, boss, _token(), bosses, **_healthy())
+
+    listing = (await api.get(URL, headers=here.headers)).json()["data"]
+    assert _phone(listing, mine) is not None
+    assert _phone(listing, theirs) is None, "another branch's phone"
+    assert _phone(listing, bosses) is None, "super admins are not a branch's staff"
+    without = {s["admin_id"] for s in listing["staff_without_phone"]}
+    assert str(colleague.admin_id) in without
+    assert str(here.admin_id) not in without
+
+    everything = (await api.get(URL, headers=boss.headers)).json()["data"]
+    assert all(_phone(everything, d) for d in (mine, theirs, bosses))
+
+
+async def test_only_super_admins_and_managers_see_staff_phones(api, make_admin):
+    support = await make_admin("customer_support", api=api)  # orders:read, not a manager
+    assert (await api.get(URL, headers=support.headers)).status_code == 403
+    marketer = await make_admin("marketing_manager", api=api)  # no orders:read
+    assert (await api.get(URL, headers=marketer.headers)).status_code == 403
+    assert (await api.get(URL)).status_code in (401, 403)
+
+
+async def test_a_bad_channel_state_is_refused(api, make_admin):
+    boss = await make_admin("super_admin", api=api)
+    r = await api.post(
+        URL,
+        json={"token": _token(), "device_id": "zz-device-x", "channel_state": "loud"},
+        headers=boss.headers,
+    )
+    assert r.status_code == 422
 
 
 async def test_a_device_id_is_required(api, make_admin):
