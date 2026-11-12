@@ -66,6 +66,10 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("POST", "/api/v1/partner/auth/forgot-password"),
     ("POST", "/api/v1/partner/auth/verify-otp"),
     ("POST", "/api/v1/partner/auth/reset-password"),
+    # Email invitation proof replaces login: purpose-scoped, expiring signed
+    # credential bound to the current password hash; row-locked single use.
+    # Covered by test_partner_invitation and test_partner_invitation_database.
+    ("POST", "/api/v1/partner/auth/set-password"),
     # --- signed or static callbacks -----------------------------------------
     ("POST", "/api/v1/payments/webhook"),  # Stripe signature, see test_webhooks
     ("GET", "/api/v1/whatsapp/webhook"),  # Meta verification token
