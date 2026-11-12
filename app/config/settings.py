@@ -368,6 +368,18 @@ class Settings(BaseSettings):
         default="",
         description="Comma-separated IPs/CIDRs allowed to call /internal/finance/* (empty = any peer).",
     )
+    # Sribees Supply (supplier price lists / purchasing) -- app/api/supply_internal.py.
+    supply_service_token_sha256: str = Field(
+        default="",
+        description=(
+            "SHA-256 (hex) of the token Sribees Supply presents on /internal/supply/*. "
+            "Empty = those routes do not exist (404)."
+        ),
+    )
+    supply_allowed_ips: str = Field(
+        default="",
+        description="Comma-separated IPs/CIDRs allowed to call /internal/supply/* (empty = any peer).",
+    )
     finance_stock_authority: bool = Field(
         default=False,
         description=(
