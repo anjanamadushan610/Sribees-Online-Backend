@@ -647,6 +647,13 @@ class Settings(BaseSettings):
             "0 = off. The owner chose 2 % (2026-10-25)."
         ),
     )
+    first_order_nudge_enabled: bool = Field(
+        default=True,
+        description=(
+            "Push 'place your first order' once, 48 h after sign-up, at 18:30 Colombo "
+            "(app/services/first_order_nudge_worker.py). Off = the worker never starts."
+        ),
+    )
     assistant_turn_log_enabled: bool = Field(
         default=True,
         description="Record one scrubbed row per chat turn in assistant_turns (migration 089) for the learner.",
