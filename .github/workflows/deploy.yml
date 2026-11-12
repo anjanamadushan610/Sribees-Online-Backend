@@ -44,4 +44,31 @@ jobs:
           if [ "${#finance[@]}" -eq 1 ]; then
             docker exec "${finance[0]}" python -c 'import json,logging; logging.disable(logging.CRITICAL); from app.services.online_feed import HANDLERS; print(json.dumps({"finance_partner_handlers":sorted(k for k in HANDLERS if k.startswith("partner."))}))'
           fi
+          mapfile -t workers < <(docker ps -a --filter label=com.docker.compose.project=sribees-finance-prod --filter label=com.docker.compose.service=worker --format '{{.ID}}')
+          if [ "${#workers[@]}" -eq 1 ]; then
+            docker inspect --format 'Worker OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} FinishedAt={{.State.FinishedAt}}' "${workers[0]}"
+          fi
+          if [ "${#finance[@]}" -eq 1 ]; then
+            docker exec -i "${finance[0]}" python - <<'PYREAD'
+          import asyncio
+          import json
+          import logging
+          logging.disable(logging.CRITICAL)
+          from sqlalchemy import text
+          from app.core.db import get_engine
+          async def inspect_readiness():
+              engine = get_engine()
+              async with engine.connect() as conn:
+                  async with conn.begin():
+                      await conn.execute(text("SET TRANSACTION READ ONLY"))
+                      row = (await conn.execute(text("SELECT go_live_date, snapshot_seq IS NOT NULL AS snapshot_imported, stock_authority FROM go_live WHERE id=1"))).mappings().first()
+                      print("Finance Go Live readiness", json.dumps(dict(row) if row else {}, default=str))
+                      rows = (await conn.execute(text("SELECT status, count(*) AS entries FROM opening_entries GROUP BY status"))).mappings().all()
+                      print("Finance opening entry statuses", json.dumps([dict(r) for r in rows]))
+                      feed = (await conn.execute(text("SELECT last_seq, last_polled_at, last_error IS NOT NULL AS has_error FROM feed_state WHERE feed='online'"))).mappings().first()
+                      print("Finance feed readiness", json.dumps(dict(feed) if feed else {}, default=str))
+              await engine.dispose()
+          asyncio.run(inspect_readiness())
+          PYREAD
+          fi
           REMOTE
