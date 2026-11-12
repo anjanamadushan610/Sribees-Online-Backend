@@ -17,6 +17,7 @@ from sentry_sdk.integrations.redis import RedisIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
 from app.api.finance_internal import router as finance_internal_router
+from app.api.supply_internal import router as supply_internal_router
 from app.api.legal import router as legal_router
 from app.api.offer_images import router as offer_images_router
 from app.api.share_links import router as share_links_router
@@ -365,6 +366,7 @@ app.include_router(whatsapp_router)
 app.include_router(legal_router)
 # Sribees Finance's event feed: service token, never through the edge.
 app.include_router(finance_internal_router)
+app.include_router(supply_internal_router)
 
 
 # ============================================================================
