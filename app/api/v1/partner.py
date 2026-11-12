@@ -32,6 +32,7 @@ from fastapi import (
     status,
 )
 from loguru import logger
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -409,3 +410,26 @@ async def get_my_top_products(
     """The products the partner's commission came from, best first."""
     rows = await PartnerService.top_products(db, partner.partner_id, limit)
     return {"success": True, "data": {"products": rows}}
+
+
+# Invitation credentials cannot be used as access tokens. Reading the page
+# does not consume the invitation, including automated email-link scanners.
+class PartnerSetupPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    token: SecretStr = Field(min_length=1, max_length=4096)
+    password: SecretStr = Field(min_length=8, max_length=128)
+
+    @field_validator('password')
+    @classmethod
+    def nonblank(cls, value):
+        if not value.get_secret_value().strip():
+            raise ValueError('Password cannot be blank.')
+        return value
+
+
+@router.post('/auth/set-password')
+async def partner_set_password(body: PartnerSetupPasswordRequest, db: AsyncSession = Depends(get_db)):
+    from app.services.partner_invitation import accept_invitation
+    await accept_invitation(db, body.token.get_secret_value(), body.password.get_secret_value())
+    await db.commit()
+    return {'success': True, 'message': 'Password set successfully. You can now sign in to the Partner Portal.'}

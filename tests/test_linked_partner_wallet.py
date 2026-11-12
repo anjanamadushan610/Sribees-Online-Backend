@@ -23,7 +23,6 @@ from tests.conftest import requires_db
 
 @pytest.mark.asyncio
 async def test_admin_upgrade_requires_super_admin_and_explicit_consent(monkeypatch):
-    import secrets
     from unittest.mock import AsyncMock
 
     import httpx
@@ -31,6 +30,7 @@ async def test_admin_upgrade_requires_super_admin_and_explicit_consent(monkeypat
 
     from app.api.v1.linked_partner_wallet import router
     from app.config.database import get_db
+    from app.config.redis import get_redis
     from app.core.dependencies import get_current_admin
     from app.models.admin import AdminRole
 
@@ -38,13 +38,14 @@ async def test_admin_upgrade_requires_super_admin_and_explicit_consent(monkeypat
     app.include_router(router)
     db = AsyncMock()
     app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_redis] = lambda: AsyncMock()
     role = AdminRole.CUSTOMER_SUPPORT
     app.dependency_overrides[get_current_admin] = lambda: SimpleNamespace(role=role, admin_id=uuid4())
     monkeypatch.setenv('LINKED_PARTNER_WALLET_ENABLED', 'true')
     monkeypatch.setenv('PARTNER_WALLET_FINANCE_READY', 'true')
     upgrade = AsyncMock()
     monkeypatch.setattr(Service, 'admin_upgrade', upgrade)
-    payload = {'password': secrets.token_urlsafe(20), 'note': 'Test ticket, identity verified',
+    payload = {'note': 'Test ticket, identity verified',
                'customer_consent_confirmed': True}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
         response = await client.post(f'/admin/partners/customers/{uuid4()}/upgrade', json=payload)

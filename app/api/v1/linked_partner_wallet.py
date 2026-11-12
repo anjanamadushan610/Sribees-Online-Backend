@@ -1,15 +1,18 @@
 """Customer-consented, Super Admin-approved partner upgrades and withdrawals."""
 import os
+import secrets
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
+from app.config.redis import get_redis
 from app.core.dependencies import (
     get_current_partner,
     get_current_user,
@@ -53,7 +56,7 @@ class ApplicationDecision(Body):
     note: str | None = Field(None, max_length=500)
 
 
-class AdminUpgradeBody(ApplicationBody):
+class AdminUpgradeBody(Body):
     master_partner_id: UUID | None = None
     customer_consent_confirmed: Literal[True]
     note: str = Field(min_length=1, max_length=400)
@@ -175,11 +178,35 @@ async def applications(db: AsyncSession = Depends(get_db), admin=Depends(require
 
 @router.post('/admin/partners/customers/{user_id}/upgrade')
 async def upgrade_customer(user_id: UUID, body: AdminUpgradeBody, db: AsyncSession = Depends(get_db),
+                           redis: Redis = Depends(get_redis),
                            admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
-    partner = await Service.admin_upgrade(db, user_id, admin.admin_id, body.password.get_secret_value(),
-                                          body.master_partner_id, body.note)
+    from app.models.partner import Partner
+    from app.services import email_sender
+    from app.services.partner_invitation import send_invitation, setup_url
+
+    if not email_sender.is_configured():
+        raise HTTPException(503, 'Partner invitation email is not configured. No upgrade was performed.')
+    # Lock the customer first, matching the existing wallet/referral lock order.
+    user = await Service.user_lock(db, user_id)
+    partner = (await db.execute(select(Partner).where(Partner.user_id == user_id))).scalar_one_or_none()
+    if partner is None:
+        partner = await Service.admin_upgrade(db, user_id, admin.admin_id, secrets.token_urlsafe(48),
+                                             body.master_partner_id, body.note)
+    elif not partner.is_active or partner.email.lower() != (user.email or '').strip().lower():
+        raise HTTPException(409, 'The linked Partner email or account status needs review. Contact support.')
+    setup_url(partner)  # Validate configuration before committing the upgrade.
+    cooldown_key = f'partner:invitation:wait:{partner.partner_id}'
+    if not await redis.set(cooldown_key, '1', ex=60, nx=True):
+        raise HTTPException(429, 'Please wait one minute before resending the invitation.')
     await db.commit()
-    return {'success': True, 'data': partner_json(partner)}
+    try:
+        await send_invitation(partner)
+    except email_sender.EmailSendError:
+        await redis.delete(cooldown_key)
+        # The upgrade has committed. Return an explicit partial-success result
+        # so retrying sends another invitation without duplicating the upgrade.
+        return {'success': True, 'data': partner_json(partner), 'invitation_sent': False}
+    return {'success': True, 'data': partner_json(partner), 'invitation_sent': True}
 
 
 @router.post('/admin/partners/applications/{application_id}/decision')
