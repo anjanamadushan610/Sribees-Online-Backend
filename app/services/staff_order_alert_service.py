@@ -48,6 +48,43 @@ _WORKABLE = {OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value}
 _COD = "COD"
 
 
+# What a phone reports about itself on every registration (migration 113).
+HEALTH_FIELDS = (
+    "notifications_on",
+    "channel_state",
+    "background_restricted",
+    "app_version",
+    "device_model",
+)
+CHANNEL_STATES = ("on", "silent", "off")
+# A phone re-registers every time the app opens; one unseen this long has
+# probably been uninstalled or switched off.
+PHONE_STALE_AFTER = timedelta(days=7)
+
+
+def phone_problem(token: AdminPushToken, now: datetime) -> Optional[str]:
+    """
+    Why this phone would not ring, first problem first (the order the app
+    fixes them in), or None when it can. "unknown" = an app too old to say.
+    """
+    seen = token.last_seen_at
+    if seen is not None and seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    if seen is not None and now - seen > PHONE_STALE_AFTER:
+        return "not_seen"
+    if token.notifications_on is None and token.channel_state is None:
+        return "unknown"
+    if token.notifications_on is False:
+        return "notifications_off"
+    if token.channel_state == "off":
+        return "channel_off"
+    if token.channel_state == "silent":
+        return "channel_silent"
+    if token.background_restricted is True:
+        return "battery_restricted"
+    return None
+
+
 def staff_language(value: Optional[str]) -> str:
     """The app speaks Sinhala (default) and English only."""
     code = (value or "").strip().lower()[:2]
@@ -459,12 +496,18 @@ class StaffOrderAlertService:
         device_id: str,
         platform: Optional[str],
         language: Optional[str],
+        health: Optional[Dict[str, object]] = None,
     ) -> AdminPushToken:
         """
         Upsert by token and bind it to ``admin_id``. One install (device_id)
         carries one live token: its older tokens are dropped, whoever held them.
+
+        ``health`` is what the phone says about itself (see HEALTH_FIELDS);
+        written as sent every time, so an older app that sends none reads as
+        "unknown" rather than keeping a stale answer.
         """
         lang = staff_language(language)
+        health_values = {f: (health or {}).get(f) for f in HEALTH_FIELDS}
         # One install registers at a time: without this, two racing calls from
         # the same device (token refresh + login) could each miss the other's
         # row and leave two live tokens. Released at commit.
@@ -485,6 +528,7 @@ class StaffOrderAlertService:
             platform=platform,
             language=lang,
             is_active=True,
+            **health_values,
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=["token"],
@@ -496,6 +540,7 @@ class StaffOrderAlertService:
                 "is_active": True,
                 "updated_at": now,
                 "last_seen_at": now,
+                **health_values,
             },
         )
         await db.execute(stmt)
@@ -503,6 +548,80 @@ class StaffOrderAlertService:
         return (
             await db.execute(select(AdminPushToken).where(AdminPushToken.token == token))
         ).scalar_one()
+
+    @staticmethod
+    async def staff_phones(db: AsyncSession, viewer: Admin) -> Dict[str, list]:
+        """
+        The staff phones registered for alerts and whether each can ring, plus
+        the staff who would be rung but registered no phone.
+
+        A super admin sees everyone; a branch manager only their own branch.
+        """
+        from app.models.branch import Branch
+        from app.services.permission_service import PermissionService
+
+        own_branch = None if viewer.role == AdminRole.SUPER_ADMIN else viewer.branch_id
+        names = {
+            b.branch_id: b.name for b in (await db.execute(select(Branch))).scalars().all()
+        }
+
+        admins = (
+            await db.execute(select(Admin).where(Admin.is_active.is_(True)))
+        ).scalars().all()
+        rung: Dict[UUID, Admin] = {}
+        for a in admins:
+            if a.role == AdminRole.SUPER_ADMIN:
+                if own_branch is None:
+                    rung[a.admin_id] = a
+            elif a.branch_id is not None and (own_branch is None or a.branch_id == own_branch):
+                perms = await PermissionService.get_effective_permissions(db, a)
+                if ("orders", "read") in perms:
+                    rung[a.admin_id] = a
+
+        tokens = (
+            await db.execute(
+                select(AdminPushToken)
+                .where(AdminPushToken.is_active.is_(True), AdminPushToken.admin_id.in_(list(rung)))
+                .order_by(AdminPushToken.last_seen_at.desc())
+            )
+        ).scalars().all()
+
+        now = datetime.now(timezone.utc)
+        phones = []
+        for t in tokens:
+            a = rung[t.admin_id]
+            problem = phone_problem(t, now)
+            phones.append({
+                "device_id": t.device_id,
+                "admin_id": str(a.admin_id),
+                "full_name": a.full_name,
+                "role": a.role.value,
+                "branch_id": str(a.branch_id) if a.branch_id else None,
+                "branch_name": names.get(a.branch_id),
+                "platform": t.platform,
+                "device_model": t.device_model,
+                "app_version": t.app_version,
+                "notifications_on": t.notifications_on,
+                "channel_state": t.channel_state,
+                "background_restricted": t.background_restricted,
+                "last_seen_at": t.last_seen_at.isoformat() if t.last_seen_at else None,
+                "can_ring": None if problem == "unknown" else problem is None,
+                "problem": problem,
+            })
+
+        with_phone = {t.admin_id for t in tokens}
+        without = [
+            {
+                "admin_id": str(a.admin_id),
+                "full_name": a.full_name,
+                "role": a.role.value,
+                "branch_id": str(a.branch_id) if a.branch_id else None,
+                "branch_name": names.get(a.branch_id),
+            }
+            for a in sorted(rung.values(), key=lambda x: x.full_name.lower())
+            if a.admin_id not in with_phone
+        ]
+        return {"phones": phones, "staff_without_phone": without}
 
     @staticmethod
     async def unregister_device(db: AsyncSession, admin_id: UUID, device_id: str) -> int:
