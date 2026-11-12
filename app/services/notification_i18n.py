@@ -283,6 +283,61 @@ TEMPLATES: Dict[str, dict] = {
             "ta": "{code} உடன் {off} இன்னும் {hours} மணி நேரத்தில் முடிவடைகிறது. முன்பே பயன்படுத்துங்கள்!",
         },
     },
+    # First-order nudge (owner, 2026-11-12; first_order_nudge_worker.py). The
+    # free-delivery copy is chosen only while the customer's branch offer is
+    # live, and {min} / {end} come from that offer at send time.
+    "nudge.first_order.offer_min": {
+        "standalone": True,
+        "title": {
+            "en": "Your first order 🛒",
+            "si": "ඔබේ පළමු ඇණවුම 🛒",
+            "ta": "உங்கள் முதல் ஆர்டர் 🛒",
+        },
+        "message": {
+            "en": "Hi {name}! 🐝 Sribees Online now delivers to your door in {area}. Free delivery on orders over Rs. {min}, until {end} only. Place your first order today!",
+            "si": "හායි {name}! 🐝 Sribees Online දැන් {area} පැත්තටත් ගෙදරටම බඩු ගෙනත් දෙනවා. රු. {min}ට වැඩි ඇණවුම්වලට ඩිලිවරි නොමිලේ, {end} දක්වා විතරයි. ඔබේ පළමු ඇණවුම අදම දාන්න!",
+            "ta": "வணக்கம் {name}! 🐝 Sribees Online இப்போது {area} பகுதிக்கும் உங்கள் வீட்டுக்கே பொருட்களைக் கொண்டு வருகிறது. ரூ. {min}க்கு மேற்பட்ட ஆர்டர்களுக்கு டெலிவரி இலவசம், {end} வரை மட்டுமே. உங்கள் முதல் ஆர்டரை இன்றே செய்யுங்கள்!",
+        },
+    },
+    "nudge.first_order.offer": {
+        "standalone": True,
+        "title": {
+            "en": "Your first order 🛒",
+            "si": "ඔබේ පළමු ඇණවුම 🛒",
+            "ta": "உங்கள் முதல் ஆர்டர் 🛒",
+        },
+        "message": {
+            "en": "Hi {name}! 🐝 Sribees Online now delivers to your door in {area}. Free delivery on every order, until {end} only. Place your first order today!",
+            "si": "හායි {name}! 🐝 Sribees Online දැන් {area} පැත්තටත් ගෙදරටම බඩු ගෙනත් දෙනවා. හැම ඇණවුමකටම ඩිලිවරි නොමිලේ, {end} දක්වා විතරයි. ඔබේ පළමු ඇණවුම අදම දාන්න!",
+            "ta": "வணக்கம் {name}! 🐝 Sribees Online இப்போது {area} பகுதிக்கும் உங்கள் வீட்டுக்கே பொருட்களைக் கொண்டு வருகிறது. எல்லா ஆர்டர்களுக்கும் டெலிவரி இலவசம், {end} வரை மட்டுமே. உங்கள் முதல் ஆர்டரை இன்றே செய்யுங்கள்!",
+        },
+    },
+    "nudge.first_order.area": {
+        "standalone": True,
+        "title": {
+            "en": "Your first order 🛒",
+            "si": "ඔබේ පළමු ඇණවුම 🛒",
+            "ta": "உங்கள் முதல் ஆர்டர் 🛒",
+        },
+        "message": {
+            "en": "Hi {name}! 🐝 Sribees Online now delivers to your door in {area}. Place your first order today!",
+            "si": "හායි {name}! 🐝 Sribees Online දැන් {area} පැත්තටත් ගෙදරටම බඩු ගෙනත් දෙනවා. ඔබේ පළමු ඇණවුම අදම දාන්න!",
+            "ta": "வணக்கம் {name}! 🐝 Sribees Online இப்போது {area} பகுதிக்கும் உங்கள் வீட்டுக்கே பொருட்களைக் கொண்டு வருகிறது. உங்கள் முதல் ஆர்டரை இன்றே செய்யுங்கள்!",
+        },
+    },
+    "nudge.first_order.general": {
+        "standalone": True,
+        "title": {
+            "en": "Your first order 🛒",
+            "si": "ඔබේ පළමු ඇණවුම 🛒",
+            "ta": "உங்கள் முதல் ஆர்டர் 🛒",
+        },
+        "message": {
+            "en": "Hi {name}! 🐝 Welcome to Sribees Online. Add your address in the app to see if we deliver to you, then place your first order!",
+            "si": "හායි {name}! 🐝 Sribees Online වෙත සාදරයෙන් පිළිගන්නවා. App එකේ ඔබේ ලිපිනය දාලා අපි ඔබේ පැත්තට එනවාද බලන්න, ඊට පස්සේ ඔබේ පළමු ඇණවුම දාන්න!",
+            "ta": "வணக்கம் {name}! 🐝 Sribees Online-க்கு வரவேற்கிறோம். நாங்கள் உங்கள் பகுதிக்கு டெலிவரி செய்கிறோமா என்று பார்க்க ஆப்பில் உங்கள் முகவரியைச் சேர்த்து, பிறகு உங்கள் முதல் ஆர்டரைச் செய்யுங்கள்!",
+        },
+    },
     "price.drop": {
         "standalone": True,
         "title": {

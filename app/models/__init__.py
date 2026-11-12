@@ -31,6 +31,7 @@ from app.models.escalation import (
     OrderEscalation,
 )
 from app.models.finance_outbox import FinanceMinPrice, FinanceOutbox, FinanceStockLevel
+from app.models.first_order_nudge import FirstOrderNudge, FirstOrderNudgeState
 from app.models.free_delivery import FreeDeliveryBranchOffer, FreeDeliveryGrant
 from app.models.location import LocationDistrict, LocationProvince
 from app.models.loyalty import (
@@ -149,6 +150,9 @@ __all__ = [
     "Coupon",
     "CouponCategory",
     "CouponExpiryReminder",
+    # First-order nudge
+    "FirstOrderNudge",
+    "FirstOrderNudgeState",
     "CouponProduct",
     "CouponDiscountType",
     # Order escalations (B4)
