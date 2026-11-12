@@ -24,6 +24,20 @@ from app.schemas.admin_auth import (
 from app.services.permission_service import PermissionService
 from app.utils.logger import logger
 
+# How long the refresh token replaced by the last rotation stays usable (once).
+# Covers a refresh whose response never reached the phone. Short on purpose: a
+# stolen old token is useless after it.
+REFRESH_GRACE = timedelta(minutes=10)
+
+
+def _within_refresh_grace(session: AdminSession) -> bool:
+    if not session.previous_refresh_token_hash or session.rotated_at is None:
+        return False
+    rotated_at = session.rotated_at
+    if rotated_at.tzinfo is None:
+        rotated_at = rotated_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - rotated_at <= REFRESH_GRACE
+
 
 async def _to_admin_response(admin: Admin, db: AsyncSession) -> AdminResponse:
     """Build an AdminResponse including the admin's current role display
@@ -150,7 +164,19 @@ class AdminAuthService:
             await db.commit()
             raise ValueError("Session expired")
 
-        if not verify_password(refresh_token, session.refresh_token_hash):
+        if verify_password(refresh_token, session.refresh_token_hash):
+            # Normal rotation: remember the token being replaced so one lost
+            # response can be retried with it.
+            session.previous_refresh_token_hash = session.refresh_token_hash
+            # Aware on purpose: a naive value is read in the server's zone.
+            session.rotated_at = datetime.now(timezone.utc)
+        elif _within_refresh_grace(session) and verify_password(
+            refresh_token, session.previous_refresh_token_hash
+        ):
+            # The client never got the last pair. Accept the old token once.
+            session.previous_refresh_token_hash = None
+            logger.info(f"Admin refresh grace used: session {session.session_id}")
+        else:
             raise ValueError("Invalid refresh token")
 
         result = await db.execute(
@@ -247,13 +273,21 @@ class AdminAuthService:
         return {"success": True, "message": "Password changed successfully"}
 
     @staticmethod
-    async def logout(admin_id: UUID, db: AsyncSession) -> dict:
+    async def logout(
+        admin_id: UUID, db: AsyncSession, session_id: UUID | None = None
+    ) -> dict:
         """
-        Logout admin by invalidating sessions.
+        Logout admin from this device only.
+
+        Deletes the session the access token belongs to, so signing out of
+        the web panel does not sign the same account out of the Price app or
+        another phone. A token without a session id (none are issued today)
+        falls back to ending every session.
         """
-        await db.execute(
-            delete(AdminSession).where(AdminSession.admin_id == admin_id)
-        )
+        query = delete(AdminSession).where(AdminSession.admin_id == admin_id)
+        if session_id is not None:
+            query = query.where(AdminSession.session_id == session_id)
+        await db.execute(query)
         await db.commit()
 
         return {"success": True, "message": "Logged out successfully"}
