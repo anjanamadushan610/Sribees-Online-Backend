@@ -53,6 +53,12 @@ class ApplicationDecision(Body):
     note: str | None = Field(None, max_length=500)
 
 
+class AdminUpgradeBody(ApplicationBody):
+    master_partner_id: UUID | None = None
+    customer_consent_confirmed: Literal[True]
+    note: str = Field(min_length=1, max_length=400)
+
+
 class AmountBody(Body):
     request_id: UUID
     amount: Decimal = Field(gt=0, max_digits=11, decimal_places=2, allow_inf_nan=False)
@@ -165,6 +171,15 @@ async def applications(db: AsyncSession = Depends(get_db), admin=Depends(require
     rows = (await db.execute(select(PartnerApplication, User.full_name, User.email, User.phone)
         .join(User, User.user_id == PartnerApplication.user_id).order_by(PartnerApplication.created_at.desc()).limit(500))).all()
     return {'success': True, 'data': [dict(application_json(r), name=n, email=e, phone=p) for r, n, e, p in rows]}
+
+
+@router.post('/admin/partners/customers/{user_id}/upgrade')
+async def upgrade_customer(user_id: UUID, body: AdminUpgradeBody, db: AsyncSession = Depends(get_db),
+                           admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
+    partner = await Service.admin_upgrade(db, user_id, admin.admin_id, body.password.get_secret_value(),
+                                          body.master_partner_id, body.note)
+    await db.commit()
+    return {'success': True, 'data': partner_json(partner)}
 
 
 @router.post('/admin/partners/applications/{application_id}/decision')
