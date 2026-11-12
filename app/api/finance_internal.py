@@ -238,8 +238,16 @@ async def finance_opening_snapshot(
 
     wallets = (await db.execute(select(func.coalesce(func.sum(Wallet.balance), 0), func.count())
                                 .where(Wallet.balance != 0))).one()
-    partner = (await db.execute(select(func.coalesce(func.sum(PartnerWallet.balance), 0),
-                                       func.count()).where(PartnerWallet.balance != 0))).one()
+    # Reserved withdrawals are still owed until paid. Include them once in
+    # opening liabilities even when the spendable wallet balance is zero.
+    reserved = (select(PartnerWithdrawal.partner_id,
+                       func.sum(PartnerWithdrawal.amount).label('amount'))
+                .where(PartnerWithdrawal.status == 'pending')
+                .group_by(PartnerWithdrawal.partner_id).subquery())
+    partner_owed = PartnerWallet.balance + func.coalesce(reserved.c.amount, 0)
+    partner = (await db.execute(select(func.coalesce(func.sum(partner_owed), 0), func.count())
+        .select_from(PartnerWallet).outerjoin(reserved, PartnerWallet.partner_id == reserved.c.partner_id)
+        .where(partner_owed != 0))).one()
 
     paid = dict((await db.execute(
         select(PaymentAttempt.order_id, func.sum(PaymentAttempt.amount))

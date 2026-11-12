@@ -142,6 +142,36 @@ async def test_wallet_paid_order_cancelled(api, db, world, make_customer, make_p
     assert loose and loose[-1]["payload"]["reason"] is None
 
 
+async def test_opening_snapshot_includes_reserved_partner_withdrawals(api, db, world, make_customer):
+    import uuid
+
+    from app.models.partner import Partner
+    from app.models.partner_wallet import PartnerWallet, PartnerWithdrawal
+
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    path = '/internal/finance/opening-snapshot'
+    before = await api.get(path, params={'cutoff': '2026-01-01'}, headers=auth)
+    assert before.status_code == 200, before.text
+    baseline = before.json()['partner_wallets']
+    for balance, pending in [('100.00', '40.00'), ('0.00', '25.00')]:
+        customer = await make_customer()
+        partner = Partner(user_id=customer.user_id, role='partner', email=f'{uuid.uuid4()}@example.test',
+                          full_name='Snapshot Partner', password_hash=secrets.token_urlsafe(32))
+        db.add(partner)
+        await db.flush()
+        db.add(PartnerWallet(partner_id=partner.partner_id, balance=Decimal(balance)))
+        for status, amount in [('pending', pending), ('paid', '17.00'), ('rejected', '13.00')]:
+            db.add(PartnerWithdrawal(partner_id=partner.partner_id, request_id=uuid.uuid4(),
+                amount=Decimal(amount), status=status, bank_name='Test', branch_name='Test',
+                account_name='Test', account_number='000000'))
+    await db.commit()
+    after = await api.get(path, params={'cutoff': '2026-01-01'}, headers=auth)
+    assert after.status_code == 200, after.text
+    snapshot = after.json()['partner_wallets']
+    assert Decimal(snapshot['total']) - Decimal(baseline['total']) == Decimal('165.00')
+    assert snapshot['count'] - baseline['count'] == 2
+
+
 async def test_opening_snapshot_for_go_live(api, db, world, make_customer, make_product, place_order,
                                             make_admin, fake_courier, app_redis):
     from app.config.redis import RedisKeys
