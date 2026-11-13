@@ -21,7 +21,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import String, case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,12 +109,7 @@ def _format_coupon(c: Coupon, performance: dict | None = None) -> dict:
         "min_tier_id": str(c.min_tier_id) if getattr(c, "min_tier_id", None) else None,
         "target_customer_type": _target_type(c),
         "whitelisted_customers": [
-            {
-                "name": e.name or e.phone,
-                "phone": e.phone,
-                "user_id": str(e.user_id) if e.user_id else None,
-            }
-            for e in (getattr(c, "whitelist", None) or [])
+            _whitelist_out(e) for e in (getattr(c, "whitelist", None) or [])
         ],
         "target_user_id": str(c.target_user_id) if c.target_user_id else None,
         "category_ids": [str(x.category_id) for x in (c.eligible_categories or [])],
@@ -136,6 +131,20 @@ def _format_coupon(c: Coupon, performance: dict | None = None) -> dict:
         "valid_until": c.valid_until.isoformat() if c.valid_until else None,
         "is_active": c.is_active,
         "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+
+
+def _whitelist_out(e: CouponWhitelistEntry) -> dict:
+    """One listed customer as the admin chips show it."""
+    from app.utils.identity import format_customer_code
+
+    user = getattr(e, "user", None)
+    return {
+        "name": e.name or e.phone or (user.full_name if user else None) or "Customer",
+        "phone": e.phone,
+        "user_id": str(e.user_id) if e.user_id else None,
+        "email": user.email if user else None,
+        "customer_code": format_customer_code(user.customer_no) if user else None,
     }
 
 
@@ -263,32 +272,113 @@ async def _whitelist_rows(db: AsyncSession, customers: list) -> list[CouponWhite
     from app.models.user import User
     from app.utils.identity import normalize_mobile
 
-    bad: list[str] = []
-    rows: dict[str, CouponWhitelistEntry] = {}
+    bad_numbers: list[str] = []
+    bad_accounts: list[str] = []
+    entries: list[CouponWhitelistEntry] = []
+
+    # A CSV row may carry only an email -- how a Google customer with no
+    # number is exported -- so an email with neither number nor account is
+    # resolved to the live account that holds it.
+    by_email_wanted = {
+        c.email.strip().lower()
+        for c in customers
+        if c.email and c.email.strip() and not (c.phone or "").strip() and c.user_id is None
+    }
+    by_email: dict[str, object] = {}
+    if by_email_wanted:
+        by_email = {
+            em.lower(): uid
+            for em, uid in (
+                await db.execute(
+                    select(User.email, User.user_id).where(
+                        func.lower(User.email).in_(list(by_email_wanted)),
+                        User.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        }
+
     for c in customers:
-        try:
-            phone = normalize_mobile(c.phone)
-        except ValueError:
-            bad.append(f"{c.name or '?'} ({c.phone})")
-            continue
-        if phone not in rows:
-            rows[phone] = CouponWhitelistEntry(
-                phone=phone, name=(c.name or "").strip()[:255] or None, user_id=c.user_id
+        name = (c.name or "").strip()[:255] or None
+        raw = (c.phone or "").strip()
+        user_id = c.user_id
+        phone = None
+        if raw:
+            try:
+                phone = normalize_mobile(raw)
+            except ValueError:
+                bad_numbers.append(f"{c.name or '?'} ({c.phone})")
+                continue
+        elif user_id is None:
+            email = (c.email or "").strip().lower()
+            user_id = by_email.get(email) if email else None
+            if user_id is None:
+                bad_numbers.append(f"{c.name or c.email or '?'} (no number" + (
+                    ", and no customer has that email)" if email else ")"
+                ))
+                continue
+        entries.append(CouponWhitelistEntry(phone=phone, name=name, user_id=user_id))
+
+    # An account picked from the search must still be a live customer. Its
+    # own number is listed with it, so the row also matches by number, as a
+    # typed one would.
+    picked = {e.user_id for e in entries if e.user_id is not None}
+    if picked:
+        found = {
+            uid: (phone, full_name)
+            for uid, phone, full_name in (
+                await db.execute(
+                    select(User.user_id, User.phone, User.full_name).where(
+                        User.user_id.in_(list(picked)),
+                        User.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        }
+        for e in entries:
+            if e.user_id is None:
+                continue
+            if e.user_id not in found:
+                bad_accounts.append(e.name or str(e.user_id))
+                continue
+            acct_phone, acct_name = found[e.user_id]
+            if e.phone is None and acct_phone:
+                try:
+                    e.phone = normalize_mobile(acct_phone)
+                except ValueError:
+                    pass  # an odd stored number: list the account alone
+            e.name = e.name or (acct_name or "").strip()[:255] or None
+
+    if bad_numbers or bad_accounts:
+        parts = []
+        if bad_numbers:
+            shown = ", ".join(bad_numbers[:10]) + (
+                f" and {len(bad_numbers) - 10} more" if len(bad_numbers) > 10 else ""
             )
-    if bad:
-        shown = ", ".join(bad[:10]) + (f" and {len(bad) - 10} more" if len(bad) > 10 else "")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"These are not Sri Lankan mobile numbers: {shown}",
-        )
+            parts.append(f"These are not Sri Lankan mobile numbers: {shown}")
+        if bad_accounts:
+            parts.append(
+                "These customers' accounts no longer exist: " + ", ".join(bad_accounts[:10])
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=". ".join(parts))
+
+    # One row per customer: the same number or the same account twice is one.
+    rows: dict[str, CouponWhitelistEntry] = {}
+    seen_users: set = set()
+    for e in entries:
+        if (e.phone and e.phone in rows) or (e.user_id and e.user_id in seen_users):
+            continue
+        rows[e.phone or f"user:{e.user_id}"] = e
+        if e.user_id:
+            seen_users.add(e.user_id)
     if not rows:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Add at least one customer to the whitelist.",
         )
 
-    # Attach the account each number belongs to now, where there is one --
-    # looked up in every shape an account may have stored it in.
+    # Attach the account each typed number belongs to now, where there is
+    # one -- looked up in every shape an account may have stored it in.
     missing = [r for r in rows.values() if r.user_id is None]
     if missing:
         shapes = {}
@@ -381,6 +471,116 @@ async def _code_taken(db: AsyncSession, code: str, exclude_id: Optional[UUID] = 
     if exclude_id is not None:
         stmt = stmt.where(Coupon.coupon_id != exclude_id)
     return (await db.execute(stmt)).scalar_one_or_none() is not None
+
+
+def _like_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@router.get("/customer-search", response_model=dict)
+async def search_customers_for_whitelist(
+    q: str = Query(..., min_length=1, max_length=60, description="What the admin has typed so far"),
+    limit: int = Query(8, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Type-ahead for the "Specific Customers" list: suggestions from the first
+    character typed.
+
+    Matches the start of any word of the name ("ni" finds Nimal Perera and
+    Kasun Nirmal), the mobile number however it is typed (077..., 77...,
+    +9477... or its last digits), the start of the email, the SB customer
+    number, and the NIC. Every live customer can be found -- a coupon is often
+    meant for someone who has not ordered from the branch yet (owner,
+    2026-11-13) -- and the router already limits this to Super Admins and
+    Marketing Managers. The NIC is searched, never sent back.
+    """
+    from app.models.user import User
+    from app.utils.identity import format_customer_code
+
+    term = " ".join(q.split())
+    if not term:
+        return {"success": True, "data": {"customers": []}}
+    like = _like_escape(term)
+    digits = "".join(ch for ch in term if ch.isdigit())
+    # The local part of a mobile number, so 0771..., 771... and +94771...
+    # all mean the same customer. Sri Lankan mobiles are 9 local digits.
+    local = digits
+    if local.startswith("94") and len(local) > 2:
+        local = local[2:]
+    elif local.startswith("0"):
+        local = local[1:]
+    all_digits = func.regexp_replace(func.coalesce(User.phone, ""), r"\D", "", "g")
+    phone_digits = func.right(all_digits, 9)
+    compact = "".join(ch for ch in term.upper() if ch not in " -+")
+    looks_numeric = compact.isdigit()
+    upper = term.upper().replace(" ", "")
+
+    name_start = User.full_name.ilike(f"{like}%", escape="\\")
+    name_word = User.full_name.ilike(f"% {like}%", escape="\\")
+    conds = [name_start, name_word, User.email.ilike(f"{like}%", escape="\\")]
+    phone_start = None
+    if looks_numeric and local:
+        phone_start = phone_digits.like(f"{local}%")
+        conds.append(phone_start)
+        if len(digits) >= 4:
+            # The last digits, which is how people often read a number out.
+            conds.append(all_digits.like(f"%{digits}"))
+    # SB-12345: "SB-12", "sb12" or just the digits.
+    code_digits = None
+    if upper.startswith("SB"):
+        code_digits = "".join(ch for ch in upper[2:] if ch.isdigit()) or None
+        if code_digits is None and upper in ("SB", "SB-"):
+            conds.append(User.customer_no.isnot(None))
+    elif looks_numeric and len(digits) <= 5 and not term.startswith(("0", "+")):
+        code_digits = digits
+    if code_digits:
+        conds.append(func.cast(User.customer_no, String).like(f"{code_digits}%"))
+    # NIC: 9 digits + V/X (old) or 12 digits (new). Three characters before
+    # it is worth matching, so short numbers do not flood the list.
+    if len(compact) >= 3 and (compact.isdigit() or (compact[:-1].isdigit() and compact[-1] in "VX")):
+        conds.append(func.upper(User.nic).like(f"{compact}%"))
+
+    rank = case(
+        (func.lower(User.full_name) == term.lower(), 0),
+        *(((phone_start, 1),) if phone_start is not None else ()),
+        (name_start, 2),
+        (name_word, 3),
+        else_=4,
+    )
+    rows = (
+        await db.execute(
+            select(
+                User.user_id,
+                User.full_name,
+                User.phone,
+                User.email,
+                User.customer_no,
+                User.auth_provider,
+                User.is_blocked,
+            )
+            .where(User.deleted_at.is_(None), or_(*conds))
+            .order_by(rank, User.full_name, User.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    return {
+        "success": True,
+        "data": {
+            "customers": [
+                {
+                    "user_id": str(r.user_id),
+                    "name": (r.full_name or "").strip() or "Customer",
+                    "phone": r.phone,
+                    "email": r.email,
+                    "customer_code": format_customer_code(r.customer_no),
+                    "auth_provider": r.auth_provider,
+                    "is_blocked": bool(r.is_blocked),
+                }
+                for r in rows
+            ]
+        },
+    }
 
 
 @router.get("", response_model=dict)

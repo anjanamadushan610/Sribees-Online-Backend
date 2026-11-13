@@ -56,6 +56,16 @@ def test_the_listed_account_still_matches_after_changing_number():
     _check(_coupon(entries=[("+94771234567", me)]), me, "+94719999999")
 
 
+def test_a_listed_account_without_a_number_may_use_it():
+    """Google / Apple customers may have no mobile at all (migration 115)."""
+    me = uuid4()
+    _check(_coupon(entries=[(None, me)]), me, None)
+    with pytest.raises(CouponValidationError):
+        _check(_coupon(entries=[(None, me)]), uuid4(), None)
+    with pytest.raises(CouponValidationError):
+        _check(_coupon(entries=[(None, me)]), uuid4(), "+94771234567")
+
+
 def test_anyone_else_is_refused():
     with pytest.raises(CouponValidationError, match="selected customers"):
         _check(_coupon(entries=[("+94771234567", None)]), uuid4(), "+94710000000")

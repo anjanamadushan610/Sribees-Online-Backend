@@ -201,30 +201,35 @@ class CouponCategory(Base):
 
 
 class CouponWhitelistEntry(Base):
-    """A customer a 'specific' coupon is for, by mobile number.
+    """A customer a 'specific' coupon is for: a mobile number, an account, or both.
 
-    Keyed on the number rather than an account: the admin types or imports
-    numbers, and someone who signs up with a listed number after the coupon
-    was made is exactly who the campaign meant. ``user_id`` is the account the
-    number belonged to when it was listed, kept for display and as a second
-    match should the customer later change their number.
+    A typed or imported number needs no account: someone who signs up with a
+    listed number after the coupon was made is exactly who the campaign meant.
+    A customer picked from the admin search is listed by account as well, which
+    is the only way to list one who signed in with Google or Apple and never
+    gave a number (migration 115). Either one matching admits the customer.
     """
 
     __tablename__ = "coupon_whitelist"
 
+    entry_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     coupon_id = Column(
         UUID(as_uuid=True),
         ForeignKey("coupons.coupon_id", ondelete="CASCADE"),
-        primary_key=True,
+        nullable=False,
     )
-    # Canonical +94 form (app.utils.identity.normalize_mobile).
-    phone = Column(String(20), primary_key=True)
+    # Canonical +94 form (app.utils.identity.normalize_mobile); NULL when the
+    # row names an account that has no number.
+    phone = Column(String(20), nullable=True)
     name = Column(String(255), nullable=True)
     user_id = Column(
         UUID(as_uuid=True),
         ForeignKey("users.user_id", ondelete="SET NULL"),
         nullable=True,
     )
+    # For display only (email and SB number on the admin chips). User's own
+    # relationships are lazy, so this loads one row per account and no more.
+    user = relationship("User", lazy="selectin", viewonly=True)
 
 
 class CouponProduct(Base):

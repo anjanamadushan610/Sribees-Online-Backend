@@ -26,9 +26,14 @@ TargetCustomerType = Literal["all", "specific", "tier"]
 
 
 class WhitelistedCustomerIn(BaseModel):
-    """One listed customer. The phone is what the coupon is checked against."""
+    """One listed customer: a mobile number, an account, or both.
+
+    A customer picked from the admin search arrives with ``user_id`` (and a
+    phone when the account has one); a typed or imported one with a phone.
+    Rows naming neither are refused by the endpoint, by name, with the rest.
+    """
     name: Optional[str] = Field(default=None, max_length=255)
-    phone: str = Field(..., min_length=1, max_length=30)
+    phone: Optional[str] = Field(default=None, max_length=30)
     email: Optional[str] = None
     user_id: Optional[UUID] = None
 
