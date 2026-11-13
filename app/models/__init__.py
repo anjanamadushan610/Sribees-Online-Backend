@@ -20,6 +20,7 @@ from app.models.branch import Branch, PostalCityBranchMapping, PostalCityDirecto
 from app.models.category import Category
 from app.models.coupon import (
     Coupon,
+    CouponAnnouncement,
     CouponCategory,
     CouponDiscountType,
     CouponExpiryReminder,
@@ -148,6 +149,7 @@ __all__ = [
     "Category",
     # Coupon
     "Coupon",
+    "CouponAnnouncement",
     "CouponCategory",
     "CouponExpiryReminder",
     # First-order nudge

@@ -270,6 +270,21 @@ TEMPLATES: Dict[str, dict] = {
             "ta": "{code} குறியீட்டுடன் {off}. {days} நாட்களுக்குச் செல்லுபடியாகும்.",
         },
     },
+    # A coupon the admin chose to announce, sent when it starts (owner,
+    # 2026-11-13; coupon_announce_worker.py). Tapping opens Offers.
+    "coupon.announce": {
+        "standalone": True,
+        "title": {
+            "en": "A coupon for you 🎁",
+            "si": "ඔබට කූපනයක් 🎁",
+            "ta": "உங்களுக்கு ஒரு கூப்பன் 🎁",
+        },
+        "message": {
+            "en": "Get {off} with code {code}. Tap to see it in your offers.",
+            "si": "{code} කේතයෙන් {off} ලබාගන්න. ඔබේ දීමනා බලන්න මෙතන ඔබන්න.",
+            "ta": "{code} குறியீட்டுடன் {off} பெறுங்கள். உங்கள் சலுகைகளில் பார்க்க தட்டவும்.",
+        },
+    },
     "coupon.expiring": {
         "standalone": True,
         "title": {

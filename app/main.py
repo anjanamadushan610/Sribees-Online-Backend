@@ -130,6 +130,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.apple_revocation_worker import run_apple_revocation_worker
     from app.services.assistant_reminder_worker import run_reminder_worker
     from app.services.campaign_service import run_campaign_worker
+    from app.services.coupon_announce_worker import run_coupon_announce_worker
     from app.services.coupon_reminder_worker import run_coupon_reminder_worker
     from app.services.courier_coverage_worker import run_postal_city_worker
     from app.services.first_order_nudge_worker import run_first_order_nudge_worker
@@ -156,6 +157,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         asyncio.create_task(run_return_settlement_worker()),
         asyncio.create_task(run_campaign_worker()),
         asyncio.create_task(run_coupon_reminder_worker()),
+        asyncio.create_task(run_coupon_announce_worker()),
         asyncio.create_task(run_first_order_nudge_worker()),
         asyncio.create_task(run_staff_alert_ring_worker()),
         asyncio.create_task(run_content_watcher()),

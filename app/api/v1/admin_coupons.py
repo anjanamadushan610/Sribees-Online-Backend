@@ -105,6 +105,9 @@ def _format_coupon(c: Coupon, performance: dict | None = None) -> dict:
         "per_user_limit": c.per_user_limit,
         "is_public": c.is_public,
         "show_in_popup": bool(getattr(c, "show_in_popup", False)),
+        "notify_customers": bool(getattr(c, "notify_customers", False)),
+        # Customers the announcement push has gone to so far.
+        "notified_count": perf.get("notified", 0),
         "popup_priority": getattr(c, "popup_priority", 0) or 0,
         "min_tier_id": str(c.min_tier_id) if getattr(c, "min_tier_id", None) else None,
         "target_customer_type": _target_type(c),
@@ -181,10 +184,24 @@ async def _performance_map(db: AsyncSession, coupons: list[Coupon]) -> dict[str,
             .group_by(func.lower(Order.coupon_code))
         )
     ).all()
-    return {
+    perf = {
         r.code: {"revenue": float(r.revenue or 0), "orders": int(r.orders or 0)}
         for r in rows
     }
+    # How many customers each coupon's announcement push has reached.
+    from app.models.coupon import CouponAnnouncement
+
+    by_id = {c.coupon_id: c.code.lower() for c in coupons if c.code}
+    notified = (
+        await db.execute(
+            select(CouponAnnouncement.coupon_id, func.count())
+            .where(CouponAnnouncement.coupon_id.in_(list(by_id)))
+            .group_by(CouponAnnouncement.coupon_id)
+        )
+    ).all()
+    for cid, n in notified:
+        perf.setdefault(by_id[cid], {})["notified"] = int(n)
+    return perf
 
 
 async def _sync_eligibility(
@@ -457,6 +474,21 @@ async def _apply_audience(
     coupon.target_customer_type = target
 
 
+def _check_notify(coupon: Coupon) -> None:
+    """The announcement push carries the code, so a hidden code may only be
+    sent to the customers it was made for (owner, 2026-11-13)."""
+    from app.services.coupon_announce_worker import can_announce
+
+    if coupon.notify_customers and not can_announce(coupon):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Notify customers works only for a Public coupon or a Specific "
+                "Customers coupon: a hidden code is never pushed to everyone."
+            ),
+        )
+
+
 async def _require_tier(db: AsyncSession, tier_id: Optional[UUID]) -> None:
     """A members-only coupon must name a level that exists."""
     if tier_id is not None and await db.get(LoyaltyTier, tier_id) is None:
@@ -692,6 +724,7 @@ async def create_coupon(
         is_public=data.is_public,
         show_in_popup=data.show_in_popup,
         popup_priority=data.popup_priority,
+        notify_customers=data.notify_customers,
         min_tier_id=data.min_tier_id,
         description=data.description,
         discount_type=data.discount_type.value,
@@ -709,6 +742,7 @@ async def create_coupon(
     # A level alone still means 'tier', as it did before the choice was stored.
     target = "tier" if data.min_tier_id is not None else data.target_customer_type
     await _apply_audience(db, coupon, target, data.whitelisted_customers)
+    _check_notify(coupon)
     await db.commit()
     await db.refresh(coupon)
     logger.info(
@@ -783,7 +817,7 @@ async def update_coupon(
     target = fields.pop("target_customer_type", None)
     fields.pop("whitelisted_customers", None)
     # NOT NULL columns: an explicit null means "leave as is".
-    for key in ("show_in_popup", "popup_priority"):
+    for key in ("show_in_popup", "popup_priority", "notify_customers"):
         if key in fields and fields[key] is None:
             fields.pop(key)
     if fields.get("min_tier_id") is not None:
@@ -799,6 +833,7 @@ async def update_coupon(
     if target is None and "min_tier_id" in fields:
         target = "tier" if coupon.min_tier_id is not None else None
     await _apply_audience(db, coupon, target, data.whitelisted_customers)
+    _check_notify(coupon)
 
     await db.commit()
     await db.refresh(coupon)
