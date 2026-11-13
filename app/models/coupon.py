@@ -149,6 +149,11 @@ class Coupon(Base):
     # priority first; ties go to the bigger discount.
     show_in_popup = Column(Boolean, nullable=False, default=False, server_default="false")
     popup_priority = Column(Integer, nullable=False, default=0, server_default="0")
+    # Push the customers it is for when it starts (migration 116,
+    # coupon_announce_worker.py). Public or Specific coupons only.
+    notify_customers = Column(Boolean, nullable=False, default=False, server_default="false")
+    # When an "All customers" / members-only coupon's one announcement finished.
+    announced_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -247,6 +252,24 @@ class CouponProduct(Base):
         ForeignKey("products.product_id", ondelete="CASCADE"),
         primary_key=True,
     )
+
+
+class CouponAnnouncement(Base):
+    """One "a coupon for you" push per customer per coupon (migration 116)."""
+
+    __tablename__ = "coupon_announcements"
+
+    coupon_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("coupons.coupon_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    sent_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class CouponExpiryReminder(Base):
