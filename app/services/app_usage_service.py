@@ -1,5 +1,5 @@
 """
-SRIBEESonline - who is using the customer app, and how much.
+SRIBEESonline - who is using the customer app or the web store, and how much.
 
 The app sends a heartbeat when it opens, every ``BEAT_INTERVAL`` while it
 stays in the foreground, and once more when it goes to the background. Each
@@ -10,7 +10,12 @@ launches.
 "Online now" = the last heartbeat said foreground and arrived within
 ``ONLINE_WINDOW``. The background heartbeat takes a customer offline at once;
 the window only catches an app that died without saying so.
+
+The web store (www.sribeesonline.com) sends the same heartbeat with platform
+``web`` while its tab is on screen; its "install" is one browser, and the
+page tells the two apart with ``channel`` ("app" or "web").
 """
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -41,6 +46,49 @@ MAX_HISTORY_DAYS = 1000
 
 EVENTS = ("open", "beat", "background")
 
+# The page's App / Web filter.
+CHANNELS = ("app", "web")
+APP_PLATFORMS = ("android", "ios")
+
+# Most specific first: Edge and Opera also say "Chrome", Chrome also says "Safari".
+_BROWSERS = (
+    ("Edge", re.compile(r"Edg(e|A|iOS)?/")),
+    ("Opera", re.compile(r"OPR/|Opera")),
+    ("Samsung Internet", re.compile(r"SamsungBrowser/")),
+    ("Firefox", re.compile(r"Firefox/|FxiOS/")),
+    ("Chrome", re.compile(r"Chrome/|CriOS/")),
+    ("Safari", re.compile(r"Safari/")),
+)
+_SYSTEMS = (
+    ("Android", re.compile(r"Android")),
+    ("iPhone", re.compile(r"iPhone|iPod")),
+    ("iPad", re.compile(r"iPad")),
+    ("Windows", re.compile(r"Windows")),
+    ("Mac", re.compile(r"Macintosh|Mac OS X")),
+    ("Linux", re.compile(r"Linux|X11")),
+)
+
+
+def browser_label(user_agent: Optional[str]) -> Optional[str]:
+    """'Chrome on Windows' from a User-Agent; None when nothing is recognised."""
+    if not user_agent:
+        return None
+    ua = user_agent[:500]
+    name = next((n for n, rx in _BROWSERS if rx.search(ua)), None)
+    system = next((n for n, rx in _SYSTEMS if rx.search(ua)), None)
+    if name and system:
+        return f"{name} on {system}"
+    return name or system
+
+
+def _channel_clause(channel: Optional[str]):
+    """The App / Web filter as a WHERE clause; None = both."""
+    if channel == "web":
+        return AppInstall.platform == "web"
+    if channel == "app":
+        return AppInstall.platform.in_(APP_PLATFORMS)
+    return None
+
 
 def lk_today(now: Optional[datetime] = None) -> date:
     return (now or datetime.now(timezone.utc)).astimezone(LK_TZ).date()
@@ -67,12 +115,19 @@ async def record_heartbeat(
     app_version: Optional[str],
     build_number: Optional[str],
     installed_at: Optional[datetime],
+    browser: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> None:
     """Upsert the install and add this report to today's usage. Commits."""
     now = now or datetime.now(timezone.utc)
     seconds = max(0, min(int(foreground_seconds), MAX_SECONDS_PER_BEAT))
-    installed = _believable_install(installed_at, now)
+    if platform == "web":
+        # A browser has no install date: its first visit (first_seen_at) stands in.
+        installed = None
+        browser = (browser or "")[:60] or None
+    else:
+        installed = _believable_install(installed_at, now)
+        browser = None
 
     stmt = pg_insert(AppInstall).values(
         device_id=device_id,
@@ -80,6 +135,7 @@ async def record_heartbeat(
         platform=platform,
         app_version=app_version,
         build_number=build_number,
+        browser=browser,
         installed_at=installed,
         first_seen_at=now,
         last_seen_at=now,
@@ -95,6 +151,7 @@ async def record_heartbeat(
                 "platform": excluded.platform,
                 "app_version": func.coalesce(excluded.app_version, AppInstall.app_version),
                 "build_number": func.coalesce(excluded.build_number, AppInstall.build_number),
+                "browser": func.coalesce(excluded.browser, AppInstall.browser),
                 "installed_at": func.coalesce(excluded.installed_at, AppInstall.installed_at),
                 "last_seen_at": excluded.last_seen_at,
                 "is_foreground": excluded.is_foreground,
@@ -154,10 +211,14 @@ def _serialize(row: _Row, now: datetime, latest_version: Optional[str]) -> dict:
         "customer_phone": u.phone if u else None,
         "is_guest": u is None,
         "platform": i.platform,
+        "browser": i.browser,
         "app_version": i.app_version,
         "build_number": i.build_number,
+        # The store's latest version means nothing for a browser.
         "is_latest_version": (
-            None if not latest_version or not i.app_version else i.app_version == latest_version
+            None
+            if i.platform == "web" or not latest_version or not i.app_version
+            else i.app_version == latest_version
         ),
         # The phone's own install time; first heartbeat when the phone gave none.
         "installed_at": _iso(i.installed_at or i.first_seen_at),
@@ -197,39 +258,72 @@ def _rows(result) -> list[_Row]:
     return [_Row(i, u, int(t or 0), int(tot or 0), int(d or 0)) for i, u, t, tot, d in result.all()]
 
 
-async def overview(db: AsyncSession, latest_version: Optional[str], now: Optional[datetime] = None) -> dict:
-    """Online now, with the headline numbers above it."""
+async def overview(
+    db: AsyncSession,
+    latest_version: Optional[str],
+    channel: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> dict:
+    """Online now, with the headline numbers above it -- for the app, the web, or both."""
     now = now or datetime.now(timezone.utc)
     today = lk_today(now)
+    only = _channel_clause(channel)
+
+    def scoped(query):
+        return query if only is None else query.where(only)
 
     online = _rows(
         await db.execute(
-            _base_query(today).where(_online_clause(now)).order_by(AppInstall.last_seen_at.desc()).limit(500)
+            scoped(_base_query(today).where(_online_clause(now)))
+            .order_by(AppInstall.last_seen_at.desc())
+            .limit(500)
         )
     )
-    online_count = await db.scalar(select(func.count()).select_from(AppInstall).where(_online_clause(now)))
-    total_installs = await db.scalar(select(func.count()).select_from(AppInstall))
+    online_count = await db.scalar(scoped(select(func.count()).select_from(AppInstall).where(_online_clause(now))))
+    # Online split by channel whatever the filter, so both counts stay in view.
+    online_all = await db.scalar(select(func.count()).select_from(AppInstall).where(_online_clause(now)))
+    online_web = await db.scalar(
+        select(func.count()).select_from(AppInstall).where(_online_clause(now), AppInstall.platform == "web")
+    )
+    total_installs = await db.scalar(scoped(select(func.count()).select_from(AppInstall)))
     active_today = await db.scalar(
-        select(func.count())
-        .select_from(AppUsageDay)
-        .where(AppUsageDay.usage_date == today, or_(AppUsageDay.foreground_seconds > 0, AppUsageDay.opens > 0))
+        scoped(
+            select(func.count())
+            .select_from(AppUsageDay)
+            .join(AppInstall, AppInstall.device_id == AppUsageDay.device_id)
+            .where(AppUsageDay.usage_date == today, or_(AppUsageDay.foreground_seconds > 0, AppUsageDay.opens > 0))
+        )
     )
     seconds_today = await db.scalar(
-        select(func.coalesce(func.sum(AppUsageDay.foreground_seconds), 0)).where(AppUsageDay.usage_date == today)
-    )
-    # Versions among installs seen in the last 30 days: a phone nobody has
-    # opened for months says nothing about who still needs to update.
-    versions = (
-        await db.execute(
-            select(AppInstall.app_version, func.count())
-            .where(AppInstall.last_seen_at >= now - timedelta(days=30))
-            .group_by(AppInstall.app_version)
-            .order_by(func.count().desc())
+        scoped(
+            select(func.coalesce(func.sum(AppUsageDay.foreground_seconds), 0))
+            .select_from(AppUsageDay)
+            .join(AppInstall, AppInstall.device_id == AppUsageDay.device_id)
+            .where(AppUsageDay.usage_date == today)
         )
-    ).all()
+    )
+    # Versions among phones seen in the last 30 days: a phone nobody has
+    # opened for months says nothing about who still needs to update. A
+    # browser has no app version, so the web never appears here.
+    versions = []
+    if channel != "web":
+        versions = (
+            await db.execute(
+                select(AppInstall.app_version, func.count())
+                .where(
+                    AppInstall.last_seen_at >= now - timedelta(days=30),
+                    AppInstall.platform.in_(APP_PLATFORMS),
+                )
+                .group_by(AppInstall.app_version)
+                .order_by(func.count().desc())
+            )
+        ).all()
 
     return {
+        "channel": channel,
         "online_count": int(online_count or 0),
+        "online_app_count": int((online_all or 0) - (online_web or 0)),
+        "online_web_count": int(online_web or 0),
         "online": [_serialize(r, now, latest_version) for r in online],
         "total_installs": int(total_installs or 0),
         "active_today": int(active_today or 0),
@@ -246,20 +340,26 @@ async def list_installs(
     *,
     latest_version: Optional[str],
     search: Optional[str] = None,
+    channel: Optional[str] = None,
     page: int = 1,
     limit: int = 20,
     now: Optional[datetime] = None,
 ) -> dict:
-    """Every install, most recently seen first."""
+    """Every install (and web browser), most recently seen first."""
     now = now or datetime.now(timezone.utc)
     query = _base_query(lk_today(now))
     count_query = select(func.count()).select_from(AppInstall).outerjoin(User, User.user_id == AppInstall.user_id)
+    only = _channel_clause(channel)
+    if only is not None:
+        query = query.where(only)
+        count_query = count_query.where(only)
     if search and search.strip():
         like = f"%{search.strip()}%"
         cond = or_(
             User.full_name.ilike(like),
             User.phone.ilike(like),
             AppInstall.app_version.ilike(like),
+            AppInstall.browser.ilike(like),
             AppInstall.device_id.ilike(like),
         )
         query = query.where(cond)

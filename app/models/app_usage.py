@@ -23,11 +23,11 @@ from app.config.database import Base
 
 
 class AppInstall(Base):
-    """One install of the customer app, identified by its own device_id."""
+    """One install of the customer app, or one browser on the web store (platform 'web')."""
 
     __tablename__ = "app_installs"
     __table_args__ = (
-        CheckConstraint("platform IN ('android', 'ios')", name="ck_app_installs_platform"),
+        CheckConstraint("platform IN ('android', 'ios', 'web')", name="ck_app_installs_platform"),
     )
 
     device_id = Column(String(80), primary_key=True)
@@ -37,6 +37,8 @@ class AppInstall(Base):
     )
     platform = Column(String(10), nullable=False, default="android")
     app_version = Column(String(40), nullable=True)
+    # Web only (migration 117): "Chrome on Windows", read from the User-Agent.
+    browser = Column(String(60), nullable=True)
     build_number = Column(String(20), nullable=True)
     # The phone's own first-install time: the real download date.
     installed_at = Column(DateTime(timezone=True), nullable=True)
