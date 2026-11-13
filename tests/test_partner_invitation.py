@@ -182,3 +182,144 @@ async def test_mail_configuration_failure_does_not_upgrade(monkeypatch):
     assert error.value.status_code == 503
     upgrade.assert_not_awaited()
     db.commit.assert_not_awaited()
+
+
+def verified_customer():
+    return SimpleNamespace(phone='+94770000000', is_phone_verified=True,
+                           is_active=True, is_blocked=False, deleted_at=None)
+
+
+@pytest.mark.asyncio
+async def test_sms_link_is_short_hashed_expiring_and_single_use(monkeypatch):
+    from fakeredis.aioredis import FakeRedis
+
+    redis = FakeRedis()
+    row = partner()
+    row.user_id = uuid4()
+    user = verified_customer()
+    gateway = SimpleNamespace(name='textlk', send=AsyncMock())
+    monkeypatch.setattr(service, 'get_sms_gateway', lambda: gateway)
+    await service.send_sms_invitation(row, user, redis)
+    phone, message = gateway.send.call_args.args
+    assert phone == user.phone
+    url = next(word for word in message.split() if word.startswith('https://'))
+    token = parse_qs(urlsplit(url).fragment)['token'][0]
+    assert token.startswith('sms_') and len(token) < 64
+    key = service.sms_token_key(token)
+    assert token not in key
+    assert 0 < await redis.ttl(key) <= 86400
+    stored = await redis.get(key)
+    assert token.encode() not in stored
+    assert user.phone.encode() not in stored
+    db = database(row)
+    db.get = AsyncMock(return_value=user)
+    await service.accept_invitation(db, token, 'Customer password 19!', redis=redis)
+    assert verify_password('Customer password 19!', row.password_hash)
+    with pytest.raises(HTTPException):
+        await service.accept_invitation(db, token, 'Different password 19!', redis=redis)
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['phone', 'verification', 'expired'])
+async def test_sms_invitation_rejects_changed_phone_and_expired_token(monkeypatch, change):
+    from fakeredis.aioredis import FakeRedis
+
+    redis = FakeRedis()
+    row = partner()
+    row.user_id = uuid4()
+    user = verified_customer()
+    gateway = SimpleNamespace(name='textlk', send=AsyncMock())
+    monkeypatch.setattr(service, 'get_sms_gateway', lambda: gateway)
+    await service.send_sms_invitation(row, user, redis)
+    message = gateway.send.call_args.args[1]
+    url = next(word for word in message.split() if word.startswith('https://'))
+    token = parse_qs(urlsplit(url).fragment)['token'][0]
+    if change == 'phone':
+        user.phone = '+94770000001'
+    elif change == 'verification':
+        user.is_phone_verified = False
+    else:
+        await redis.delete(service.sms_token_key(token))
+    db = database(row)
+    db.get = AsyncMock(return_value=user)
+    with pytest.raises(HTTPException):
+        await service.accept_invitation(db, token, 'Customer password 19!', redis=redis)
+    db.flush.assert_not_awaited()
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sms_send_failure_burns_token(monkeypatch):
+    from fakeredis.aioredis import FakeRedis
+
+    redis = FakeRedis()
+    gateway = SimpleNamespace(name='textlk', send=AsyncMock(side_effect=service.SmsSendError('Test failure')))
+    monkeypatch.setattr(service, 'get_sms_gateway', lambda: gateway)
+    with pytest.raises(service.SmsSendError):
+        await service.send_sms_invitation(partner(), verified_customer(), redis)
+    assert await redis.keys('partner:invitation:sms:*') == []
+    await redis.aclose()
+
+
+def test_sms_never_uses_console_or_unverified_number(monkeypatch):
+    from app.services.sms_gateway import ConsoleSmsGateway
+
+    monkeypatch.setattr(service, 'get_sms_gateway', lambda: ConsoleSmsGateway())
+    with pytest.raises(HTTPException) as error:
+        service.sms_gateway()
+    assert error.value.status_code == 503
+    user = verified_customer()
+    user.is_phone_verified = False
+    with pytest.raises(HTTPException):
+        service.verified_sms_phone(user)
+
+
+@pytest.mark.asyncio
+async def test_sms_upgrade_works_when_email_is_unavailable(monkeypatch):
+    from app.api.v1.linked_partner_wallet import AdminUpgradeBody, upgrade_customer
+    from app.services.partner_wallet_service import PartnerWalletService
+
+    row = partner()
+    row.role = 'partner'
+    row.referral_code = 'TESTCODE'
+    row.parent_partner_id = None
+    user = verified_customer()
+    user.email = row.email
+    db = database(row)
+    db.commit = AsyncMock()
+    redis = SimpleNamespace(set=AsyncMock(return_value=True), delete=AsyncMock())
+    monkeypatch.setattr(PartnerWalletService, 'user_lock', AsyncMock(return_value=user))
+    monkeypatch.setattr(service.email_sender, 'is_configured', lambda: False)
+    monkeypatch.setattr(service, 'sms_gateway', lambda: SimpleNamespace(name='textlk'))
+    send_sms = AsyncMock()
+    send_email = AsyncMock()
+    monkeypatch.setattr(service, 'send_sms_invitation', send_sms)
+    monkeypatch.setattr(service, 'send_invitation', send_email)
+    body = AdminUpgradeBody(invitation_channel='sms', customer_consent_confirmed=True, note='Verified request')
+    response = await upgrade_customer(uuid4(), body, db=db, redis=redis,
+                                      admin=SimpleNamespace(admin_id=uuid4()), ready=None)
+    assert response['invitation_sent'] is True
+    assert response['invitation_channel'] == 'sms'
+    send_sms.assert_awaited_once_with(row, user, redis)
+    send_email.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unverified_sms_upgrade_does_not_mutate_account(monkeypatch):
+    from app.api.v1.linked_partner_wallet import AdminUpgradeBody, upgrade_customer
+    from app.services.partner_wallet_service import PartnerWalletService
+
+    user = verified_customer()
+    user.is_phone_verified = False
+    monkeypatch.setattr(PartnerWalletService, 'user_lock', AsyncMock(return_value=user))
+    upgrade = AsyncMock()
+    monkeypatch.setattr(PartnerWalletService, 'admin_upgrade', upgrade)
+    db = SimpleNamespace(commit=AsyncMock())
+    body = AdminUpgradeBody(invitation_channel='sms', customer_consent_confirmed=True, note='Verified request')
+    with pytest.raises(HTTPException) as error:
+        await upgrade_customer(uuid4(), body, db=db, redis=AsyncMock(),
+                               admin=SimpleNamespace(admin_id=uuid4()), ready=None)
+    assert error.value.status_code == 409
+    upgrade.assert_not_awaited()
+    db.commit.assert_not_awaited()
