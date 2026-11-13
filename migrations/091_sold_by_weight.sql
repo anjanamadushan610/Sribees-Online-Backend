@@ -1,5 +1,5 @@
 -- =============================================================================
--- 088 - Products sold by weight, with a price for each weight option
+-- 091 - Products sold by weight, with a price for each weight option
 -- =============================================================================
 --
 -- Loose goods (sugar, rice, dhal, onions) are bought by weight: the customer
