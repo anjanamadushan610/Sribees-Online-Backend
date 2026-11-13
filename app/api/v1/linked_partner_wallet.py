@@ -57,6 +57,7 @@ class ApplicationDecision(Body):
 
 
 class AdminUpgradeBody(Body):
+    invitation_channel: Literal['email', 'sms'] = 'email'
     master_partner_id: UUID | None = None
     customer_consent_confirmed: Literal[True]
     note: str = Field(min_length=1, max_length=400)
@@ -182,31 +183,44 @@ async def upgrade_customer(user_id: UUID, body: AdminUpgradeBody, db: AsyncSessi
                            admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
     from app.models.partner import Partner
     from app.services import email_sender
-    from app.services.partner_invitation import send_invitation, setup_url
+    from app.services.partner_invitation import (
+        portal_base,
+        send_invitation,
+        send_sms_invitation,
+        sms_gateway,
+        verified_sms_phone,
+    )
+    from app.services.sms_gateway import SmsSendError
 
-    if not email_sender.is_configured():
+    if body.invitation_channel == 'email' and not email_sender.is_configured():
         raise HTTPException(503, 'Partner invitation email is not configured. No upgrade was performed.')
     # Lock the customer first, matching the existing wallet/referral lock order.
     user = await Service.user_lock(db, user_id)
+    if body.invitation_channel == 'sms':
+        verified_sms_phone(user)
+        sms_gateway()
     partner = (await db.execute(select(Partner).where(Partner.user_id == user_id))).scalar_one_or_none()
     if partner is None:
         partner = await Service.admin_upgrade(db, user_id, admin.admin_id, secrets.token_urlsafe(48),
                                              body.master_partner_id, body.note)
     elif not partner.is_active or partner.email.lower() != (user.email or '').strip().lower():
         raise HTTPException(409, 'The linked Partner email or account status needs review. Contact support.')
-    setup_url(partner)  # Validate configuration before committing the upgrade.
+    portal_base()  # Validate configuration before committing the upgrade.
     cooldown_key = f'partner:invitation:wait:{partner.partner_id}'
     if not await redis.set(cooldown_key, '1', ex=60, nx=True):
         raise HTTPException(429, 'Please wait one minute before resending the invitation.')
     await db.commit()
     try:
-        await send_invitation(partner)
-    except email_sender.EmailSendError:
+        if body.invitation_channel == 'sms':
+            await send_sms_invitation(partner, user, redis)
+        else:
+            await send_invitation(partner)
+    except (email_sender.EmailSendError, SmsSendError):
         await redis.delete(cooldown_key)
         # The upgrade has committed. Return an explicit partial-success result
         # so retrying sends another invitation without duplicating the upgrade.
-        return {'success': True, 'data': partner_json(partner), 'invitation_sent': False}
-    return {'success': True, 'data': partner_json(partner), 'invitation_sent': True}
+        return {'success': True, 'data': partner_json(partner), 'invitation_sent': False, 'invitation_channel': body.invitation_channel}
+    return {'success': True, 'data': partner_json(partner), 'invitation_sent': True, 'invitation_channel': body.invitation_channel}
 
 
 @router.post('/admin/partners/applications/{application_id}/decision')

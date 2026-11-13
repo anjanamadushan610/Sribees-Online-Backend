@@ -428,8 +428,9 @@ class PartnerSetupPasswordRequest(BaseModel):
 
 
 @router.post('/auth/set-password')
-async def partner_set_password(body: PartnerSetupPasswordRequest, db: AsyncSession = Depends(get_db)):
+async def partner_set_password(body: PartnerSetupPasswordRequest, db: AsyncSession = Depends(get_db),
+                               redis: Redis = Depends(get_redis)):
     from app.services.partner_invitation import accept_invitation
-    await accept_invitation(db, body.token.get_secret_value(), body.password.get_secret_value())
+    await accept_invitation(db, body.token.get_secret_value(), body.password.get_secret_value(), redis=redis)
     await db.commit()
     return {'success': True, 'message': 'Password set successfully. You can now sign in to the Partner Portal.'}
