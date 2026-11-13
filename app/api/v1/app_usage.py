@@ -6,6 +6,9 @@ SRIBEESonline - App presence and usage.
   GET  /admin/app-usage/installs                 -- Super Admin: every install, searchable
   GET  /admin/app-usage/installs/{device_id}     -- Super Admin: one install's daily history
 
+The web store (www.sribeesonline.com) sends the same heartbeat with platform
+"web" while its tab is on screen; the admin reads filter with channel=app|web.
+
 The heartbeat is open to guests on purpose: "who has the app open" includes
 people browsing before they sign in. The body can only ever describe its own
 install -- it writes no customer data, and a signed-in customer is taken from
@@ -16,7 +19,7 @@ Prefixes applied by app/api/v1/router.py.
 from datetime import datetime
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,9 +34,12 @@ admin_router = APIRouter()
 
 RequireSuperAdmin = Depends(require_roles("super_admin"))
 
-# The mobile app's install id: "guest_<ms>_<hex>" today, kept loose enough for
-# a future format but never free text.
+# The mobile app's install id: "guest_<ms>_<hex>" today; the web store's is
+# "web_<uuid>". Kept loose enough for a future format but never free text.
 DEVICE_ID_PATTERN = r"^[A-Za-z0-9_.:-]{8,80}$"
+
+# The page's App / Web filter; omitted = both.
+Channel = Optional[Literal["app", "web"]]
 
 
 class HeartbeatIn(BaseModel):
@@ -42,7 +48,7 @@ class HeartbeatIn(BaseModel):
     device_id: str = Field(..., pattern=DEVICE_ID_PATTERN)
     event: Literal["open", "beat", "background"]
     foreground_seconds: int = Field(0, ge=0, le=86400)
-    platform: Literal["android", "ios"]
+    platform: Literal["android", "ios", "web"]
     app_version: Optional[str] = Field(None, max_length=40, pattern=r"^[0-9A-Za-z.+_-]+$")
     build_number: Optional[str] = Field(None, max_length=20, pattern=r"^[0-9A-Za-z.+_-]+$")
     installed_at: Optional[datetime] = None
@@ -56,9 +62,12 @@ class HeartbeatIn(BaseModel):
 )
 async def heartbeat(
     body: HeartbeatIn,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user_optional),
 ):
+    # A browser is named by the server from its own User-Agent, never the body.
+    browser = usage.browser_label(request.headers.get("user-agent")) if body.platform == "web" else None
     await usage.record_heartbeat(
         db,
         device_id=body.device_id,
@@ -69,6 +78,7 @@ async def heartbeat(
         app_version=body.app_version,
         build_number=body.build_number,
         installed_at=body.installed_at,
+        browser=browser,
     )
     return {"success": True}
 
@@ -83,20 +93,25 @@ async def _latest_version(db: AsyncSession) -> Optional[str]:
 
 
 @admin_router.get("", response_model=dict, summary="Who has the app open right now")
-async def overview(db: AsyncSession = Depends(get_db), admin=RequireSuperAdmin):
-    return {"success": True, "data": await usage.overview(db, await _latest_version(db))}
+async def overview(
+    channel: Channel = Query(None),
+    db: AsyncSession = Depends(get_db),
+    admin=RequireSuperAdmin,
+):
+    return {"success": True, "data": await usage.overview(db, await _latest_version(db), channel=channel)}
 
 
 @admin_router.get("/installs", response_model=dict, summary="Every install of the app")
 async def installs(
     search: Optional[str] = Query(None, max_length=100),
+    channel: Channel = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     admin=RequireSuperAdmin,
 ):
     data = await usage.list_installs(
-        db, latest_version=await _latest_version(db), search=search, page=page, limit=limit
+        db, latest_version=await _latest_version(db), search=search, channel=channel, page=page, limit=limit
     )
     return {"success": True, "data": data}
 
