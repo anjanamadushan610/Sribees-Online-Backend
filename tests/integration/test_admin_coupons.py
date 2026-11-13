@@ -164,6 +164,139 @@ async def test_branch_marketing_cannot_touch_network_or_rival_coupons(api, world
         assert r.status_code == 404, "another branch's coupon does not exist to them"
 
 
+async def _person(db, *, phone=None, email=None, nic=None, provider=None, deleted=False):
+    """A customer with a name made of words no other test uses."""
+    from app.models.user import User
+
+    word = "Zq" + uuid.uuid4().hex[:6]
+    u = User(
+        user_id=uuid.uuid4(),
+        full_name=f"{word} Perera",
+        phone=phone,
+        email=email,
+        nic=nic,
+        auth_provider=provider,
+        provider_uid=f"{provider}:{uuid.uuid4().hex}" if provider else None,
+        is_verified=bool(email),
+        is_phone_verified=bool(phone),
+        is_active=True,
+        is_blocked=False,
+        deleted_at=datetime.utcnow() if deleted else None,
+    )
+    db.add(u)
+    await db.commit()
+    return u, word
+
+
+async def _suggest(api, admin, q):
+    r = await api.get(f"{URL}/customer-search", params={"q": q}, headers=admin.headers)
+    assert r.status_code == 200, r.text
+    return r.json()["data"]["customers"]
+
+
+async def test_whitelist_search_suggests_from_the_first_letters(api, world, db, make_admin):
+    boss = await make_admin("super_admin", api=api)
+    phone = _mobile()
+    nic = f"{uuid.uuid4().int % 10**9:09d}V"
+    email = f"zq.{uuid.uuid4().hex[:8]}@gmail.test"
+    u, word = await _person(db, phone=phone, email=email, nic=nic)
+
+    ids = lambda rows: {c["user_id"] for c in rows}  # noqa: E731
+    me = str(u.user_id)
+    assert me in ids(await _suggest(api, boss, word[:4])), "start of the name"
+    assert me in ids(await _suggest(api, boss, word.lower())), "any case"
+    assert me in ids(await _suggest(api, boss, "0" + phone[3:7])), "07x... as typed"
+    assert me in ids(await _suggest(api, boss, phone[3:])), "without the 0"
+    assert me in ids(await _suggest(api, boss, phone[:8])), "+94 form"
+    assert me in ids(await _suggest(api, boss, phone[-4:])), "last digits"
+    assert me in ids(await _suggest(api, boss, email[:9])), "start of the email"
+    assert me in ids(await _suggest(api, boss, nic[:9])), "NIC"
+    assert me in ids(await _suggest(api, boss, nic.lower())), "NIC, any case"
+
+    row = next(c for c in await _suggest(api, boss, word) if c["user_id"] == me)
+    assert row["phone"] == phone and row["email"] == email
+    assert row["customer_code"] and row["customer_code"].startswith("SB-")
+    assert "nic" not in row, "the NIC is searched, never sent back"
+    assert me in ids(await _suggest(api, boss, row["customer_code"])), "SB number"
+    assert me in ids(await _suggest(api, boss, row["customer_code"][3:])), "SB digits alone"
+
+    # A later word of the name counts too.
+    two_word, w2 = await _person(db, phone=_mobile())
+    two_word.full_name = f"Kasun {w2}"
+    await db.commit()
+    assert str(two_word.user_id) in ids(await _suggest(api, boss, w2[:5]))
+
+    # A closed account never shows.
+    gone, gone_word = await _person(db, phone=_mobile(), deleted=True)
+    assert not await _suggest(api, boss, gone_word)
+    r = await api.get(f"{URL}/customer-search", params={"q": "%"}, headers=boss.headers)
+    assert r.status_code == 200, "LIKE wildcards are matched literally, not as 'everyone'"
+    assert not r.json()["data"]["customers"]
+
+
+async def test_a_branch_marketing_manager_can_find_any_customer(api, world, db, make_admin):
+    """New customers have no orders yet; a coupon for them is the point."""
+    marketing = await make_admin("marketing_manager", api=api)
+    u, word = await _person(db, phone=_mobile())
+    assert str(u.user_id) in {c["user_id"] for c in await _suggest(api, marketing, word)}
+
+
+async def test_whitelist_search_is_for_coupon_staff_only(api, world, make_admin):
+    support = await make_admin("customer_support", api=api)
+    r = await api.get(f"{URL}/customer-search", params={"q": "a"}, headers=support.headers)
+    assert r.status_code == 403
+    r = await api.get(f"{URL}/customer-search", params={"q": "a"})
+    assert r.status_code in (401, 403)
+
+
+async def test_a_google_customer_without_a_number_can_be_listed(api, world, db, make_admin):
+    boss = await make_admin("super_admin", api=api)
+    google, word = await _person(db, email=f"zq.{uuid.uuid4().hex[:8]}@gmail.test", provider="google")
+    phoned, _ = await _person(db, phone=_mobile())
+    found = await _suggest(api, boss, word)
+    assert [c["user_id"] for c in found] == [str(google.user_id)]
+    assert found[0]["phone"] is None and found[0]["auth_provider"] == "google"
+
+    r = await _create(api, boss, target_customer_type="specific", whitelisted_customers=[
+        {"user_id": str(google.user_id), "name": "G"},
+        {"user_id": str(google.user_id)},                       # picked twice
+        {"user_id": str(phoned.user_id)},                       # account with a number
+        {"phone": "0" + phoned.phone[3:], "name": "typed"},     # same person, typed
+    ])
+    assert r.status_code == 201, r.text
+    listed = r.json()["data"]["whitelisted_customers"]
+    assert len(listed) == 2, listed
+    by_user = {c["user_id"]: c for c in listed}
+    g = by_user[str(google.user_id)]
+    assert g["phone"] is None and g["email"].endswith("@gmail.test") and g["customer_code"]
+    assert by_user[str(phoned.user_id)]["phone"] == phoned.phone, "the account's own number is listed"
+
+    # Saving again (an edit that resends the list) keeps both.
+    cid = r.json()["data"]["coupon_id"]
+    r = await api.put(f"{URL}/{cid}", json={"whitelisted_customers": listed}, headers=boss.headers)
+    assert r.status_code == 200 and len(r.json()["data"]["whitelisted_customers"]) == 2, r.text
+
+    # A CSV row with only an email finds the account (any case); an unknown
+    # email is named back.
+    r = await _create(api, boss, target_customer_type="specific", whitelisted_customers=[
+        {"name": "From CSV", "email": google.email.upper()},
+    ])
+    assert r.status_code == 201, r.text
+    assert r.json()["data"]["whitelisted_customers"][0]["user_id"] == str(google.user_id)
+    r = await _create(api, boss, target_customer_type="specific", whitelisted_customers=[
+        {"name": "Ghost", "email": "nobody.zq@nowhere.test"},
+    ])
+    assert r.status_code == 400 and "Ghost" in r.text and "no customer has that email" in r.text, r.text
+
+    # Neither number nor account, or an account that is gone: named, nothing saved.
+    gone, _ = await _person(db, phone=_mobile(), deleted=True)
+    r = await _create(api, boss, target_customer_type="specific", whitelisted_customers=[
+        {"name": "Nobody"}, {"user_id": str(gone.user_id), "name": "Gone Person"},
+    ])
+    assert r.status_code == 400
+    assert "Nobody (no number)" in r.text and "Gone Person" in r.text, r.text
+
+
 async def test_deleting_coupons(api, world, make_admin):
     boss = await make_admin("super_admin", api=api)
     cid = (await _create(api, boss)).json()["data"]["coupon_id"]
