@@ -493,7 +493,7 @@ class Settings(BaseSettings):
     cors_origin_regex: str = Field(
         default=(
             r"https://.*\.vercel\.app|https://([a-z0-9-]+\.)*sribees\.com"
-            r"|https://(www\.)?sribeesonline\.com"
+            r"|https://(www\.|referral\.)?sribeesonline\.com"
         ),
         description="Pattern an allowed CORS origin must match in full",
     )
