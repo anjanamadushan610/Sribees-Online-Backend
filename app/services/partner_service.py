@@ -213,8 +213,8 @@ class PartnerService:
             parent = parent_res.scalar_one_or_none()
             if parent is None:
                 raise ValueError("Recruiting partner not found")
-            if parent.role != "master_partner" or parent.parent_partner_id is not None:
-                raise ValueError("Sub-partners cannot recruit further partners (2-tier limit)")
+            if parent.role != "master_partner":
+                raise ValueError("Only Master Partners can recruit Partners")
 
         referral_code = await PartnerService._generate_unique_code(db)
 
@@ -319,6 +319,44 @@ class PartnerService:
             }
             for p in partners
         ]
+
+    @staticmethod
+    async def promote_to_master(db: AsyncSession, partner_id: UUID, admin_id: UUID, note: str) -> Partner:
+        from fastapi import HTTPException
+
+        from app.services.audit_service import AuditLog
+
+        partner = (await db.execute(
+            select(Partner).where(Partner.partner_id == partner_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if partner is None:
+            raise HTTPException(404, "Partner not found")
+        if not partner.is_active:
+            raise HTTPException(409, "Activate this Partner before promotion.")
+        if partner.user_id:
+            owner = await db.get(User, partner.user_id)
+            if owner is None or not owner.is_active or owner.is_blocked or owner.deleted_at is not None:
+                raise HTTPException(409, "The linked customer account must be active.")
+        if partner.role == "master_partner":
+            return partner
+        if partner.role != "partner":
+            raise HTTPException(409, "This account is not eligible for Partner promotion.")
+
+        partner.role = "master_partner"
+        # Keep the existing parent. Only this Partner's direct customer orders
+        # pay that parent; commissions earned from team Partners never cascade.
+        db.add(AuditLog(
+            action="partner.promote_to_master", actor_type="admin", actor_id=admin_id,
+            target_type="partner", target_id=partner.partner_id,
+            description=note.strip(),
+            event_metadata={
+                "previous_role": "partner", "new_role": "master_partner",
+                "parent_partner_id": str(partner.parent_partner_id) if partner.parent_partner_id else None,
+            },
+        ))
+        await db.flush()
+        return partner
 
     @staticmethod
     async def set_fields(db: AsyncSession, partner: Partner, **fields) -> Partner:

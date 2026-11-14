@@ -526,3 +526,47 @@ async def test_export_real_partner_lifecycle_for_finance_consumer(money_db, monk
     # Only this synthetic fixture: permit cross-service verification when artifact quota is full.
     with capsys.disabled():
         print('ONLINE_PARTNER_CONTRACT=' + json.dumps(bundle, separators=(',', ':')))
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_promoted_master_keeps_customer_wallet_and_can_receive_a_new_partner(money_db):
+    import secrets
+
+    from sqlalchemy import func
+
+    from app.services.audit_service import AuditLog
+    from app.services.partner_service import PartnerService
+
+    PartnerWalletService = Service
+    db, user = money_db
+    parent = Partner(email=f'{uuid4().hex}@example.test', full_name='Master A', role='master_partner', password_hash=secrets.token_urlsafe(32), is_active=True)
+    db.add(parent)
+    await db.flush()
+    promoted = Partner(user_id=user.user_id, email=user.email, full_name=user.full_name, role='partner', parent_partner_id=parent.partner_id, referral_code=user.referral_code, password_hash=secrets.token_urlsafe(32), is_active=True)
+    db.add(promoted)
+    await db.flush()
+    wallet = PartnerWallet(partner_id=promoted.partner_id, balance=Decimal('123.45'))
+    customer = User(email=f'{uuid4().hex}@example.test', full_name='Existing customer', referred_by_partner_id=promoted.partner_id)
+    db.add_all([wallet, customer])
+    await db.flush()
+    original_hash = promoted.password_hash
+    original_code = promoted.referral_code
+    admin_id = uuid4()
+    await PartnerService.promote_to_master(db, promoted.partner_id, admin_id, 'Super Admin approved promotion')
+    await PartnerService.promote_to_master(db, promoted.partner_id, admin_id, 'Retry approved promotion')
+    await db.refresh(customer)
+    await db.refresh(wallet)
+    assert promoted.role == 'master_partner' and promoted.parent_partner_id == parent.partner_id
+    assert promoted.referral_code == original_code and promoted.password_hash == original_hash
+    assert customer.referred_by_partner_id == promoted.partner_id and wallet.balance == Decimal('123.45')
+    count = await db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.target_id == promoted.partner_id, AuditLog.action == 'partner.promote_to_master'))
+    assert count == 1
+
+    # A promoted Master may have an upline and still be assigned new Partners.
+    new_user = User(email=f'{uuid4().hex}@example.test', full_name='New Partner C', referral_code=f'T{uuid4().hex[:8]}', is_active=True)
+    db.add(new_user)
+    await db.flush()
+    application = await PartnerWalletService.apply(db, new_user.user_id, secrets.token_urlsafe(24))
+    child = await PartnerWalletService.decide_application(db, application.application_id, admin_id, True, promoted.partner_id, 'Approved test Partner')
+    assert child.role == 'partner' and child.parent_partner_id == promoted.partner_id

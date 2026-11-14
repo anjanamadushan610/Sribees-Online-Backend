@@ -136,7 +136,7 @@ class PartnerWalletService:
                 fail('Partner email is already in use; resolve ownership first.', 409)
             if master_id:
                 master = await db.get(Partner, master_id)
-                if master is None or not master.is_active or master.role != 'master_partner' or master.parent_partner_id is not None or master.user_id == user.user_id:
+                if master is None or not master.is_active or master.role != 'master_partner' or master.user_id == user.user_id:
                     fail('Choose an active Master Partner.')
             code = user.referral_code
             if not code:
