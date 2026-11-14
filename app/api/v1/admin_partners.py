@@ -19,11 +19,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
-from app.core.dependencies import require_roles
+from app.core.dependencies import get_current_admin, require_roles
 from app.models.partner import Partner
 from app.schemas.partner import (
     PartnerCreateRequest,
     PartnerMarkPaidRequest,
+    PartnerPromotionRequest,
     PartnerUpdateRequest,
 )
 from app.services.partner_service import PartnerEmailTakenError, PartnerService
@@ -119,6 +120,19 @@ async def update_partner(
         "data": _format_partner(partner),
         "message": "Partner updated successfully",
     }
+
+
+@router.post("/{partner_id}/promote", response_model=dict)
+async def promote_partner(
+    partner_id: UUID,
+    data: PartnerPromotionRequest,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    partner = await PartnerService.promote_to_master(db, partner_id, admin.admin_id, data.note)
+    await db.commit()
+    await db.refresh(partner)
+    return {"success": True, "data": _format_partner(partner), "message": "Partner promoted to Master Partner."}
 
 
 @router.get("/{partner_id}/commissions", response_model=dict)

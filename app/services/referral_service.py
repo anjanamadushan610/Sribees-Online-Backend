@@ -353,8 +353,9 @@ class ReferralService:
         * **Referred by a professional partner** — level 1 to that partner and,
           if the partner was itself recruited, level 2 to their upline at
           ``policy.level2_share`` of each line's rate. Only two levels: the
-          depth is fixed here rather than walked, because an unbounded chain is
-          a pyramid, not a referral programme.
+          attribution stops at the direct referrer's immediate parent. A
+          promoted Master Partner retains that parent for their own customer
+          orders, but their team earnings do not generate another commission.
 
         No-ops when the buyer has no referrer or nothing earns. Safe to run
         twice; the partial unique indexes are the authority.

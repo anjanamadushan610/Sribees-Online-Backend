@@ -4,7 +4,7 @@ SRIBEESonline - Partner Schemas
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class PartnerLoginRequest(BaseModel):
@@ -65,6 +65,20 @@ class PartnerUpdateRequest(BaseModel):
     phone: Optional[str] = Field(None, max_length=20)
     password: Optional[str] = Field(None, min_length=8, max_length=128)
     is_active: Optional[bool] = None
+
+
+class PartnerPromotionRequest(BaseModel):
+    """Super Admin's reason for upgrading an existing Partner."""
+
+    note: str = Field(..., min_length=5, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def trim_note(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 5:
+            raise ValueError("Enter a reason of at least 5 characters.")
+        return value
 
 
 class PartnerMarkPaidRequest(BaseModel):
