@@ -335,3 +335,42 @@ async def test_the_inventory_manager_maintains_the_catalogue(api, world, make_ad
     pid = _id(await _product(api, inv, cat), "product_id", "id")
     r = await api.put(f"/api/v1/admin/products/{pid}", json={"price": "300"}, headers=inv.headers)
     assert r.status_code == 200, r.text
+
+
+async def test_category_display_order_preserves_hierarchy_and_reaches_storefront(api, world, make_admin):
+    admin = await make_admin("super_admin", api=api)
+    parent = await _category(api, admin)
+    other = await _category(api, admin)
+    coffee = await _category(api, admin, parent=parent["category_id"], name="Coffee order test")
+    tea = await _category(api, admin, parent=parent["category_id"], name="Tea order test")
+    foreign_child = await _category(api, admin, parent=other["category_id"])
+    initial = [coffee["category_id"], tea["category_id"]]
+    ordered = list(reversed(initial))
+    payload = {"parent_category_id": parent["category_id"], "category_ids": ordered, "expected_category_ids": initial}
+    r = await api.put("/api/v1/admin/categories/reorder", json=payload, headers=admin.headers)
+    assert r.status_code == 200, r.text
+    # A retried save succeeds, and both existing public response shapes preserve it.
+    assert (await api.put("/api/v1/admin/categories/reorder", json=payload, headers=admin.headers)).status_code == 200
+    r = await api.get("/api/v1/categories")
+    children = [c for c in r.json()["data"]["categories"] if c["parent_category_id"] == parent["category_id"]]
+    assert [c["category_id"] for c in children] == ordered
+    tree = (await api.get("/api/v1/categories?hierarchical=true")).json()["data"]["categories"]
+    assert [c["category_id"] for c in next(c for c in tree if c["category_id"] == parent["category_id"])["children"]] == ordered
+    # Stale saves cannot overwrite another administrator's changes.
+    stale = {**payload, "category_ids": initial, "expected_category_ids": initial}
+    assert (await api.put("/api/v1/admin/categories/reorder", json=stale, headers=admin.headers)).status_code == 409
+    # Moving into a different parent and omitting siblings are rejected atomically.
+    for ids in ([tea["category_id"]], [tea["category_id"], foreign_child["category_id"]]):
+        invalid = {**payload, "category_ids": ids, "expected_category_ids": ids}
+        assert (await api.put("/api/v1/admin/categories/reorder", json=invalid, headers=admin.headers)).status_code == 409
+    inventory = await make_admin("inventory_manager", api=api)
+    assert (await api.put("/api/v1/admin/categories/reorder", json=payload, headers=inventory.headers)).status_code == 403
+    # Main categories use the same persisted ordering, including the home tile API.
+    catalog = (await api.get("/api/v1/admin/categories", headers=admin.headers)).json()["data"]["categories"]
+    roots = [c["category_id"] for c in catalog if c["parent_category_id"] is None]
+    new_roots = [other["category_id"], parent["category_id"]] + [c for c in roots if c not in (other["category_id"], parent["category_id"])]
+    r = await api.put("/api/v1/admin/categories/reorder", json={"category_ids": new_roots, "expected_category_ids": roots}, headers=admin.headers)
+    assert r.status_code == 200, r.text
+    home = (await api.get("/api/v1/categories?top_level_only=true")).json()["data"]["categories"]
+    assert [c["category_id"] for c in home[:2]] == new_roots[:2]
+    assert (await api.put("/api/v1/admin/categories/reorder", json={"category_ids": roots, "expected_category_ids": new_roots}, headers=admin.headers)).status_code == 200

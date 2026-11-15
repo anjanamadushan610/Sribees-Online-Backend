@@ -5,11 +5,27 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ============================================================================
 # Request Schemas
 # ============================================================================
+
+class CategoryReorderRequest(BaseModel):
+    parent_category_id: Optional[UUID] = None
+    category_ids: List[UUID] = Field(..., min_length=1, max_length=1000)
+    expected_category_ids: List[UUID] = Field(..., min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_siblings(self):
+        if len(set(self.category_ids)) != len(self.category_ids):
+            raise ValueError("Category IDs must be unique")
+        if len(set(self.expected_category_ids)) != len(self.expected_category_ids):
+            raise ValueError("Expected category IDs must be unique")
+        if set(self.category_ids) != set(self.expected_category_ids):
+            raise ValueError("Reordering must include the same sibling categories")
+        return self
+
 
 class CategoryCreate(BaseModel):
     """

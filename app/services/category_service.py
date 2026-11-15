@@ -4,18 +4,46 @@ Category Service - Business Logic
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.branch import Branch
 from app.models.category import BranchCategory, Category
 from app.models.product import BranchInventory, Product, ProductExtraCategory
-from app.schemas.category import CategoryCreate, CategoryUpdate
+from app.schemas.category import CategoryCreate, CategoryReorderRequest, CategoryUpdate
 from app.utils.i18n import DEFAULT_LANGUAGE, localized
 
 
 class CategoryService:
     """Service class for category operations."""
+
+    @staticmethod
+    async def reorder(db: AsyncSession, data: CategoryReorderRequest) -> None:
+        # Lock siblings in a stable order so simultaneous saves serialize.
+        siblings = (await db.execute(
+            select(Category)
+            .where(Category.parent_category_id == data.parent_category_id)
+            .order_by(Category.category_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )).scalars().all()
+        # Read the database's own name collation after acquiring the locks.
+        current_ids = list((await db.execute(
+            select(Category.category_id)
+            .where(Category.parent_category_id == data.parent_category_id)
+            .order_by(Category.display_order, Category.name, Category.category_id)
+        )).scalars().all())
+        if set(current_ids) != set(data.category_ids):
+            raise HTTPException(409, "The category group changed. Reload categories and try again.")
+        if current_ids == data.category_ids:
+            return  # A retried successful save is harmless.
+        if current_ids != data.expected_category_ids:
+            raise HTTPException(409, "Another administrator changed this order. Reload categories and try again.")
+        positions = {category_id: position for position, category_id in enumerate(data.category_ids)}
+        for category in siblings:
+            category.display_order = positions[category.category_id]
+        await db.flush()
 
     @staticmethod
     async def _product_counts(
@@ -111,7 +139,7 @@ class CategoryService:
                         BranchCategory.branch_id == branch_id,
                     ),
                 )
-                .order_by(Category.name)
+                .order_by(Category.display_order, Category.name, Category.category_id)
             )
             return [
                 {
@@ -140,7 +168,7 @@ class CategoryService:
         branch_id: Optional[UUID] = None,
     ) -> List[Category]:
         """Get all categories without product counts (simpler query)."""
-        query = select(Category).order_by(Category.name)
+        query = select(Category).order_by(Category.display_order, Category.name, Category.category_id)
 
         if not include_inactive:
             query = query.where(Category.is_active == True)
@@ -334,7 +362,7 @@ class CategoryService:
                     BranchCategory.branch_id == branch_id,
                 ),
             )
-            .order_by(Category.name)
+            .order_by(Category.display_order, Category.name, Category.category_id)
         )
         # A missing row (category created before this branch existed, in the
         # narrow window before seeding runs) reads as hidden, not active.
