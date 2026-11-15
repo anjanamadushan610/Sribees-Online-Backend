@@ -41,12 +41,13 @@ from app.core.dependencies import (
     get_current_admin,
     inject_branch_filter,
     require_permission,
+    require_roles,
 )
 from app.core.media import media_path, media_url
 from app.models.admin import Admin, AdminRole
 from app.models.product import BranchInventory
 from app.models.search_miss import SearchMissStatus
-from app.schemas.category import CategoryCreate, CategoryUpdate
+from app.schemas.category import CategoryCreate, CategoryReorderRequest, CategoryUpdate
 from app.schemas.product import (
     ProductCreate,
     ProductImageCreate,
@@ -283,6 +284,18 @@ async def list_categories(
         "success": True,
         "data": {"categories": [_format_category(c) for c in categories]},
     }
+
+
+@router.put("/categories/reorder", response_model=dict,
+            dependencies=[Depends(require_roles("super_admin"))])
+async def reorder_categories(
+    data: CategoryReorderRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Save the storefront order of one complete sibling group."""
+    await CategoryService.reorder(db, data)
+    await db.commit()
+    return {"success": True, "message": "Category order saved."}
 
 
 @router.post(
