@@ -241,6 +241,7 @@ jobs:
           # Sribees Finance's event feed: switched on, and the SHA-256 of the token the
           # production finance worker presents.
           FINANCE_OUTBOX_ENABLED: ${{ secrets.PROD_FINANCE_OUTBOX_ENABLED }}
+          RIDER_WALLET_CHANGE_ENABLED: ${{ secrets.PROD_RIDER_WALLET_CHANGE_ENABLED }}
           LINKED_PARTNER_WALLET_ENABLED: ${{ secrets.PROD_LINKED_PARTNER_WALLET_ENABLED }}
           PARTNER_WALLET_FINANCE_READY: ${{ secrets.PROD_PARTNER_WALLET_FINANCE_READY }}
           FINANCE_SERVICE_TOKEN_SHA256: ${{ secrets.PROD_FINANCE_SERVICE_TOKEN_SHA256 }}
@@ -254,7 +255,7 @@ jobs:
             echo "::error::secret PROD_ENV_FILE is empty"
             exit 1
           fi
-          for key in MARX_IPG_API_KEY MARX_IPG_BASE_URL MARX_IPG_RETURN_URL MARX_GATEWAY_METHODS_ENABLED OTP_TEST_PHONES SMOKE_ADMIN_EMAIL SMOKE_ADMIN_PASSWORD SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID FIREBASE_CREDENTIALS_JSON WHATSAPP_ENABLED WHATSAPP_VERIFY_TOKEN WHATSAPP_APP_SECRET WHATSAPP_ACCESS_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_GRAPH_VERSION FINANCE_OUTBOX_ENABLED LINKED_PARTNER_WALLET_ENABLED PARTNER_WALLET_FINANCE_READY FINANCE_SERVICE_TOKEN_SHA256 FINANCE_STOCK_AUTHORITY SUPPLY_SERVICE_TOKEN_SHA256; do
+          for key in MARX_IPG_API_KEY MARX_IPG_BASE_URL MARX_IPG_RETURN_URL MARX_GATEWAY_METHODS_ENABLED OTP_TEST_PHONES SMOKE_ADMIN_EMAIL SMOKE_ADMIN_PASSWORD SMS_PROVIDER TEXTLK_API_TOKEN TEXTLK_SENDER_ID GOOGLE_CLIENT_IDS APPLE_SERVICES_ID FIREBASE_CREDENTIALS_JSON WHATSAPP_ENABLED WHATSAPP_VERIFY_TOKEN WHATSAPP_APP_SECRET WHATSAPP_ACCESS_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_GRAPH_VERSION FINANCE_OUTBOX_ENABLED RIDER_WALLET_CHANGE_ENABLED LINKED_PARTNER_WALLET_ENABLED PARTNER_WALLET_FINANCE_READY FINANCE_SERVICE_TOKEN_SHA256 FINANCE_STOCK_AUTHORITY SUPPLY_SERVICE_TOKEN_SHA256; do
             value=$(printenv "$key" || true)
             if [ "$key" = "FIREBASE_CREDENTIALS_JSON" ] && [ -n "$value" ]; then
               # The pasted JSON spans lines; the .env wants one.
@@ -281,6 +282,16 @@ jobs:
           IMAGE: ${{ steps.image.outputs.image }}
         run: |
           ssh target "cd '$DEPLOY_PATH' && APP_IMAGE='$IMAGE' ./deploy-prod.sh deploy"
+
+      - name: Verify enabled wallet-change integration
+        env:
+          VERIFY_WALLET_CHANGE: ${{ secrets.PROD_RIDER_WALLET_CHANGE_ENABLED }}
+        run: |
+          if [ "$VERIFY_WALLET_CHANGE" != "true" ]; then
+            echo "wallet-change activation is disabled"
+            exit 0
+          fi
+          ssh target 'cid=$(docker ps -q --filter label=com.docker.compose.project=sribees-online-prod --filter label=com.docker.compose.service=app); test -n "$cid" && docker exec -i "$cid" python -' < scripts/verify_wallet_change_rollout.py
 
       - name: Check through the public edge
         if: ${{ !inputs.skip_public_check }}
