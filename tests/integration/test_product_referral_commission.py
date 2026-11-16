@@ -248,10 +248,11 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
         )).scalars().all()
         return {r.level: r for r in rows}
 
-    # The product pools total 108. Each beneficiary receives 54 at a 50% share.
+    # The product pools total 108. At a 50% Master-to-Partner ratio,
+    # Partner receives 72 and Master Partner receives 36.
     rows = await ledger()
     assert set(rows) == {1, 2}
-    assert rows[1].amount == Decimal("54.00") and rows[2].amount == Decimal("54.00")
+    assert rows[1].amount == Decimal("72.00") and rows[2].amount == Decimal("36.00")
     assert rows[1].order_subtotal == Decimal("1980.00")
     assert sorted(line.amount for line in rows[1].lines) == [Decimal("9.00"), Decimal("45.00")]
     assert {line.product_id for line in rows[1].lines} == {rice, tea}
@@ -271,9 +272,9 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
 
     # A rate change later never touches this order.
     await api.put(f"{RC}/products/{rice}", json={"percentage": 1}, headers=boss.headers)
-    assert (await ledger())[1].amount == Decimal("54.00")
+    assert (await ledger())[1].amount == Decimal("72.00")
 
-    # One rice bag returns. Remaining pool is 63, split 31.50 to each beneficiary.
+    # One rice bag returns. Remaining pool is 63, split 42 to Partner and 21 to Master.
     r = await api.post(
         f"/api/v1/admin/orders/{order['order_id']}/status/override",
         json={"status": "delivered", "reason": "Delivered and cash collected at the door."},
@@ -304,7 +305,7 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
     assert float(wallet["balance"]) == 900.0
 
     rows = await ledger()
-    assert rows[1].amount == Decimal("31.50") and rows[2].amount == Decimal("31.50")
+    assert rows[1].amount == Decimal("42.00") and rows[2].amount == Decimal("21.00")
     rice_line = next(line for line in rows[1].lines if line.product_id == rice)
     assert rice_line.returned_quantity == 1
     assert rows[1].status == "pending"

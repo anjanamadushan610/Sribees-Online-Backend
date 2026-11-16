@@ -85,8 +85,9 @@ class Settings(BaseSettings):
         ge=0.0,
         le=100.0,
         description=(
-            "UNUSED since migration 081: the upline now earns "
-            "app_settings.referral_level2_share of each product's rate. Kept "
+            "UNUSED since migration 081: the Master Partner earns "
+            "app_settings.referral_level2_share of the direct Partner's "
+            "commission. Kept "
             "so an environment that still sets it does not fail to boot."
         ),
     )

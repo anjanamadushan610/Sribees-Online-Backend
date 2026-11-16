@@ -231,6 +231,7 @@ class ReferralCommissionLine(Base):
     basis = Column(Numeric(10, 2), nullable=False)
     rate_percentage = Column(Numeric(6, 3), nullable=False)
     pool_rate_percentage = Column(Numeric(5, 2), nullable=True)
+    # Actual Master fraction of the pool, snapshotted as ratio/(1+ratio) at sale.
     pool_master_share = Column(Numeric(), nullable=True)
     amount = Column(Numeric(10, 2), nullable=False)
     returned_quantity = Column(Integer, nullable=False, default=0, server_default="0")

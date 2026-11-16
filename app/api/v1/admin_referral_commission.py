@@ -44,7 +44,10 @@ class RateBody(BaseModel):
 
 class ProgrammeBody(BaseModel):
     branch_max_percent: Optional[float] = Field(None, ge=0, le=100)
-    level2_share: Optional[float] = Field(None, ge=0, le=1)
+    level2_share: Optional[float] = Field(
+        None, ge=0, le=1,
+        description="Master Partner share as a fraction of the direct Partner commission.",
+    )
 
 
 def _fail(exc: RateChangeError) -> HTTPException:
@@ -70,7 +73,7 @@ async def get_programme_settings(
     db: AsyncSession = Depends(get_db),
     admin=Depends(_any_editor),
 ):
-    """The cap a Branch Manager works under, and the upline's share."""
+    """The Branch Manager cap and Master share of direct Partner commission."""
     return {"success": True, "data": await _settings_payload(db)}
 
 

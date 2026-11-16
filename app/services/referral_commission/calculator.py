@@ -148,14 +148,15 @@ def kept_amount(basis: Decimal, rate: Decimal, quantity: int, returned_quantity:
 def build_shared_lines(
     lines: Iterable[SaleLine], master_share: Decimal,
 ) -> tuple[list[CommissionLine], list[CommissionLine]]:
-    """Allocate each rounded product pool between its direct referrer and upline."""
+    """Split the rounded product pool so the Master gets a % of Partner earnings."""
     from app.services.referral_commission.policy import LevelPolicy
 
     master_share = Decimal(str(master_share))
     policy = LevelPolicy(master_share)
+    pool_master_share = master_share / (Decimal("1") + master_share)
     direct, master = [], []
     for pool in build_lines(lines, lambda rate: rate):
-        master_amount = money(pool.amount * master_share)
+        master_amount = money(pool.amount * pool_master_share)
         master_rate = policy.rate(2, pool.rate)
         direct_amount = pool.amount - master_amount
         for destination, rate, amount in (
@@ -165,7 +166,7 @@ def build_shared_lines(
             if amount > 0:
                 destination.append(replace(
                     pool, rate=rate, amount=amount,
-                    pool_rate=pool.rate, master_share=master_share,
+                    pool_rate=pool.rate, master_share=pool_master_share,
                 ))
     return direct, master
 
