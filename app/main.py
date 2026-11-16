@@ -138,6 +138,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.offer_cap_service import run_offer_cap_worker
     from app.services.order_reward_worker import run_order_reward_worker
     from app.services.referral_vesting_worker import run_referral_vesting_worker
+    from app.services.courier_wallet_change import run_wallet_change_worker
     from app.services.return_settlement_worker import run_return_settlement_worker
     from app.services.semantic_search import run_embedding_worker
     from app.services.staff_order_alert_service import run_staff_alert_ring_worker
@@ -155,6 +156,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         asyncio.create_task(run_referral_vesting_worker()),
         asyncio.create_task(run_order_reward_worker()),
         asyncio.create_task(run_return_settlement_worker()),
+        asyncio.create_task(run_wallet_change_worker()),
         asyncio.create_task(run_campaign_worker()),
         asyncio.create_task(run_coupon_reminder_worker()),
         asyncio.create_task(run_coupon_announce_worker()),

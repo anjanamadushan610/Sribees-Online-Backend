@@ -51,6 +51,7 @@ class WalletReason:
     """Why a wallet moved. Finance maps each to ledger accounts; a new reason
     needs a posting rule there before it is used here."""
 
+    RIDER_CASH_CHANGE = "rider_cash_change"
     WALLET_PAYMENT = "wallet_payment"                # paid part of an order
     CANCEL_REFUND = "cancel_refund"                  # order cancelled, money back
     CANCEL_DELIVERY_CHARGE = "cancel_delivery_charge"  # fee kept on a booked cancel
@@ -64,7 +65,7 @@ class WalletReason:
     COMMISSION_REVERSAL = "commission_reversal"      # paid commission taken back
 
     ALL = frozenset({
-        WALLET_PAYMENT, CANCEL_REFUND, CANCEL_DELIVERY_CHARGE, RETURN_REFUND, RETURN_FEE,
+        RIDER_CASH_CHANGE, WALLET_PAYMENT, CANCEL_REFUND, CANCEL_DELIVERY_CHARGE, RETURN_REFUND, RETURN_FEE,
         PAYMENT_REFUND, CASHBACK_CREDIT, CASHBACK_REVERSAL, COMMISSION_CREDIT,
         COMMISSION_REVERSAL, PARTNER_WALLET_TRANSFER,
     })
@@ -133,7 +134,7 @@ async def wallet_movement(db, transaction, reason: Optional[str]) -> None:
             payload.update(partner_id=str(partner_id), partner_transfer_id=transaction.notes)
         db.add(_row("wallet.movement", transaction.order_id, payload))
     except Exception as exc:  # noqa: BLE001 -- ordinary historical writes remain best-effort
-        if reason == WalletReason.PARTNER_WALLET_TRANSFER:
+        if reason in {WalletReason.PARTNER_WALLET_TRANSFER, WalletReason.RIDER_CASH_CHANGE}:
             raise
         logger.error(f"finance_outbox: wallet movement not recorded: {exc}")
 
