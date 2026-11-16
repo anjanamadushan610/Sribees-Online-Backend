@@ -136,7 +136,10 @@ async def process_targets(targets):
     for target in targets:
         try:
             async with courier_credentials.using(target):
-                await CourierService._request("POST", "/wallet-change/enable")
+                # Stop offering new conversions when disabled while finishing
+                # cash-change requests already accepted by riders.
+                if settings.rider_wallet_change_enabled:
+                    await CourierService._request("POST", "/wallet-change/enable")
                 pending = await CourierService._request("GET", "/wallet-change/pending")
                 for payload in pending:
                     try:
@@ -167,7 +170,6 @@ async def process_targets(targets):
 async def run_wallet_change_worker():
     if (
         settings.app_env.strip().lower() == "testing"
-        or not settings.rider_wallet_change_enabled
         or not settings.finance_outbox_enabled
     ):
         return
