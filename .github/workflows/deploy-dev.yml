@@ -33,7 +33,7 @@ jobs:
         run: |
           ssh target 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
-          mapfile -t express < <(docker ps -q --filter label=com.docker.compose.project=sribees --filter label=com.docker.compose.service=api)
+          mapfile -t express < <(docker ps -q --filter label=com.docker.compose.project=sribees --filter label=com.docker.compose.service=app-1)
           test "${#express[@]}" = 1
           docker exec -i "${express[0]}" python - <<'PY'
           import asyncio
