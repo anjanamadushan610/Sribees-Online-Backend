@@ -68,7 +68,8 @@ async def credit_request(db, target, payload):
         or expected.api_key != target.api_key
     ):
         raise ValueError("Courier account does not own this order")
-    if expected.environment != request.environment:
+    expected_environment = "sandbox" if expected.environment == courier_credentials.TEST else "live"
+    if expected_environment != request.environment:
         raise ValueError("Courier environment does not match")
     source = source_reference(target, request)
     existing = await db.get(CourierWalletCredit, source)

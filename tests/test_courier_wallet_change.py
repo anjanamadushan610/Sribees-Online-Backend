@@ -49,13 +49,16 @@ def test_source_is_stable_for_key_rotation_and_scopes_accounts():
 
 @requires_db
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("target_env", "request_env"), [("live", "live"), ("test", "sandbox")])
 async def test_credit_and_retry_preserve_wallet_ledger_and_ownership(
     money_db,  # noqa: F811 - imported shared pytest fixture
     monkeypatch,
+    target_env,
+    request_env,
 ):
     db, user = money_db
     target = CourierTarget(
-        "https://courier.example/api/v1/ecommerce", "test-key", "live"
+        "https://courier.example/api/v1/ecommerce", "test-key", target_env
     )
     monkeypatch.setattr(settings, "finance_outbox_enabled", True)
     monkeypatch.setattr(
@@ -74,7 +77,7 @@ async def test_credit_and_retry_preserve_wallet_ledger_and_ownership(
     db.add(order)
     await db.flush()
     data = pending(
-        shipment_id=order.courier_shipment_id, merchant_order_ref=order.order_number
+        shipment_id=order.courier_shipment_id, merchant_order_ref=order.order_number, environment=request_env
     )
     tx = await change.credit_request(db, target, data)
     assert await change.credit_request(db, target, data) == tx
@@ -106,7 +109,7 @@ async def test_credit_and_retry_preserve_wallet_ledger_and_ownership(
     ]:
         with pytest.raises(ValueError):
             await change.credit_request(db, target, wrong)
-    other = CourierTarget(target.base_url, "other-account", "live")
+    other = CourierTarget(target.base_url, "other-account", target_env)
     with pytest.raises(ValueError, match="does not own"):
         await change.credit_request(db, other, data)
     assert (
