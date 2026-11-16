@@ -1,0 +1,82 @@
+name: Apply approved production referral share
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure pinned production SSH access
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_deploy ~/.ssh/known_hosts
+          {
+            echo 'Host target'
+            echo "  HostName $SSH_HOST"
+            echo "  User $SSH_USER"
+            echo "  Port $SSH_PORT"
+            echo '  IdentityFile ~/.ssh/id_deploy'
+            echo '  IdentitiesOnly yes'
+            echo '  StrictHostKeyChecking yes'
+            echo '  UserKnownHostsFile ~/.ssh/known_hosts'
+            echo '  BatchMode yes'
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Set and verify the approved 25 percent setting
+        run: |
+          ssh target 'set -Eeuo pipefail; mapfile -t apps < <(docker ps -q --filter label=com.docker.compose.project=sribees-online-prod --filter label=com.docker.compose.service=app); test "${#apps[@]}" = 1; docker exec -i "${apps[0]}" python -' <<'PY'
+          import asyncio
+          import json
+          import sys
+          from decimal import Decimal
+
+          from app.config.database import async_session_maker, engine
+          from app.config.settings import settings
+          from app.services.referral_commission.config import (
+              LEVEL2_SHARE_KEY,
+              ReferralProgramConfig,
+          )
+          from app.services.referral_commission.rate_admin import RateAdminService
+
+          async def apply():
+              if settings.app_env.lower() != "production":
+                  raise RuntimeError("Expected production app container")
+              async with async_session_maker() as db:
+                  config = await ReferralProgramConfig.load(db)
+                  previous = config.level2_share
+                  updated = await RateAdminService.update_config(
+                      db, level2_share=Decimal("0.25")
+                  )
+                  verified = await ReferralProgramConfig.load(db)
+                  if updated.level2_share != Decimal("0.25") or verified.level2_share != Decimal("0.25"):
+                      raise RuntimeError("The 25% referral share did not persist")
+                  print(json.dumps({
+                      "environment": "production",
+                      "setting": LEVEL2_SHARE_KEY,
+                      "previous_value": str(previous),
+                      "verified_value": str(verified.level2_share),
+                      "result": "updated",
+                  }))
+              await engine.dispose()
+
+          try:
+              asyncio.run(apply())
+          except Exception as exc:
+              print(json.dumps({"result": "failed", "error_type": type(exc).__name__}))
+              sys.exit(1)
+          PY
