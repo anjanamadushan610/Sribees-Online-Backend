@@ -133,12 +133,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.coupon_announce_worker import run_coupon_announce_worker
     from app.services.coupon_reminder_worker import run_coupon_reminder_worker
     from app.services.courier_coverage_worker import run_postal_city_worker
+    from app.services.courier_wallet_change import run_wallet_change_worker
     from app.services.first_order_nudge_worker import run_first_order_nudge_worker
     from app.services.hybrid.miner import run_learning_worker
     from app.services.offer_cap_service import run_offer_cap_worker
     from app.services.order_reward_worker import run_order_reward_worker
     from app.services.referral_vesting_worker import run_referral_vesting_worker
-    from app.services.courier_wallet_change import run_wallet_change_worker
     from app.services.return_settlement_worker import run_return_settlement_worker
     from app.services.semantic_search import run_embedding_worker
     from app.services.staff_order_alert_service import run_staff_alert_ring_worker

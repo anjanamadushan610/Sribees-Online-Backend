@@ -10,7 +10,7 @@ from hashlib import sha256
 
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from app.config.database import async_session_maker
 from app.config.settings import settings
@@ -127,13 +127,9 @@ async def credit_request(db, target, payload):
 
 
 async def sweep_once():
-    # Transaction-scoped lock works through PgBouncer and releases on crash.
     async with async_session_maker() as db:
-        locked = await db.scalar(text("SELECT pg_try_advisory_xact_lock(7311205902)"))
-        if not locked:
-            return
         targets = await courier_credentials.all_targets(db)
-        await process_targets(targets)
+    await process_targets(targets)
 
 
 async def process_targets(targets):
@@ -172,6 +168,7 @@ async def run_wallet_change_worker():
     if (
         settings.app_env.strip().lower() == "testing"
         or not settings.rider_wallet_change_enabled
+        or not settings.finance_outbox_enabled
     ):
         return
     while True:
