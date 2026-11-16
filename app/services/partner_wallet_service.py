@@ -1,9 +1,9 @@
 """Account upgrade and one-way partner money operations; callers own commit/rollback.
 
 Lock order: user -> commission rows -> partner wallet -> shopping wallet.
-Never infer account ownership from a matching email. Applications originate
-from an authenticated customer or a Super Admin recording customer consent.
-Only a Super Admin can approve them.
+Never infer account ownership from a matching email. Customer upgrades require
+customer consent, either through their own application, a Super Admin-verified
+request, or a Master Partner confirming a direct customer's consent.
 """
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -118,6 +118,75 @@ class PartnerWalletService:
         return partner
 
     @staticmethod
+    async def master_upgrade(db, user_id, master_partner_id, password):
+        """Link one of a Master Partner's own referred customers as a Partner.
+
+        The caller must still send a password-setup invitation to the
+        customer's verified phone.  The Master Partner can only select a
+        customer directly attributed to their own referral code.
+        """
+        from app.services.referral_service import ReferralService
+
+        user = await PartnerWalletService.user_lock(db, user_id)
+        if user.referred_by_partner_id != master_partner_id:
+            fail('This customer is not in your direct customer list.', 403)
+        if not user.email or not user.full_name:
+            fail('The customer must have an email and full name in their account.')
+        if await PartnerWalletService.linked(db, user_id, active=False):
+            fail('This customer is already linked to a Partner account.', 409)
+        collision = (await db.execute(select(Partner.partner_id).where(
+            func.lower(Partner.email) == user.email.lower()))).scalar_one_or_none()
+        if collision:
+            fail('A Partner account already uses this email. Contact support to verify ownership.', 409)
+        await ReferralService.get_or_create_code(db, user, commit=False)
+        partner = await PartnerWalletService._create_linked_partner(
+            db, user, master_partner_id, hash_password(password)
+        )
+        await PartnerWalletService.wallet_lock(db, partner.partner_id)
+        return partner
+
+    @staticmethod
+    async def _create_linked_partner(db, user, master_id, password_hash):
+        """Create the linked portal account and move only unpaid entitlements."""
+        if await PartnerWalletService.linked(db, user.user_id, active=False):
+            fail('Customer is already linked.', 409)
+        collision = (await db.execute(select(Partner.partner_id).where(
+            func.lower(Partner.email) == user.email.lower()))).scalar_one_or_none()
+        if collision:
+            fail('Partner email is already in use; resolve ownership first.', 409)
+        master = await db.get(Partner, master_id)
+        if master is None or not master.is_active or master.role != 'master_partner' or master.user_id == user.user_id:
+            fail('Choose an active Master Partner.')
+        code = user.referral_code
+        if not code:
+            fail('Customer referral code could not be prepared.')
+        occupied = (await db.execute(select(Partner.partner_id).where(
+            Partner.referral_code == code))).scalar_one_or_none()
+        if occupied:
+            fail('Invite code is already assigned to a Partner. Contact support.', 409)
+        partner = Partner(user_id=user.user_id, role='partner', email=user.email.lower(),
+            full_name=user.full_name, phone=user.phone, password_hash=password_hash,
+            parent_partner_id=master_id, referral_code=code, is_active=True)
+        db.add(partner)
+        await db.flush()
+        await db.execute(update(User).where(User.referred_by_user_id == user.user_id).values(
+            referred_by_user_id=None, referred_by_partner_id=partner.partner_id))
+        await db.execute(update(ReferralCommission).where(
+            ReferralCommission.beneficiary_user_id == user.user_id,
+            ReferralCommission.status.in_(['pending', 'claimable'])
+        ).values(beneficiary_user_id=None, beneficiary_partner_id=partner.partner_id))
+        application = (await db.execute(select(PartnerApplication).where(
+            PartnerApplication.user_id == user.user_id).with_for_update())).scalar_one_or_none()
+        if application is not None and application.status == 'pending':
+            application.status = 'approved'
+            application.password_hash = None
+            application.decision_by = None
+            application.decision_note = 'Partner account activated by the customer’s Master Partner with the customer’s consent.'
+            application.decided_at = datetime.now(timezone.utc)
+        await PartnerWalletService.credit_available(db, partner.partner_id)
+        return partner
+
+    @staticmethod
     async def decide_application(db, application_id, admin_id, approve, master_id=None, note=None):
         # Read user id first, then use the same user lock as referral claims.
         initial = await db.get(PartnerApplication, application_id)
@@ -129,36 +198,9 @@ class PartnerWalletService:
             fail('This application has already been decided.', 409)
         partner = None
         if approve:
-            if await PartnerWalletService.linked(db, user.user_id, active=False):
-                fail('Customer is already linked.', 409)
-            collision = (await db.execute(select(Partner.partner_id).where(func.lower(Partner.email) == user.email.lower()))).scalar_one_or_none()
-            if collision:
-                fail('Partner email is already in use; resolve ownership first.', 409)
-            if master_id:
-                master = await db.get(Partner, master_id)
-                if master is None or not master.is_active or master.role != 'master_partner' or master.user_id == user.user_id:
-                    fail('Choose an active Master Partner.')
-            code = user.referral_code
-            if not code:
-                fail('Open Invite Friends before submitting your application.')
-            # A legacy code can be shared by this linked user/partner pair only.
-            occupied = (await db.execute(select(Partner.partner_id).where(Partner.referral_code == code))).scalar_one_or_none()
-            if occupied:
-                fail('Invite code is already assigned to a Partner. Contact support.', 409)
-            partner = Partner(user_id=user.user_id, role='partner', email=user.email.lower(),
-                full_name=user.full_name, phone=user.phone, password_hash=app.password_hash,
-                parent_partner_id=master_id, referral_code=code, is_active=True)
-            db.add(partner)
-            await db.flush()
-            # Preserve referral dates and the identity of every introduced customer.
-            await db.execute(update(User).where(User.referred_by_user_id == user.user_id).values(
-                referred_by_user_id=None, referred_by_partner_id=partner.partner_id))
-            # Old shopping credits stay untouched. Only unpaid entitlements move.
-            await db.execute(update(ReferralCommission).where(
-                ReferralCommission.beneficiary_user_id == user.user_id,
-                ReferralCommission.status.in_(['pending', 'claimable'])
-            ).values(beneficiary_user_id=None, beneficiary_partner_id=partner.partner_id))
-            await PartnerWalletService.credit_available(db, partner.partner_id)
+            partner = await PartnerWalletService._create_linked_partner(
+                db, user, master_id, app.password_hash
+            )
         app.status = 'approved' if approve else 'rejected'
         app.password_hash = None
         app.decision_by, app.decision_note, app.decided_at = admin_id, note, datetime.now(timezone.utc)

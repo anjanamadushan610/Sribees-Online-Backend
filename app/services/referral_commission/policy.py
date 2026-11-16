@@ -7,6 +7,7 @@ from decimal import ROUND_HALF_UP, Decimal
 # Rates are stored to three places: half of 2.25% is 1.125%, and rounding
 # that to 1.13% would pay the upline a little more than the rule says.
 RATE_PLACES = Decimal("0.001")
+CUSTOMER_REFERRAL_SHARE = Decimal("0.5")
 
 
 @dataclass(frozen=True)
@@ -46,3 +47,13 @@ class LevelPolicy:
     def for_level(self, level: int):
         """``rate_for`` callable for :func:`build_lines`."""
         return lambda level1_rate: self.rate(level, level1_rate)
+
+    @staticmethod
+    def for_customer():
+        """Customers earn half of a product's advertised referral pool."""
+        def customer_rate(product_rate: Decimal) -> Decimal:
+            return (Decimal(str(product_rate)) * CUSTOMER_REFERRAL_SHARE).quantize(
+                RATE_PLACES, rounding=ROUND_HALF_UP
+            )
+
+        return customer_rate

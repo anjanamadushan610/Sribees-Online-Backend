@@ -353,7 +353,8 @@ class ReferralService:
 
         Two shapes:
 
-        * **Referred by another customer** — one level-1 row to that customer.
+        * **Referred by another customer** — one row to that customer at 50% of
+          each eligible product's referral commission rate.
         * **Referred by a professional partner** — level 1 to that partner and,
           if the partner was itself recruited, level 2 to their upline. Each
           product's rounded commission pool is split so the Master receives
@@ -436,7 +437,7 @@ class ReferralService:
                     order=order,
                     source_user_id=buyer.user_id,
                     level=1,
-                    lines=level1,
+                    lines=build_lines(sale_lines, policy.for_customer()),
                     beneficiary_user_id=buyer.referred_by_user_id,
                 )
                 if row is not None:

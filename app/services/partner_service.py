@@ -490,7 +490,8 @@ class PartnerService:
                 func.coalesce(earned.c.orders, 0),
             )
             .outerjoin(earned, earned.c.uid == User.user_id)
-            .where(User.referred_by_partner_id == partner_id)
+            .outerjoin(Partner, Partner.user_id == User.user_id)
+            .where(User.referred_by_partner_id == partner_id, Partner.partner_id.is_(None))
             .order_by(User.referred_at.desc().nullslast())
         )
 

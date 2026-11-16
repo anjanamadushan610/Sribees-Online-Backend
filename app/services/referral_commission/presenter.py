@@ -14,19 +14,19 @@ from app.utils.i18n import resolve_language
 
 _COPY = {
     "en": {
-        "friend.offer": "Earn commission on selected products your friends buy.",
+        "friend.offer": "Earn half of the referral commission rate on selected products your friends buy.",
         "friend.none": "Commission is paid on selected products. None are on offer right now.",
         "partner.offer": "Earn commission on selected products your customers buy.",
         "partner.none": "Commission is paid on selected products. None are on offer right now.",
     },
     "si": {
-        "friend.offer": "ඔබේ යාළුවන් මිලදී ගන්නා තෝරාගත් භාණ්ඩ වලින් කොමිස් උපයන්න.",
+        "friend.offer": "ඔබේ යාළුවන් මිලදී ගන්නා තෝරාගත් භාණ්ඩ සඳහා වෙන් කර ඇති Referral Commission අනුපාතයෙන් අඩක් උපයන්න.",
         "friend.none": "කොමිස් මුදල ලැබෙන්නේ තෝරාගත් භාණ්ඩ වලට පමණි. දැනට එවැනි භාණ්ඩ නොමැත.",
         "partner.offer": "ඔබේ ගනුදෙනුකරුවන් මිලදී ගන්නා තෝරාගත් භාණ්ඩ වලින් කොමිස් උපයන්න.",
         "partner.none": "කොමිස් මුදල ලැබෙන්නේ තෝරාගත් භාණ්ඩ වලට පමණි. දැනට එවැනි භාණ්ඩ නොමැත.",
     },
     "ta": {
-        "friend.offer": "உங்கள் நண்பர்கள் வாங்கும் தேர்ந்தெடுக்கப்பட்ட பொருட்களில் கமிஷன் சம்பாதியுங்கள்.",
+        "friend.offer": "உங்கள் நண்பர்கள் வாங்கும் தேர்ந்தெடுக்கப்பட்ட பொருட்களுக்கு ஒதுக்கப்பட்ட Referral Commission விகிதத்தின் பாதியைப் பெறுங்கள்.",
         "friend.none": "தேர்ந்தெடுக்கப்பட்ட பொருட்களுக்கு மட்டுமே கமிஷன் வழங்கப்படும். தற்போது அத்தகைய பொருட்கள் இல்லை.",
         "partner.offer": "உங்கள் வாடிக்கையாளர்கள் வாங்கும் தேர்ந்தெடுக்கப்பட்ட பொருட்களில் கமிஷன் சம்பாதியுங்கள்.",
         "partner.none": "தேர்ந்தெடுக்கப்பட்ட பொருட்களுக்கு மட்டுமே கமிஷன் வழங்கப்படும். தற்போது அத்தகைய பொருட்கள் இல்லை.",

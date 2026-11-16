@@ -1,4 +1,4 @@
-"""Customer-consented, Super Admin-approved partner upgrades and withdrawals."""
+"""Linked Partner Wallet, customer upgrades, and partner withdrawals."""
 import os
 import secrets
 from decimal import Decimal
@@ -61,6 +61,10 @@ class AdminUpgradeBody(Body):
     master_partner_id: UUID | None = None
     customer_consent_confirmed: Literal[True]
     note: str = Field(min_length=1, max_length=400)
+
+
+class MasterUpgradeBody(Body):
+    customer_consent_confirmed: Literal[True]
 
 
 class AmountBody(Body):
@@ -144,6 +148,57 @@ async def portal_linked(db, partner):
     if not partner.user_id:
         raise HTTPException(409, 'This legacy Partner account must be linked by support before using Partner Wallet.')
     await Service.user_lock(db, partner.user_id)
+
+
+@router.post('/customers/{user_id}/upgrade')
+async def master_upgrade_customer(user_id: UUID, body: MasterUpgradeBody, db: AsyncSession = Depends(get_db),
+                                  redis: Redis = Depends(get_redis),
+                                  partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
+    """Promote a Master Partner's own referred customer without admin approval."""
+    from app.services.partner_invitation import (
+        portal_base,
+        send_sms_invitation,
+        sms_gateway,
+        verified_sms_phone,
+    )
+    from app.services.sms_gateway import SmsSendError
+
+    if partner.role != 'master_partner':
+        raise HTTPException(403, 'Only Master Partners can make a direct customer a Partner.')
+    if body.customer_consent_confirmed is not True:
+        raise HTTPException(400, 'Confirm that the customer agreed to become a Partner.')
+
+    user = await Service.user_lock(db, user_id)
+    if user.referred_by_partner_id != partner.partner_id:
+        raise HTTPException(404, 'Customer not found in your direct customer list.')
+    # Validate every external dependency before committing the account change.
+    verified_sms_phone(user)
+    sms_gateway()
+    portal_base()
+    cooldown_key = f'partner:invitation:wait:{partner.partner_id}:{user_id}'
+    if not await redis.set(cooldown_key, '1', ex=60, nx=True):
+        raise HTTPException(429, 'Please wait one minute before trying again.')
+
+    try:
+        upgraded = await Service.master_upgrade(
+            db, user_id, partner.partner_id, secrets.token_urlsafe(48)
+        )
+        # The random initial credential is never shared; the SMS setup link
+        # lets the customer choose their own password.
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        await redis.delete(cooldown_key)
+        raise
+
+    try:
+        await send_sms_invitation(upgraded, user, redis)
+    except SmsSendError:
+        await redis.delete(cooldown_key)
+        return {'success': True, 'data': partner_json(upgraded), 'invitation_sent': False,
+                'invitation_channel': 'sms'}
+    return {'success': True, 'data': partner_json(upgraded), 'invitation_sent': True,
+            'invitation_channel': 'sms'}
 
 
 @router.get('/partner/wallet')
