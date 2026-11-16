@@ -18,10 +18,14 @@ class DisplaySizeContract(unittest.TestCase):
             @staticmethod
             async def get_price_map(db, ids, branch): return {pid: 250}
             @staticmethod
+            async def get_regular_price_map(db, ids, branch): return {pid: 250}
+            @staticmethod
             async def get_display_size_map(db, ids): return {pid: ('400', 'g')}
         class Options:
             @staticmethod
             async def price_map(db, ids, branch): return {}
+            @staticmethod
+            async def regular_price_map(db, ids, branch): return {}
         module = types.ModuleType('app.services.product_service')
         module.ProductService = Products
         tree = ast.parse((ROOT / 'app/services/order_service.py').read_text())

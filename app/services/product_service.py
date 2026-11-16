@@ -1263,6 +1263,44 @@ class ProductService:
         return prices
 
     @staticmethod
+    async def get_regular_price_map(
+        db: AsyncSession,
+        product_ids: List[UUID],
+        branch_id: Optional[UUID],
+    ) -> Dict[str, Decimal]:
+        """Regular catalogue price before product/branch markdowns."""
+        if not product_ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(
+                    Product.product_id,
+                    Product.price,
+                    Product.is_active,
+                    BranchInventory.inventory_id,
+                    BranchInventory.branch_price,
+                    BranchInventory.is_active,
+                )
+                .outerjoin(
+                    BranchInventory,
+                    and_(
+                        BranchInventory.product_id == Product.product_id,
+                        BranchInventory.branch_id == branch_id,
+                    ),
+                )
+                .where(Product.product_id.in_(product_ids))
+            )
+        ).all()
+        result: Dict[str, Decimal] = {}
+        for product_id, global_price, product_active, inventory_id, branch_price, branch_active in rows:
+            if product_active is False or (inventory_id is not None and branch_active is False):
+                continue
+            result[str(product_id)] = Decimal(
+                str(branch_price if branch_price is not None else (global_price or 0))
+            )
+        return result
+
+    @staticmethod
     async def get_variant_price_map(
         db: AsyncSession,
         variant_ids: List[UUID],
