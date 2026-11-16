@@ -17,6 +17,7 @@ service query, not left to a serializer to remember.
 
 Prefix "/referrals" is applied by app/api/v1/router.py.
 """
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -79,7 +80,9 @@ async def get_my_referrals(
             # The best rate on offer today: rates are per product now. Kept
             # for app builds that still word the sentence themselves; newer
             # ones show commissionText, in the Accept-Language language.
-            "commissionPercent": float(highest),
+            # A customer who invites a friend earns half of each product's
+            # maximum referral rate. Partner rates remain the full product pool.
+            "commissionPercent": float(highest if linked else highest * Decimal("0.5")),
             "commissionText": offer_text(
                 highest,
                 audience="friend",
