@@ -70,7 +70,7 @@ async def test_inactive_partner_cannot_be_promoted():
 
 
 @pytest.mark.parametrize('direct_role', ['partner', 'master_partner'])
-@pytest.mark.parametrize('share,expected', [('0.25', '25.00'), ('0.30', '30.00')])
+@pytest.mark.parametrize('share,expected', [('0.25', '20.00'), ('0.30', '23.08')])
 @pytest.mark.asyncio
 async def test_customer_order_pays_direct_referrer_and_immediate_parent_only(monkeypatch, direct_role, share, expected):
     # With A -> B (Master) -> C, C's customer pays C + B. A earns nothing.

@@ -214,8 +214,8 @@ async def test_partner_commissions_pay_two_levels(
         ReferralCommission.order_id == order["order_id"]))).scalars().all()
     by_level = {r.level: r for r in rows}
     assert set(by_level) == {1, 2}, "two levels, no more"
-    assert float(by_level[1].amount) == pytest.approx(5000 * 0.01)
-    assert float(by_level[2].amount) == pytest.approx(5000 * 0.01)
+    assert float(by_level[1].amount) == pytest.approx(66.67)
+    assert float(by_level[2].amount) == pytest.approx(33.33)
     assert by_level[1].beneficiary_user_id is None and by_level[1].beneficiary_partner_id is not None
 
     r = await api.get("/api/v1/partner/commissions", headers=agent)

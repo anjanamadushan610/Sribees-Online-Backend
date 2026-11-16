@@ -356,7 +356,8 @@ class ReferralService:
         * **Referred by another customer** — one level-1 row to that customer.
         * **Referred by a professional partner** — level 1 to that partner and,
           if the partner was itself recruited, level 2 to their upline. Each
-          product's rounded commission pool is split using ``policy.level2_share``.
+          product's rounded commission pool is split so the Master receives
+          ``policy.level2_share`` of the direct Partner's amount.
           The direct referrer receives the remainder. Only two levels: the
           attribution stops at the direct referrer's immediate parent. A
           promoted Master Partner retains that parent for their own customer

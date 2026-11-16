@@ -12,6 +12,7 @@ from app.models.partner import Partner
 from app.models.referral import ReferralCommission
 from app.models.user import User
 from app.services.referral_commission import LevelPolicy, SaleLine
+from app.services.referral_commission.calculator import money
 from app.services.referral_service import ReferralService
 from tests.conftest import requires_db
 from tests.test_linked_partner_wallet import money_db  # noqa: F401
@@ -52,7 +53,9 @@ async def test_only_the_immediate_parent_shares_the_product_budget(
         db.add(order)
         await db.flush()
         rows = await ReferralService.accrue_for_order(db, order, policy=LevelPolicy(Decimal(share)))
-        expected_master = Decimal('100') * Decimal(share)
+        ratio = Decimal(share)
+        pool_master_share = ratio / (Decimal('1') + ratio)
+        expected_master = money(Decimal('100') * pool_master_share)
         assert sum((row.amount for row in rows), Decimal('0')) == Decimal('100')
         by_partner = {row.beneficiary_partner_id: row.amount for row in rows}
         assert by_partner.get(direct.partner_id, Decimal('0')) == Decimal('100') - expected_master
@@ -63,8 +66,8 @@ async def test_only_the_immediate_parent_shares_the_product_budget(
         for row in rows:
             for line in row.lines:
                 assert line.pool_rate_percentage == Decimal('10')
-                assert line.pool_master_share == Decimal(share)
-        # Even a 100% Master allocation, without a level-1 row, is final on replay.
+                assert line.pool_master_share == pool_master_share
+        # Replays stay idempotent even if the configured ratio changes.
         assert await ReferralService.accrue_for_order(db, order, policy=LevelPolicy(Decimal('0.3'))) == []
         persisted = (await db.scalars(select(ReferralCommission).where(
             ReferralCommission.order_id == order.order_id).options(selectinload(ReferralCommission.lines)))).all()

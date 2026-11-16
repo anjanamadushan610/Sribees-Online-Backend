@@ -2,7 +2,8 @@
 Per-product referral commission.
 
 Every product carries its own level-1 rate (branch override -> product
-default -> 0); a partner's upline earns a fixed share of it. The arithmetic
+default -> 0); a Master Partner receives a configured percentage of the
+direct Partner's amount. The arithmetic
 is in :mod:`calculator` and takes plain values only, so the money rules are
 tested without a database. See docs/product-referral-commission.md.
 """
