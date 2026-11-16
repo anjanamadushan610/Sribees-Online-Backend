@@ -14,15 +14,14 @@ ZERO_RATE = Decimal("0")
 
 
 def effective_rate(branch_rate, product_rate) -> Decimal:
-    """Branch override, then product default, then 0.
+    """Branch rate capped by the product maximum, with the product as fallback.
 
     0 rather than a platform rate, by the owner's decision: a product earns a
     commission only once someone has decided it should.
     """
-    for rate in (branch_rate, product_rate):
-        if rate is not None:
-            return Decimal(str(rate))
-    return ZERO_RATE
+    maximum = Decimal(str(product_rate)) if product_rate is not None else ZERO_RATE
+    return min(Decimal(str(branch_rate)), maximum) if branch_rate is not None else maximum
+
 
 
 class CommissionRateResolver:
@@ -83,10 +82,10 @@ class CommissionRateResolver:
             await db.execute(
                 select(
                     func.max(
-                        func.coalesce(
-                            BranchInventory.referral_commission_percentage,
-                            Product.referral_commission_percentage,
-                            0,
+                        func.least(
+                            func.coalesce(BranchInventory.referral_commission_percentage,
+                                          Product.referral_commission_percentage, 0),
+                            func.coalesce(Product.referral_commission_percentage, 0),
                         )
                     )
                 )

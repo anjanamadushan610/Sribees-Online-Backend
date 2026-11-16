@@ -136,8 +136,10 @@ async def test_rates_are_set_by_role_capped_for_branches_and_audited(
     r = await api.put(f"{RC}/inventory/{inv}", json={"percentage": 12}, headers=manager.headers)
     assert r.status_code == 400 and r.json()["detail"]["error"]["code"] == "ABOVE_CAP", r.text
     r = await api.put(f"{RC}/inventory/{inv}", json={"percentage": 6}, headers=manager.headers)
+    assert r.status_code == 400 and r.json()["detail"]["error"]["code"] == "ABOVE_PRODUCT_MAXIMUM"
+    r = await api.put(f"{RC}/inventory/{inv}", json={"percentage": 3}, headers=manager.headers)
     assert r.status_code == 200, r.text
-    assert _data(r)["effective_referral_commission"] == 6.0
+    assert _data(r)["effective_referral_commission"] == 3.0
     assert _data(r)["global_referral_commission_percentage"] == 4.0
 
     # Stock is not money: an Inventory Manager cannot touch it.
@@ -148,7 +150,7 @@ async def test_rates_are_set_by_role_capped_for_branches_and_audited(
     r = await api.get("/api/v1/admin/inventory", headers=manager.headers)
     row = next(i for i in _data(r)["items"] if i["product_id"] == str(pid))
     assert (row["referral_commission_percentage"], row["global_referral_commission_percentage"],
-            row["effective_referral_commission"]) == (6.0, 4.0, 6.0)
+            row["effective_referral_commission"]) == (3.0, 4.0, 3.0)
 
     # The cap is the Super Admin's to move; lowering it binds the next change.
     r = await api.put(f"{RC}/settings", json={"branch_max_percent": 5}, headers=manager.headers)
@@ -157,8 +159,10 @@ async def test_rates_are_set_by_role_capped_for_branches_and_audited(
     assert r.status_code == 200 and _data(r)["branch_max_percent"] == 5.0
     r = await api.put(f"{RC}/inventory/{inv}", json={"percentage": 5.5}, headers=manager.headers)
     assert r.status_code == 400, r.text
-    # A Super Admin is not capped.
+    # The product maximum also applies to Super Admin branch overrides.
     r = await api.put(f"{RC}/inventory/{inv}", json={"percentage": 25}, headers=boss.headers)
+    assert r.status_code == 400 and r.json()["detail"]["error"]["code"] == "ABOVE_PRODUCT_MAXIMUM"
+    r = await api.put(f"{RC}/inventory/{inv}", json={"percentage": 4}, headers=boss.headers)
     assert r.status_code == 200, r.text
     # Clearing the override falls back to the product default.
     r = await api.put(f"{RC}/inventory/{inv}", json={"percentage": None}, headers=manager.headers)
@@ -168,7 +172,7 @@ async def test_rates_are_set_by_role_capped_for_branches_and_audited(
     # Every change is on record, newest first.
     r = await api.get(f"{RC}/products/{pid}/history", headers=boss.headers)
     changes = _data(r)["changes"]
-    assert [c["new_percentage"] for c in changes] == [None, 25.0, 6.0, 4.0]
+    assert [c["new_percentage"] for c in changes] == [None, 4.0, 3.0, 4.0]
     assert changes[-1]["branch_id"] is None and changes[-1]["old_percentage"] is None
 
 
@@ -210,6 +214,7 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
     salt = await make_product(price="500.00")    # never set: earns nothing
     tea = await make_product(price="200.00")     # branch override 10%
     assert (await api.put(f"{RC}/products/{rice}", json={"percentage": 5}, headers=boss.headers)).status_code == 200
+    await api.put(f"{RC}/products/{tea}", json={"percentage": 10}, headers=boss.headers)
     tea_inv = await _inventory_id(db, tea, world.branch_id)
     assert (await api.put(f"{RC}/inventory/{tea_inv}", json={"percentage": 10},
                           headers=manager.headers)).status_code == 200
@@ -243,23 +248,22 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
         )).scalars().all()
         return {r.level: r for r in rows}
 
-    # Level 1: rice 1800 x 5% = 90, tea 180 x 10% = 18 -> 108.
-    # Level 2 (half): rice 45, tea 9 -> 54. Salt earns no one anything.
+    # The product pools total 108. Each beneficiary receives 54 at a 50% share.
     rows = await ledger()
     assert set(rows) == {1, 2}
-    assert rows[1].amount == Decimal("108.00") and rows[2].amount == Decimal("54.00")
+    assert rows[1].amount == Decimal("54.00") and rows[2].amount == Decimal("54.00")
     assert rows[1].order_subtotal == Decimal("1980.00")
-    assert sorted(line.amount for line in rows[1].lines) == [Decimal("18.00"), Decimal("90.00")]
+    assert sorted(line.amount for line in rows[1].lines) == [Decimal("9.00"), Decimal("45.00")]
     assert {line.product_id for line in rows[1].lines} == {rice, tea}
 
     # The agent sees products, units and earnings -- never what was spent.
     r = await api.get("/api/v1/partner/commissions", headers=agent)
     entry = next(c for c in _data(r)["commissions"] if c["order_number"] == order["order_number"])
-    assert sorted((ln["quantity"], ln["amount"]) for ln in entry["lines"]) == [(1, 18.0), (2, 90.0)]
+    assert sorted((ln["quantity"], ln["amount"]) for ln in entry["lines"]) == [(1, 9.0), (2, 45.0)]
     assert "basis" not in r.text and "order_subtotal" not in r.text
     r = await api.get("/api/v1/partner/top-products", headers=agent)
     top = _data(r)["products"]
-    assert top[0]["product_id"] == str(rice) and top[0]["total_earned"] == 90.0 and top[0]["units"] == 2
+    assert top[0]["product_id"] == str(rice) and top[0]["total_earned"] == 45.0 and top[0]["units"] == 2
 
     # The header line comes from the server and names no rate.
     me = _data(await api.get("/api/v1/partner/me", headers=agent))
@@ -269,8 +273,7 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
     await api.put(f"{RC}/products/{rice}", json={"percentage": 1}, headers=boss.headers)
     assert (await ledger())[1].amount == Decimal("108.00")
 
-    # One bag of rice comes back: rice keeps 1800 x 1/2 x 5% = 45 at level 1
-    # (22.50 at level 2); tea is untouched. 45 + 18 = 63 ; 22.50 + 9 = 31.50.
+    # One rice bag returns. Remaining pool is 63, split 31.50 to each beneficiary.
     r = await api.post(
         f"/api/v1/admin/orders/{order['order_id']}/status/override",
         json={"status": "delivered", "reason": "Delivered and cash collected at the door."},
@@ -296,7 +299,7 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
     assert float(wallet["balance"]) == 900.0
 
     rows = await ledger()
-    assert rows[1].amount == Decimal("63.00") and rows[2].amount == Decimal("31.50")
+    assert rows[1].amount == Decimal("31.50") and rows[2].amount == Decimal("31.50")
     rice_line = next(line for line in rows[1].lines if line.product_id == rice)
     assert rice_line.returned_quantity == 1
     assert rows[1].status == "pending"

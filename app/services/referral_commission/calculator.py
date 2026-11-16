@@ -6,7 +6,7 @@ that is off by a cent is a ledger nobody can reconcile.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Callable, Iterable, Optional, Sequence
 from uuid import UUID
@@ -31,7 +31,7 @@ class SaleLine:
     quantity: int
     gross: Decimal            # unit_price x quantity
     coupon_discount: Decimal  # this line's share of the order's coupon
-    rate: Decimal             # level-1 percentage snapshot (0..100)
+    rate: Decimal             # product commission pool percentage snapshot (0..100)
 
     @property
     def basis(self) -> Decimal:
@@ -50,6 +50,8 @@ class CommissionLine:
     basis: Decimal
     rate: Decimal
     amount: Decimal
+    pool_rate: Optional[Decimal] = None
+    master_share: Optional[Decimal] = None
 
 
 def allocate_discount(
@@ -141,3 +143,43 @@ def kept_amount(basis: Decimal, rate: Decimal, quantity: int, returned_quantity:
     if kept == 0:
         return ZERO
     return money(Decimal(str(basis)) * kept / quantity * Decimal(str(rate)) / HUNDRED)
+
+
+def build_shared_lines(
+    lines: Iterable[SaleLine], master_share: Decimal,
+) -> tuple[list[CommissionLine], list[CommissionLine]]:
+    """Allocate each rounded product pool between its direct referrer and upline."""
+    from app.services.referral_commission.policy import LevelPolicy
+
+    master_share = Decimal(str(master_share))
+    policy = LevelPolicy(master_share)
+    direct, master = [], []
+    for pool in build_lines(lines, lambda rate: rate):
+        master_amount = money(pool.amount * master_share)
+        master_rate = policy.rate(2, pool.rate)
+        direct_amount = pool.amount - master_amount
+        for destination, rate, amount in (
+            (direct, pool.rate - master_rate, direct_amount),
+            (master, master_rate, master_amount),
+        ):
+            if amount > 0:
+                destination.append(replace(
+                    pool, rate=rate, amount=amount,
+                    pool_rate=pool.rate, master_share=master_share,
+                ))
+    return direct, master
+
+
+def kept_shared_amount(
+    basis: Decimal, pool_rate: Decimal, master_share: Decimal,
+    level: int, quantity: int, returned_quantity: int,
+) -> Decimal:
+    """Reallocate the remaining pool with the original snapshotted split."""
+    if level not in (1, 2):
+        raise ValueError(f"No referral level {level}")
+    master_share = Decimal(str(master_share))
+    if not master_share.is_finite() or not Decimal("0") <= master_share <= Decimal("1"):
+        raise ValueError("Master share must be between 0 and 1")
+    pool = kept_amount(basis, pool_rate, quantity, returned_quantity)
+    master = money(pool * master_share)
+    return pool - master if level == 1 else master
