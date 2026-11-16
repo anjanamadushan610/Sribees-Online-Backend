@@ -56,6 +56,8 @@ class Settings(BaseSettings):
         ),
     )
     wallet_currency: str = Field(default="LKR", description="Wallet currency code")
+    # Enable after Express schema/API and Finance rider_cash_change posting are deployed.
+    rider_wallet_change_enabled: bool = False
     loyalty_spend_per_point: float = Field(
         default=1000.0,
         gt=0,

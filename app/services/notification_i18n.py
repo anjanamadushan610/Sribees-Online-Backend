@@ -140,6 +140,18 @@ _ORDER_TITLE = {
 
 # key → {"title": {lang: str}, "message": {lang: str}, "standalone": bool}
 TEMPLATES: Dict[str, dict] = {
+    "rider_wallet_change": {
+        "title": {
+            "en": "Change added to Sribees Wallet",
+            "si": "ඉතුරු මුදල Sribees Wallet එකට බැර කළා",
+            "ta": "மீதிப் பணம் Sribees Wallet இல் சேர்க்கப்பட்டது",
+        },
+        "message": {
+            "en": "Your change of {amount} from order #{order_number} has been added to your Sribees Wallet.",
+            "si": "ඇණවුම #{order_number} සඳහා ඔබට ලැබිය යුතු {amount} ඉතුරු මුදල ඔබේ Sribees Wallet එකට බැර කළා.",
+            "ta": "ஆர்டர் #{order_number}க்கான உங்கள் மீதிப் பணம் {amount} உங்கள் Sribees Wallet இல் சேர்க்கப்பட்டது.",
+        },
+    },
     "free_delivery.granted": {
         "standalone": False,
         "title": {
