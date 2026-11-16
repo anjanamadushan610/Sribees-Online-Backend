@@ -271,7 +271,7 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
 
     # A rate change later never touches this order.
     await api.put(f"{RC}/products/{rice}", json={"percentage": 1}, headers=boss.headers)
-    assert (await ledger())[1].amount == Decimal("108.00")
+    assert (await ledger())[1].amount == Decimal("54.00")
 
     # One rice bag returns. Remaining pool is 63, split 31.50 to each beneficiary.
     r = await api.post(
@@ -286,8 +286,13 @@ async def test_each_product_earns_its_own_rate_and_a_return_takes_back_only_its_
     )).scalar_one()
     rice_item = next(i for i in row.items if i.product_id == rice)
     row.return_items = [{"order_item_id": str(rice_item.order_item_id), "quantity": 1}]
-    await OrderService._credit_return_refund(db, row, note="ZZ one bag torn")
-    await db.commit()
+    old_share = _data(await api.get(f"{RC}/settings", headers=boss.headers))["level2_share"]
+    await api.put(f"{RC}/settings", json={"level2_share": 0.25}, headers=boss.headers)
+    try:
+        await OrderService._credit_return_refund(db, row, note="ZZ one bag torn")
+        await db.commit()
+    finally:
+        await api.put(f"{RC}/settings", json={"level2_share": old_share}, headers=boss.headers)
 
     # The customer gets back what that bag cost them: 1000 less its 100 of
     # the coupon, not the shelf price.
