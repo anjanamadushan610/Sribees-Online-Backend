@@ -488,10 +488,11 @@ class PartnerService:
                 User.referred_at,
                 func.coalesce(earned.c.total, 0),
                 func.coalesce(earned.c.orders, 0),
+                Partner.role,
             )
             .outerjoin(earned, earned.c.uid == User.user_id)
             .outerjoin(Partner, Partner.user_id == User.user_id)
-            .where(User.referred_by_partner_id == partner_id, Partner.partner_id.is_(None))
+            .where(User.referred_by_partner_id == partner_id)
             .order_by(User.referred_at.desc().nullslast())
         )
 
@@ -503,8 +504,9 @@ class PartnerService:
                 "joined_at": joined.isoformat() if joined else None,
                 "orders": int(orders or 0),
                 "total_earned": float(_money(Decimal(str(total or 0)))),
+                "partner_role": partner_role,
             }
-            for uid, name, joined, total, orders in result.all()
+            for uid, name, joined, total, orders, partner_role in result.all()
         ]
 
     @staticmethod
