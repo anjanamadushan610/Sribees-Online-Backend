@@ -150,7 +150,7 @@ async def portal_linked(db, partner):
     await Service.user_lock(db, partner.user_id)
 
 
-@router.post('/customers/{user_id}/upgrade')
+@router.post('/partner/customers/{user_id}/upgrade')
 async def master_upgrade_customer(user_id: UUID, body: MasterUpgradeBody, db: AsyncSession = Depends(get_db),
                                   redis: Redis = Depends(get_redis),
                                   partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
