@@ -39,7 +39,11 @@ jobs:
 
       - name: Set and verify the approved 25 percent setting
         run: |
-          ssh target 'set -Eeuo pipefail; mapfile -t apps < <(docker ps -q --filter label=com.docker.compose.project=sribees-online-prod --filter label=com.docker.compose.service=app); test "${#apps[@]}" = 1; docker exec -i "${apps[0]}" python -' <<'PY'
+          ssh target 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          mapfile -t apps < <(docker ps -q --filter label=com.docker.compose.project=sribees-online-prod --filter label=com.docker.compose.service=app)
+          test "${#apps[@]}" = 1
+          docker exec -i "${apps[0]}" python - <<'PY'
           import asyncio
           import json
           import sys
@@ -80,3 +84,4 @@ jobs:
               print(json.dumps({"result": "failed", "error_type": type(exc).__name__}))
               sys.exit(1)
           PY
+          REMOTE
