@@ -50,7 +50,8 @@ def test_source_is_stable_for_key_rotation_and_scopes_accounts():
 @requires_db
 @pytest.mark.asyncio
 async def test_credit_and_retry_preserve_wallet_ledger_and_ownership(
-    money_db, monkeypatch  # noqa: F811 - imported shared pytest fixture
+    money_db,  # noqa: F811 - imported shared pytest fixture
+    monkeypatch,
 ):
     db, user = money_db
     target = CourierTarget(
@@ -111,3 +112,66 @@ async def test_credit_and_retry_preserve_wallet_ledger_and_ownership(
     assert (
         await db.scalar(select(Wallet.balance).where(Wallet.user_id == user.user_id))
     ) == Decimal("250")
+
+
+@pytest.mark.asyncio
+async def test_missing_finance_outbox_blocks_credit(monkeypatch):
+    monkeypatch.setattr(settings, "finance_outbox_enabled", False)
+    with pytest.raises(RuntimeError, match="Finance outbox"):
+        await change.credit_request(None, None, pending())
+
+
+@pytest.mark.asyncio
+async def test_worker_retries_lost_acknowledgement_and_continues_other_requests(
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+
+    target = CourierTarget(
+        "https://courier.example/api/v1/ecommerce", "test-key", "live"
+    )
+    transaction_id = uuid4()
+    db = object()
+
+    @asynccontextmanager
+    async def session():
+        yield db
+
+    monkeypatch.setattr(change, "async_session_maker", session)
+    credit = AsyncMock(return_value=transaction_id)
+    monkeypatch.setattr(change, "credit_request", credit)
+    failed_ack = False
+
+    async def request(method, path, **kwargs):
+        nonlocal failed_ack
+        if path == "/wallet-change/pending":
+            return [pending()]
+        if path.endswith("/credited") and not failed_ack:
+            failed_ack = True
+            raise TimeoutError("Test acknowledgement timeout")
+        return {"enabled": True}
+
+    api = AsyncMock(side_effect=request)
+    monkeypatch.setattr(change.CourierService, "_request", api)
+    await change.process_targets([target])
+    await change.process_targets([target])
+    assert credit.await_count == 2
+    acknowledgements = [
+        call for call in api.await_args_list if call.args[1].endswith("/credited")
+    ]
+    assert len(acknowledgements) == 2
+    assert acknowledgements[0].kwargs["json"] == acknowledgements[1].kwargs["json"]
+    assert acknowledgements[0].kwargs["json"]["transaction_id"] == str(transaction_id)
+
+    async def two_pending(method, path, **kwargs):
+        return [pending(), pending(request_id=2)] if path.endswith("/pending") else {}
+
+    api.side_effect = two_pending
+    api.reset_mock()
+    credit.side_effect = [ValueError("Invalid test request"), transaction_id]
+    await change.process_targets([target])
+    acknowledgements = [
+        call for call in api.await_args_list if call.args[1].endswith("/credited")
+    ]
+    assert len(acknowledgements) == 1
+    assert acknowledgements[0].args[1] == "/wallet-change/2/credited"
