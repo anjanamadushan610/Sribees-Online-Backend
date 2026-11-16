@@ -11,7 +11,9 @@ from app.services.referral_commission.calculator import (
     SaleLine,
     allocate_discount,
     build_lines,
+    build_shared_lines,
     kept_amount,
+    kept_shared_amount,
     money,
 )
 from app.services.referral_commission.config import ReferralProgramConfig
@@ -26,6 +28,8 @@ __all__ = [
     "SaleLine",
     "allocate_discount",
     "build_lines",
+    "build_shared_lines",
+    "kept_shared_amount",
     "kept_amount",
     "money",
 ]

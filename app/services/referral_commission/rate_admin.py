@@ -122,10 +122,8 @@ class RateAdminService:
         """
         Set or clear one branch's rate for one product.
 
-        A Branch Manager may only touch their own branch, and only up to the
-        cap. A Super Admin is not capped -- the cap exists to catch a typo
-        made without anyone else seeing it, and the Super Admin is the one who
-        sets it.
+        Every branch rate is bounded by the product's total commission maximum.
+        Branch Managers also use their own branch and the configured manager cap.
         """
         rate = parse_rate(raw_rate)
         inv = await db.get(BranchInventory, inventory_id, with_for_update=True)
@@ -148,6 +146,11 @@ class RateAdminService:
                 )
 
         product = await db.get(Product, inv.product_id)
+        maximum = effective_rate(None, product.referral_commission_percentage)
+        if rate is not None and rate > maximum:
+            raise RateChangeError("ABOVE_PRODUCT_MAXIMUM",
+                f"The product's total referral commission maximum is {maximum.normalize():f}%.",
+                cap=float(maximum))
         old = inv.referral_commission_percentage
         if not _same(old, rate):
             inv.referral_commission_percentage = rate

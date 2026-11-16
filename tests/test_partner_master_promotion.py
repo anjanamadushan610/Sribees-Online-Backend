@@ -87,7 +87,8 @@ async def test_customer_order_pays_direct_referrer_and_immediate_parent_only(mon
     monkeypatch.setattr(ReferralService, '_add_commission', add)
     rows = await ReferralService.accrue_for_order(db, SimpleNamespace(order_id=uuid4(), user_id=buyer_id), policy=LevelPolicy(Decimal(share)))
     assert [(row['beneficiary_partner_id'], row['level']) for row in rows] == [(direct_id, 1), (parent_id, 2)]
-    assert sum(line.amount for line in rows[0]['lines']) == Decimal('100.00')
+    assert sum(line.amount for line in rows[0]['lines']) == Decimal('100.00') - Decimal(expected)
+    assert sum(line.amount for row in rows for line in row['lines']) == Decimal('100.00')
     assert sum(line.amount for line in rows[1]['lines']) == Decimal(expected)
     assert all(row['beneficiary_partner_id'] != grandparent_id for row in rows)
     assert db.get.await_count == 2  # The ancestor chain is never traversed.

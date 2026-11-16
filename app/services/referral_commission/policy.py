@@ -1,4 +1,4 @@
-"""What each referral level earns from a product's level-1 rate."""
+"""Rates used when allocating a product commission pool."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +12,8 @@ RATE_PLACES = Decimal("0.001")
 @dataclass(frozen=True)
 class LevelPolicy:
     """
-    Level 1 earns the product's rate; level 2 earns ``level2_share`` of it.
+    The product rate defines the total pool. ``build_shared_lines`` allocates
+    its rounded amount between the direct referrer and their upline.
 
     One field per product, by the owner's decision: a Branch Manager sets a
     single number and the upline's cut follows from it. A product at 0% is

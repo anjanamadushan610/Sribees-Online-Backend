@@ -44,7 +44,9 @@ from app.services.referral_commission import (
     ReferralProgramConfig,
     SaleLine,
     build_lines,
+    build_shared_lines,
     kept_amount,
+    kept_shared_amount,
 )
 from app.services.referral_commission.presenter import line_payload
 from app.services.wallet_service import WalletService
@@ -283,6 +285,8 @@ class ReferralService:
                     basis=line.basis,
                     rate_percentage=line.rate,
                     amount=line.amount,
+                    pool_rate_percentage=line.pool_rate,
+                    pool_master_share=line.master_share,
                 )
                 for line in lines
             ],
@@ -351,8 +355,9 @@ class ReferralService:
 
         * **Referred by another customer** — one level-1 row to that customer.
         * **Referred by a professional partner** — level 1 to that partner and,
-          if the partner was itself recruited, level 2 to their upline at
-          ``policy.level2_share`` of each line's rate. Only two levels: the
+          if the partner was itself recruited, level 2 to their upline. Each
+          product's rounded commission pool is split using ``policy.level2_share``.
+          The direct referrer receives the remainder. Only two levels: the
           attribution stops at the direct referrer's immediate parent. A
           promoted Master Partner retains that parent for their own customer
           orders, but their team earnings do not generate another commission.
@@ -369,10 +374,11 @@ class ReferralService:
         # An upgrade changes the referrer identity store, not what an old
         # order earned. A retried webhook must never pay that order again or
         # introduce a retrospective level-2 reward after the upgrade.
-        prior_direct = (await db.execute(select(ReferralCommission.commission_id).where(
-            ReferralCommission.order_id == order.order_id, ReferralCommission.level == 1
+        await db.execute(select(Order.order_id).where(Order.order_id == order.order_id).with_for_update())
+        prior_commission = (await db.execute(select(ReferralCommission.commission_id).where(
+            ReferralCommission.order_id == order.order_id
         ).limit(1))).scalar_one_or_none()
-        if prior_direct is not None:
+        if prior_commission is not None:
             return []
 
         sale_lines = await ReferralService._sale_lines(db, order)
@@ -395,27 +401,22 @@ class ReferralService:
 
         # --- Referred by a professional partner ---------------------------
         if buyer.referred_by_partner_id is not None:
+            partner = await db.get(Partner, buyer.referred_by_partner_id)
+            upline_id = partner.parent_partner_id if partner else None
+            has_upline = upline_id is not None and upline_id != buyer.referred_by_partner_id
+            direct_lines, master_lines = (
+                build_shared_lines(sale_lines, policy.level2_share) if has_upline else (level1, [])
+            )
             row = await ReferralService._add_commission(
-                db,
-                order=order,
-                source_user_id=buyer.user_id,
-                level=1,
-                lines=level1,
-                beneficiary_partner_id=buyer.referred_by_partner_id,
+                db, order=order, source_user_id=buyer.user_id, level=1,
+                lines=direct_lines, beneficiary_partner_id=buyer.referred_by_partner_id,
             )
             if row is not None:
                 created.append(row)
-
-            partner = await db.get(Partner, buyer.referred_by_partner_id)
-            upline_id = partner.parent_partner_id if partner else None
-            if upline_id is not None and upline_id != buyer.referred_by_partner_id:
+            if master_lines:
                 row2 = await ReferralService._add_commission(
-                    db,
-                    order=order,
-                    source_user_id=buyer.user_id,
-                    level=2,
-                    lines=build_lines(sale_lines, policy.for_level(2)),
-                    beneficiary_partner_id=upline_id,
+                    db, order=order, source_user_id=buyer.user_id, level=2,
+                    lines=master_lines, beneficiary_partner_id=upline_id,
                 )
                 if row2 is not None:
                     created.append(row2)
@@ -575,9 +576,15 @@ class ReferralService:
             for line in row.lines:
                 want = min(returned.get(str(line.order_item_id), 0), line.quantity)
                 line.returned_quantity = max(int(line.returned_quantity or 0), want)
-                line.amount = kept_amount(
-                    line.basis, line.rate_percentage, line.quantity, line.returned_quantity
-                )
+                if line.pool_rate_percentage is not None and line.pool_master_share is not None:
+                    line.amount = kept_shared_amount(
+                        line.basis, line.pool_rate_percentage, line.pool_master_share,
+                        row.level, line.quantity, line.returned_quantity,
+                    )
+                else:
+                    line.amount = kept_amount(
+                        line.basis, line.rate_percentage, line.quantity, line.returned_quantity
+                    )
                 returned_basis += (
                     Decimal(str(line.basis)) * line.returned_quantity / line.quantity
                 )
