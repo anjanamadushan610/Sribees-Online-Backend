@@ -154,9 +154,10 @@ class PartnerWalletService:
             func.lower(Partner.email) == user.email.lower()))).scalar_one_or_none()
         if collision:
             fail('Partner email is already in use; resolve ownership first.', 409)
-        master = await db.get(Partner, master_id)
-        if master is None or not master.is_active or master.role != 'master_partner' or master.user_id == user.user_id:
-            fail('Choose an active Master Partner.')
+        if master_id is not None:
+            master = await db.get(Partner, master_id)
+            if master is None or not master.is_active or master.role != 'master_partner' or master.user_id == user.user_id:
+                fail('Choose an active Master Partner.')
         code = user.referral_code
         if not code:
             fail('Customer referral code could not be prepared.')
