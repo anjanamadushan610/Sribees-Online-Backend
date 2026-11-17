@@ -157,11 +157,8 @@ async def master_upgrade_customer(user_id: UUID, body: MasterUpgradeBody, db: As
     """Promote a Master Partner's own referred customer without admin approval."""
     from app.services.partner_invitation import (
         portal_base,
-        send_sms_invitation,
-        sms_gateway,
-        verified_sms_phone,
+        send_dual_invitation,
     )
-    from app.services.sms_gateway import SmsSendError
 
     if partner.role != 'master_partner':
         raise HTTPException(403, 'Only Master Partners can make a direct customer a Partner.')
@@ -171,9 +168,7 @@ async def master_upgrade_customer(user_id: UUID, body: MasterUpgradeBody, db: As
     user = await Service.user_lock(db, user_id)
     if user.referred_by_partner_id != partner.partner_id:
         raise HTTPException(404, 'Customer not found in your direct customer list.')
-    # Validate every external dependency before committing the account change.
-    verified_sms_phone(user)
-    sms_gateway()
+    # Validate the shared link destination before creating the account.
     portal_base()
     cooldown_key = f'partner:invitation:wait:{partner.partner_id}:{user_id}'
     if not await redis.set(cooldown_key, '1', ex=60, nx=True):
@@ -183,22 +178,18 @@ async def master_upgrade_customer(user_id: UUID, body: MasterUpgradeBody, db: As
         upgraded = await Service.master_upgrade(
             db, user_id, partner.partner_id, secrets.token_urlsafe(48)
         )
-        # The random initial credential is never shared; the SMS setup link
-        # lets the customer choose their own password.
+        # The random initial credential is never shared; the setup links
+        # let the customer choose their own password.
         await db.commit()
     except Exception:
         await db.rollback()
         await redis.delete(cooldown_key)
         raise
 
-    try:
-        await send_sms_invitation(upgraded, user, redis)
-    except SmsSendError:
-        await redis.delete(cooldown_key)
-        return {'success': True, 'data': partner_json(upgraded), 'invitation_sent': False,
-                'invitation_channel': 'sms'}
-    return {'success': True, 'data': partner_json(upgraded), 'invitation_sent': True,
-            'invitation_channel': 'sms'}
+    delivery = await send_dual_invitation(upgraded, user, redis)
+    sent = any(delivery.values())
+    return {'success': True, 'data': partner_json(upgraded), 'invitation_sent': sent,
+            'invitation_channel': 'email_and_sms', 'invitation_delivery': delivery}
 
 
 @router.get('/partner/wallet')
