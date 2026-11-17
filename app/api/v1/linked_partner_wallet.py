@@ -192,6 +192,34 @@ async def master_upgrade_customer(user_id: UUID, body: MasterUpgradeBody, db: As
             'invitation_channel': 'email_and_sms', 'invitation_delivery': delivery}
 
 
+@router.post('/partner/customers/{user_id}/invitation')
+async def resend_customer_invitation(user_id: UUID, db: AsyncSession = Depends(get_db),
+                                     redis: Redis = Depends(get_redis),
+                                     partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
+    """Send setup links to an existing Partner in this Master's direct team."""
+    from app.services.partner_invitation import portal_base, send_dual_invitation
+
+    if partner.role != 'master_partner':
+        raise HTTPException(403, 'Only Master Partners can resend Partner invitations.')
+    user = await Service.user_lock(db, user_id)
+    if user.referred_by_partner_id != partner.partner_id:
+        raise HTTPException(404, 'Customer not found in your direct customer list.')
+    linked = await Service.linked(db, user_id, active=False)
+    if linked is None or linked.parent_partner_id != partner.partner_id:
+        raise HTTPException(404, 'Partner not found in your direct team.')
+    if not linked.is_active:
+        raise HTTPException(409, 'This Partner account is inactive. Contact support.')
+    portal_base()
+    cooldown_key = f'partner:invitation:wait:{partner.partner_id}:{user_id}'
+    if not await redis.set(cooldown_key, '1', ex=60, nx=True):
+        raise HTTPException(429, 'Please wait one minute before sending another invitation.')
+    # Release the verification lock before contacting external providers.
+    await db.commit()
+    delivery = await send_dual_invitation(linked, user, redis)
+    return {'success': True, 'data': partner_json(linked), 'invitation_sent': any(delivery.values()),
+            'invitation_channel': 'email_and_sms', 'invitation_delivery': delivery}
+
+
 @router.get('/partner/wallet')
 async def portal_wallet(db: AsyncSession = Depends(get_db), partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
     await portal_linked(db, partner)
