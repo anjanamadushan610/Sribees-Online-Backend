@@ -489,6 +489,8 @@ class PartnerService:
                 func.coalesce(earned.c.total, 0),
                 func.coalesce(earned.c.orders, 0),
                 Partner.role,
+                Partner.password_changed_at,
+                Partner.last_login,
             )
             .outerjoin(earned, earned.c.uid == User.user_id)
             .outerjoin(Partner, Partner.user_id == User.user_id)
@@ -505,8 +507,9 @@ class PartnerService:
                 "orders": int(orders or 0),
                 "total_earned": float(_money(Decimal(str(total or 0)))),
                 "partner_role": partner_role,
+                "password_setup_completed": changed_at is not None or last_login is not None,
             }
-            for uid, name, joined, total, orders, partner_role in result.all()
+            for uid, name, joined, total, orders, partner_role, changed_at, last_login in result.all()
         ]
 
     @staticmethod

@@ -67,6 +67,10 @@ class MasterUpgradeBody(Body):
     customer_consent_confirmed: Literal[True]
 
 
+class ResendInvitationBody(Body):
+    invitation_channel: Literal['email', 'sms']
+
+
 class AmountBody(Body):
     request_id: UUID
     amount: Decimal = Field(gt=0, max_digits=11, decimal_places=2, allow_inf_nan=False)
@@ -193,11 +197,11 @@ async def master_upgrade_customer(user_id: UUID, body: MasterUpgradeBody, db: As
 
 
 @router.post('/partner/customers/{user_id}/invitation')
-async def resend_customer_invitation(user_id: UUID, db: AsyncSession = Depends(get_db),
+async def resend_customer_invitation(user_id: UUID, body: ResendInvitationBody, db: AsyncSession = Depends(get_db),
                                      redis: Redis = Depends(get_redis),
                                      partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
     """Send setup links to an existing Partner in this Master's direct team."""
-    from app.services.partner_invitation import portal_base, send_dual_invitation
+    from app.services.partner_invitation import portal_base, send_invitation_channel
 
     if partner.role != 'master_partner':
         raise HTTPException(403, 'Only Master Partners can resend Partner invitations.')
@@ -209,15 +213,19 @@ async def resend_customer_invitation(user_id: UUID, db: AsyncSession = Depends(g
         raise HTTPException(404, 'Partner not found in your direct team.')
     if not linked.is_active:
         raise HTTPException(409, 'This Partner account is inactive. Contact support.')
+    if linked.password_changed_at is not None or linked.last_login is not None:
+        raise HTTPException(409, 'Password setup is complete. The customer can use Forgot Password in the Partner Portal.')
     portal_base()
     cooldown_key = f'partner:invitation:wait:{partner.partner_id}:{user_id}'
     if not await redis.set(cooldown_key, '1', ex=60, nx=True):
         raise HTTPException(429, 'Please wait one minute before sending another invitation.')
     # Release the verification lock before contacting external providers.
     await db.commit()
-    delivery = await send_dual_invitation(linked, user, redis)
-    return {'success': True, 'data': partner_json(linked), 'invitation_sent': any(delivery.values()),
-            'invitation_channel': 'email_and_sms', 'invitation_delivery': delivery}
+    sent = await send_invitation_channel(linked, user, redis, body.invitation_channel)
+    delivery = {'sms': False, 'email': False}
+    delivery[body.invitation_channel] = sent
+    return {'success': True, 'data': partner_json(linked), 'invitation_sent': sent,
+            'invitation_channel': body.invitation_channel, 'invitation_delivery': delivery}
 
 
 @router.get('/partner/wallet')
