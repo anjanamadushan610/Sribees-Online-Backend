@@ -72,3 +72,19 @@ async def test_upgrade_reports_both_channel_outcomes(monkeypatch, sms, email):
     upgrade.assert_awaited_once()
     send.assert_awaited_once_with(upgraded, user, redis)
     db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('channel', ['sms', 'email'])
+@pytest.mark.parametrize('fails', [False, True])
+async def test_selected_delivery_never_sends_the_other_channel(monkeypatch, channel, fails):
+    sms, email = AsyncMock(), AsyncMock()
+    selected = sms if channel == 'sms' else email
+    if fails:
+        selected.side_effect = RuntimeError('Provider unavailable')
+    monkeypatch.setattr(partner_invitation, 'send_sms_invitation', sms)
+    monkeypatch.setattr(partner_invitation, 'send_invitation', email)
+    result = await partner_invitation.send_invitation_channel(object(), object(), AsyncMock(), channel)
+    assert result is not fails
+    selected.assert_awaited_once()
+    (email if channel == 'sms' else sms).assert_not_awaited()
