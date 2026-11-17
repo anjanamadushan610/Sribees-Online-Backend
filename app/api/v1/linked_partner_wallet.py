@@ -188,8 +188,6 @@ async def master_upgrade_customer(user_id: UUID, body: MasterUpgradeBody, db: As
 
     delivery = await send_dual_invitation(upgraded, user, redis)
     sent = any(delivery.values())
-    if not sent:
-        await redis.delete(cooldown_key)
     return {'success': True, 'data': partner_json(upgraded), 'invitation_sent': sent,
             'invitation_channel': 'email_and_sms', 'invitation_delivery': delivery}
 

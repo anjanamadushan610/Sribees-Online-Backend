@@ -48,6 +48,7 @@ async def test_upgrade_reports_both_channel_outcomes(monkeypatch, sms, email):
                                is_active=True, parent_partner_id=master_id)
     db, redis = AsyncMock(), AsyncMock()
     redis.set.return_value = True
+    redis.delete.side_effect = RuntimeError('Redis unavailable after commit')
     monkeypatch.setattr(PartnerWalletService, 'user_lock', AsyncMock(return_value=user))
     upgrade = AsyncMock(return_value=upgraded)
     monkeypatch.setattr(PartnerWalletService, 'master_upgrade', upgrade)
