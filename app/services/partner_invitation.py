@@ -3,6 +3,7 @@
 Email links use purpose-scoped JWTs. SMS links use short opaque credentials
 whose hashes are stored in Redis. A password change invalidates both kinds.
 """
+import asyncio
 import hashlib
 import hmac
 import html
@@ -14,6 +15,7 @@ from uuid import UUID
 
 import jwt
 from fastapi import HTTPException
+from loguru import logger
 from sqlalchemy import select
 
 from app.config.settings import settings
@@ -79,6 +81,24 @@ def verified_sms_phone(user):
         return normalize_mobile(user.phone)
     except ValueError:
         raise HTTPException(409, 'The customer primary phone number is invalid.') from None
+
+
+async def send_dual_invitation(partner, user, redis):
+    """Attempt both channels independently and report provider acceptance."""
+    async def attempt(channel, operation):
+        try:
+            await operation
+        except Exception:
+            # Provider errors can contain credentials or invitation links.
+            logger.warning('Partner invitation {} sending failed', channel)
+            return False
+        return True
+
+    sms_sent, email_sent = await asyncio.gather(
+        attempt('sms', send_sms_invitation(partner, user, redis)),
+        attempt('email', send_invitation(partner)),
+    )
+    return {'sms': sms_sent, 'email': email_sent}
 
 
 def sms_gateway():
