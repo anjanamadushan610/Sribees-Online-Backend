@@ -91,6 +91,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     # The app's presence heartbeat: guests have the app open too. Writes only
     # its own install's row; a customer comes from the token, never the body.
     ("POST", "/api/v1/app/usage/heartbeat"),
+    # The activity log (owner 2026-11-19): guests' browsing is the point.
+    # Writes only rows naming its own install; customer from the token.
+    ("POST", "/api/v1/app/activity/batch"),
     # Version numbers only, so the app knows whether to re-read; a guest's
     # catalog has versions too. Carries no data about anyone.
     ("GET", "/api/v1/app/sync-state"),
