@@ -44,6 +44,7 @@ from sqlalchemy import Select, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.redis import RedisKeys
+from app.models.activity import ActivityEvent
 from app.models.app_usage import AppInstall, AppUsageDay
 from app.models.assistant import (
     AssistantChatLog,
@@ -140,6 +141,7 @@ async def close_account(
     for model in (
         WishlistItem,
         Notification,
+        ActivityEvent,
         AssistantChatLog,
         AssistantProfile,
         AssistantReminder,

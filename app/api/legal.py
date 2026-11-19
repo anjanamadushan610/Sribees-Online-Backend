@@ -36,7 +36,7 @@ _PRIVACY_HTML = """<!doctype html>
 </head>
 <body>
 <h1>Privacy Policy</h1>
-<p class="meta">Sribees Online &middot; Effective 1 November 2026</p>
+<p class="meta">Sribees Online &middot; Effective 19 November 2026</p>
 
 <p>Sribees Digitel Solutions (the software arm of Sribees Lanka (Pvt) Ltd,
 "Sribees", "we", "us") operates the Sribees Online app and website. This
@@ -83,6 +83,16 @@ device token (via Firebase Cloud Messaging) so we can send you order
 updates and offers, and basic device/app information (device model, OS
 version, app version) used for crash and error reporting (via Sentry) and
 to make sure the app is working correctly.</li>
+<li><strong>How you use the app and website:</strong> the screens and pages
+you open and how long you stay, how far you scroll, the products and product
+photos you look at, what you search for, changes to your cart and saved items,
+offers and coupons you tap, and the steps of checkout. This is recorded from
+the moment you open the app or website, including before you sign in, against
+a random identifier for that install or browser; once you sign in on it, it is
+linked to your account. We use it to understand what shoppers look for and to
+improve the shop. It is kept while your account is open and deleted when you
+close your account. It never includes passwords, sign-in codes, card details or
+the messages you type.</li>
 <li><strong>Referral &amp; install information:</strong> a referral code you
 enter or share, and, on Android, install-referrer information used to
 credit the correct referral.</li>
@@ -97,6 +107,8 @@ accounts.</li>
 opted out) offers and promotions, by push notification and/or SMS.</li>
 <li>To respond to your support messages and tickets.</li>
 <li>To diagnose crashes and errors and improve the app.</li>
+<li>To understand which products and screens shoppers use, so we can improve
+the range, search and layout of the shop.</li>
 <li>To credit referral rewards and loyalty points correctly.</li>
 </ul>
 
@@ -227,8 +239,9 @@ on file to confirm the request before deleting anything.</p>
 <h2 style="margin-top:0; border-bottom:none;">What is removed</h2>
 <p>Straight away: your name, phone numbers and email, saved addresses,
 wishlist, notifications inbox, cart, support tickets, the AI assistant's
-chat history, saved preferences and reminders, and your push notification
-token. You are signed out everywhere. If you signed in with Google or Apple,
+chat history, saved preferences and reminders, the record of how you used
+the app and website, and your push notification token. You are signed out
+everywhere. If you signed in with Google or Apple,
 that link is removed, and Sign in with Apple is also revoked with Apple.
 Your phone number, email and Google or Apple account are released and may
 be used to open a new account.</p>

@@ -6,6 +6,7 @@ Main router that aggregates all API v1 endpoints.
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    activity,
     admin,
     admin_analytics,
     admin_assistant_briefings,
@@ -497,6 +498,18 @@ router.include_router(
     app_usage.admin_router,
     prefix="/admin/app-usage",
     tags=["Admin App Usage"],
+)
+# Customer activity log: the app/web send batches (/app/activity/batch, guests
+# too); Super Admin reads one timeline (/admin/activity).
+router.include_router(
+    activity.router,
+    prefix="/app",
+    tags=["App Activity"],
+)
+router.include_router(
+    activity.admin_router,
+    prefix="/admin/activity",
+    tags=["Admin Activity"],
 )
 
 # Customer support tickets (/support)

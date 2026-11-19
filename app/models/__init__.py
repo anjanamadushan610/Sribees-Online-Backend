@@ -4,6 +4,7 @@ SRIBEESonline FastAPI Backend - Models Module
 SQLAlchemy ORM models for all database tables.
 """
 
+from app.models.activity import ActivityEvent
 from app.models.admin import Admin, AdminRole, AdminSession
 from app.models.admin_push import AdminOrderAlert, AdminPushToken
 from app.models.app_content import AppContent
@@ -206,6 +207,7 @@ __all__ = [
     "AppSetting",
     "AppContent",
     "AppInstall",
+    "ActivityEvent",
     "AppUsageDay",
     # Stock transfers
     "StockTransfer",
