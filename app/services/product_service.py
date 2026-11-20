@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import and_, func, literal, or_, select
+from sqlalchemy import and_, delete, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -337,6 +337,7 @@ class ProductService:
 
         db.add(product)
         await db.flush()
+        await ProductService.replace_extra_categories(db, product, data.extra_category_ids)
 
         if data.images:
             has_primary = any(img.is_primary for img in data.images)
@@ -359,6 +360,16 @@ class ProductService:
         await db.refresh(product)
 
         return product
+
+    @staticmethod
+    async def replace_extra_categories(db: AsyncSession, product: Product, category_ids: List[UUID]) -> None:
+        # Replace the association set atomically with the product update. Never
+        # duplicate stock, images or prices when placing a product on another shelf.
+        await db.execute(delete(ProductExtraCategory).where(
+            ProductExtraCategory.product_id == product.product_id
+        ))
+        for category_id in sorted(set(category_ids) - {product.category_id, product.subcategory_id}, key=str):
+            db.add(ProductExtraCategory(product_id=product.product_id, subcategory_id=category_id))
 
     @staticmethod
     async def update(
@@ -412,9 +423,12 @@ class ProductService:
                 BranchVariantInventory.__table__.c.variant_id.in_(
                     select(ProductVariant.variant_id).where(ProductVariant.product_id == product.product_id))))
 
+        extra_category_ids = update_data.pop("extra_category_ids", None)
         old_price = product.price if "price" in update_data else None
         for field, value in update_data.items():
             setattr(product, field, value)
+        if extra_category_ids is not None:
+            await ProductService.replace_extra_categories(db, product, extra_category_ids)
         if "price" in update_data and product.sold_by_weight:
             # The price is the price per kg: every weight follows it.
             await weight_options.follow_product_price(db, product, old_price)

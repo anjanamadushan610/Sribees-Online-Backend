@@ -374,3 +374,24 @@ async def test_category_display_order_preserves_hierarchy_and_reaches_storefront
     home = (await api.get("/api/v1/categories?top_level_only=true")).json()["data"]["categories"]
     assert [c["category_id"] for c in home[:2]] == new_roots[:2]
     assert (await api.put("/api/v1/admin/categories/reorder", json={"category_ids": roots, "expected_category_ids": new_roots}, headers=admin.headers)).status_code == 200
+
+
+async def test_product_additional_categories_create_edit_and_validation(api, world, make_admin):
+    admin = await make_admin("super_admin", api=api)
+    primary = _id(await _category(api, admin), "category_id", "id")
+    other = _id(await _category(api, admin), "category_id", "id")
+    child = _id(await _category(api, admin, parent=other), "category_id", "id")
+    product = await _product(api, admin, primary, extra_category_ids=[other, child, child, primary])
+    assert set(product["extra_category_ids"]) == {other, child}
+    pid = product["product_id"]
+    url = f"/api/v1/admin/products/{pid}"
+    r = await api.put(url, json={"extra_category_ids": [str(uuid.uuid4())]}, headers=admin.headers)
+    assert r.status_code == 400, r.text
+    r = await api.get(url, headers=admin.headers)
+    assert set(r.json()["data"]["extra_category_ids"]) == {other, child}
+    r = await api.put(url, json={"extra_category_ids": [child]}, headers=admin.headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["extra_category_ids"] == [child]
+    r = await api.put(url, json={"extra_category_ids": []}, headers=admin.headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["extra_category_ids"] == []
