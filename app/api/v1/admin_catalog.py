@@ -849,6 +849,7 @@ async def create_product(
 
     try:
         await CategoryService.validate_subcategory(db, data.category_id, data.subcategory_id)
+        await CategoryService.validate_extra_categories(db, data.extra_category_ids)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
@@ -958,6 +959,12 @@ async def update_product(
     # move the category without resending subcategory_id (or vice versa), and
     # the stale half still has to satisfy the parent-child contract.
     fields = data.model_dump(exclude_unset=True)
+    if "extra_category_ids" in fields:
+        try:
+            await CategoryService.validate_extra_categories(db, data.extra_category_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     next_category = fields.get("category_id", product.category_id)
     next_subcategory = fields.get("subcategory_id", product.subcategory_id)
     if next_category is None:

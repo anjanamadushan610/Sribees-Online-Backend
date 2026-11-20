@@ -160,6 +160,7 @@ def format_product(
     # filter/group without having to reach into the nested shape.
     data["category_id"] = str(product.category_id) if product.category_id else None
     data["subcategory_id"] = str(product.subcategory_id) if product.subcategory_id else None
+    data["extra_category_ids"] = sorted(str(row.subcategory_id) for row in getattr(product, "extra_categories", []))
 
     if product.category:
         data["category"] = {
@@ -828,6 +829,7 @@ async def create_product(
 
     try:
         await CategoryService.validate_subcategory(db, data.category_id, data.subcategory_id)
+        await CategoryService.validate_extra_categories(db, data.extra_category_ids)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
@@ -909,6 +911,12 @@ async def update_product(
     # Validate the category/sub-category pair the product ends up with, since a
     # partial update may move only one half of it.
     fields = data.model_dump(exclude_unset=True)
+    if "extra_category_ids" in fields:
+        try:
+            await CategoryService.validate_extra_categories(db, data.extra_category_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     try:
         await CategoryService.validate_subcategory(
             db,

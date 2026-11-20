@@ -420,6 +420,9 @@ class CategoryService:
                 or_(
                     Product.category_id == category_id,
                     Product.subcategory_id == category_id,
+                    Product.product_id.in_(select(ProductExtraCategory.product_id).where(
+                        ProductExtraCategory.subcategory_id == category_id
+                    )),
                 )
             )
         )
@@ -449,6 +452,18 @@ class CategoryService:
             .where(Category.parent_category_id == category_id)
         )
         return [category_id, *children.scalars().all()]
+
+    @staticmethod
+    async def validate_extra_categories(db: AsyncSession, category_ids: List[UUID]) -> None:
+        """Additional shelves may be either roots or subcategories, but must exist."""
+        ids = set(category_ids)
+        if not ids:
+            return
+        found = set((await db.execute(
+            select(Category.category_id).where(Category.category_id.in_(ids))
+        )).scalars().all())
+        if found != ids:
+            raise ValueError("One or more additional categories no longer exist. Reload categories and try again.")
 
     @staticmethod
     async def validate_subcategory(

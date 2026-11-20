@@ -124,6 +124,10 @@ class ProductCreate(BaseModel):
     # category filtering and inventory sync silently disagrees on what
     # "this product" even is without a SKU.
     category_id: UUID
+    extra_category_ids: List[UUID] = Field(
+        default_factory=list, max_length=100,
+        description="Additional category or sub-category shelves; parent categories are included automatically.",
+    )
     subcategory_id: Optional[UUID] = Field(
         None,
         description="Sub-category — must be a child of category_id",
@@ -199,6 +203,10 @@ class ProductUpdate(BaseModel):
         ),
     )
     category_id: Optional[UUID] = None
+    extra_category_ids: List[UUID] = Field(
+        default_factory=list, max_length=100,
+        description="Additional category or sub-category shelves; parent categories are included automatically.",
+    )
     subcategory_id: Optional[UUID] = Field(
         None,
         description="Sub-category — must be a child of category_id",
