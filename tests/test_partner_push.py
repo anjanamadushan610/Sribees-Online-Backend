@@ -28,20 +28,22 @@ def test_render_falls_back_to_english_and_fills_values():
 
 
 @pytest.mark.asyncio
-async def test_notify_partner_never_raises(monkeypatch):
-    class Boom:
-        async def execute(self, *_a, **_k):
-            raise RuntimeError("db down")
+async def test_notify_partner_never_raises_and_uses_its_own_session(monkeypatch):
+    import app.config.database as database
 
-    assert await partner_push.notify_partner(Boom(), uuid4(), "customer_joined") == 0
-    assert await partner_push.notify_partner(Boom(), None, "customer_joined") == 0
+    def boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(database, "async_session_maker", boom)
+    assert await partner_push.notify_partner(uuid4(), "customer_joined") == 0
+    assert await partner_push.notify_partner(None, "customer_joined") == 0
 
 
 @pytest.mark.asyncio
 async def test_earnings_ready_is_one_push_per_partner_with_total(monkeypatch):
     calls = []
 
-    async def fake_notify(db, partner_id, kind, **values):
+    async def fake_notify(partner_id, kind, **values):
         calls.append((partner_id, kind, values))
         return 1
 
@@ -54,7 +56,7 @@ async def test_earnings_ready_is_one_push_per_partner_with_total(monkeypatch):
         SimpleNamespace(beneficiary_partner_id=p2, amount=Decimal("0"), order_id=o1),
         SimpleNamespace(beneficiary_partner_id=None, amount=Decimal("9"), order_id=o1),
     ]
-    assert await partner_push.notify_earnings_ready(None, rows) == 1
+    assert await partner_push.notify_earnings_ready(rows) == 1
     assert calls == [(p1, "earnings_ready", {"amount": "Rs. 15.00", "orders": 2})]
 
 
@@ -62,13 +64,13 @@ async def test_earnings_ready_is_one_push_per_partner_with_total(monkeypatch):
 async def test_withdrawal_decision_picks_the_right_message(monkeypatch):
     seen = []
 
-    async def fake_notify(db, partner_id, kind, **values):
+    async def fake_notify(partner_id, kind, **values):
         seen.append((kind, values["amount"]))
         return 1
 
     monkeypatch.setattr(partner_push, "notify_partner", fake_notify)
-    await partner_push.notify_withdrawal_decided(None, SimpleNamespace(status="paid", partner_id=uuid4(), amount=Decimal("500")))
-    await partner_push.notify_withdrawal_decided(None, SimpleNamespace(status="rejected", partner_id=uuid4(), amount=Decimal("500")))
+    await partner_push.notify_withdrawal_decided(uuid4(), "paid", Decimal("500"))
+    await partner_push.notify_withdrawal_decided(uuid4(), "rejected", Decimal("500"))
     assert seen == [("withdrawal_paid", "Rs. 500.00"), ("withdrawal_rejected", "Rs. 500.00")]
 
 
@@ -116,8 +118,8 @@ async def test_register_moves_token_and_unregister_is_owner_only(partner_db, mon
 
     db, (a, b) = partner_db
     token = "tok-" + uuid4().hex * 2
-    await partner_push.register_device(db, a.partner_id, token, "android", "si", "1.0.0+1")
-    await partner_push.register_device(db, b.partner_id, token, "android", "ta", "1.0.0+1")
+    await partner_push.register_device(db, a, token, "android", "si", "1.0.0+1")
+    await partner_push.register_device(db, b, token, "android", "ta", "1.0.0+1")
     row = (await db.execute(select(PartnerDevice).where(PartnerDevice.token == token))).scalar_one()
     assert row.partner_id == b.partner_id and row.locale == "ta" and row.is_active
 
@@ -133,7 +135,21 @@ async def test_register_moves_token_and_unregister_is_owner_only(partner_db, mon
         return {"success_count": len(tokens), "invalid_tokens": list(tokens)}
 
     monkeypatch.setattr(FCMService, "send_to_tokens", fake_send)
-    assert await partner_push.notify_partner(db, b.partner_id, "customer_joined") == 1
+    # A password change silences phones registered under the old password.
+    from datetime import datetime, timezone
+    b.password_changed_at = datetime.now(timezone.utc)
+    await db.flush()
+    assert await partner_push._notify(db, b.partner_id, "customer_joined") == 0
+    await partner_push.register_device(db, b, token, "android", "ta", "1.0.0+1")
+    # A deactivated partner gets nothing.
+    b.is_active = False
+    await db.flush()
+    assert await partner_push._notify(db, b.partner_id, "customer_joined") == 0
+    b.is_active = True
+    await db.flush()
+    assert sent == []
+
+    assert await partner_push._notify(db, b.partner_id, "customer_joined") == 1
     assert sent[0][0] == [token]
     assert sent[0][1] == partner_push.TEMPLATES["customer_joined"]["ta"]
     assert sent[0][2] == {"type": "customer_joined", "screen": "customers"}
@@ -141,9 +157,9 @@ async def test_register_moves_token_and_unregister_is_owner_only(partner_db, mon
     # FCM said the token is dead: it is switched off.
     await db.refresh(row)
     assert not row.is_active
-    assert await partner_push.notify_partner(db, a.partner_id, "customer_joined") == 0
+    assert await partner_push._notify(db, a.partner_id, "customer_joined") == 0
 
-    await partner_push.register_device(db, b.partner_id, token, "android", "en", None)
+    await partner_push.register_device(db, b, token, "android", "en", None)
     await partner_push.unregister_device(db, b.partner_id, token)
     await db.refresh(row)
     assert not row.is_active

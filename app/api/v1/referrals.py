@@ -20,7 +20,7 @@ Prefix "/referrals" is applied by app/api/v1/router.py.
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -138,6 +138,7 @@ async def get_commissions_from_friend(
 @router.post("/redeem", response_model=dict)
 async def redeem_referral_code(
     body: RedeemReferralRequest,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -155,13 +156,13 @@ async def redeem_referral_code(
     except ReferralError as exc:
         raise _referral_error(exc)
 
-    # The binding is committed; tell the partner (SRIBEES Partner app).
-    # Best-effort: notify_partner never raises.
+    # The binding is committed; tell the partner (SRIBEES Partner app) after
+    # the response, on its own session. notify_partner never raises.
     partner_id = getattr(bound, "referred_by_partner_id", None)
     if partner_id is not None:
         from app.services.partner_push import notify_partner
 
-        await notify_partner(db, partner_id, "customer_joined")
+        background.add_task(notify_partner, partner_id, "customer_joined")
 
     return {
         "success": True,

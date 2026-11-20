@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -319,12 +319,13 @@ async def withdrawals(db: AsyncSession = Depends(get_db), admin=Depends(require_
 
 
 @router.post('/admin/partners/withdrawals/{withdrawal_id}/decision')
-async def decide_withdrawal(withdrawal_id: UUID, body: WithdrawalDecision, db: AsyncSession = Depends(get_db), admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
+async def decide_withdrawal(withdrawal_id: UUID, body: WithdrawalDecision, background: BackgroundTasks, db: AsyncSession = Depends(get_db), admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
     row = await Service.decide_withdrawal(db, withdrawal_id, admin.admin_id, body.decision == 'paid', body.payment_reference, body.note)
     await db.commit()
-    # After the commit: the decision stands whether or not the push goes out.
+    # After the response, on its own session: the decision stands whether or
+    # not the push goes out, and a push failure can never reach the admin.
     from app.services.partner_push import notify_withdrawal_decided
-    await notify_withdrawal_decided(db, row)
+    background.add_task(notify_withdrawal_decided, row.partner_id, row.status, row.amount)
     return {'success': True, 'data': withdrawal_json(row, admin=True)}
 
 

@@ -55,8 +55,7 @@ async def sweep_once() -> int:
     try:
         from app.services.partner_push import notify_earnings_ready
 
-        async with async_session_maker() as db:
-            await notify_earnings_ready(db, vested)
+        await notify_earnings_ready(vested)
     except Exception:
         logger.exception("Partner earnings-ready pushes failed; the money is claimable either way")
 

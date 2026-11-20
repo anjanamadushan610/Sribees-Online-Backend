@@ -9,10 +9,16 @@ Owner, 2026-11-20: a partner hears about three things, and only these:
 * ``withdrawal_paid`` / ``withdrawal_rejected`` — an admin decided a
   withdrawal request.
 
-Never raises. Every caller has already committed the money or the binding;
-a push is news about it, and a failure here must not look like a failure of
-the thing it reports. The customer's name is never sent — a lock screen is
-not private — only counts and amounts.
+Never raises, and never touches the caller's database session: every caller
+has already committed the money or the binding, and a push is news about it.
+``notify_partner`` opens its own session, so a failure here cannot turn a
+committed withdrawal decision into an error for the admin. Routes run it as
+a background task, after the response. The customer's name is never sent —
+a lock screen is not private — only counts and amounts.
+
+Only phones registered under the partner's current password get pushes
+(``pwv``, the same stamp that ends sessions), and only while the partner is
+active: resetting the password of a stolen phone's account silences it.
 """
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -36,9 +42,9 @@ TEMPLATES: Dict[str, Dict[str, str]] = {
         "ta": "உங்கள் அழைப்புக் குறியீட்டுடன் புதிய வாடிக்கையாளர் இணைந்துள்ளார். அவர்களின் ஆர்டர்கள் உங்களுக்கு கமிஷன் தரும்.",
     },
     "earnings_ready": {
-        "en": "{amount} from {orders} order(s) is now ready in your Partner wallet.",
-        "si": "ඇණවුම් {orders} කින් {amount} දැන් ඔබේ Partner wallet එකේ ගන්න පුළුවන්.",
-        "ta": "{orders} ஆர்டர்களிலிருந்து {amount} இப்போது உங்கள் Partner wallet-இல் தயாராக உள்ளது.",
+        "en": "{amount} in commission from {orders} order(s) is now ready to claim.",
+        "si": "ඇණවුම් {orders} කින් ලැබුණු {amount} commission එක දැන් ගන්න පුළුවන්.",
+        "ta": "{orders} ஆர்டர்களிலிருந்து {amount} கமிஷன் இப்போது பெறத் தயாராக உள்ளது.",
     },
     "withdrawal_paid": {
         "en": "Your withdrawal of {amount} has been paid to your bank account.",
@@ -55,7 +61,7 @@ TEMPLATES: Dict[str, Dict[str, str]] = {
 # Where a tap lands in the app (lib/core/push.dart routes on it).
 SCREENS = {
     "customer_joined": "customers",
-    "earnings_ready": "wallet",
+    "earnings_ready": "earnings",
     "withdrawal_paid": "wallet",
     "withdrawal_rejected": "wallet",
 }
@@ -68,7 +74,7 @@ def render(kind: str, lang: Optional[str], **values) -> str:
 
 async def register_device(
     db: AsyncSession,
-    partner_id: UUID,
+    partner,
     token: str,
     platform: str,
     locale: str,
@@ -76,7 +82,10 @@ async def register_device(
 ) -> None:
     """Upsert by token: a phone belongs to whoever signed in on it last."""
     from app.models.partner_device import PartnerDevice
+    from app.services.partner_service import password_stamp
 
+    partner_id = partner.partner_id
+    pwv = password_stamp(partner)
     now = datetime.now(timezone.utc)
     row = (
         await db.execute(
@@ -88,7 +97,7 @@ async def register_device(
             PartnerDevice(
                 partner_id=partner_id, token=token, platform=platform,
                 locale=normalize_lang(locale), app_version=app_version,
-                is_active=True, created_at=now, last_seen_at=now,
+                is_active=True, pwv=pwv, created_at=now, last_seen_at=now,
             )
         )
     else:
@@ -97,6 +106,7 @@ async def register_device(
         row.locale = normalize_lang(locale)
         row.app_version = app_version
         row.is_active = True
+        row.pwv = pwv
         row.last_seen_at = now
     await db.flush()
 
@@ -113,57 +123,69 @@ async def unregister_device(db: AsyncSession, partner_id: UUID, token: str) -> N
     await db.flush()
 
 
-async def notify_partner(
-    db: AsyncSession, partner_id: Optional[UUID], kind: str, **values
-) -> int:
-    """Push one message to every active phone of a partner. Returns phones reached."""
+async def notify_partner(partner_id: Optional[UUID], kind: str, **values) -> int:
+    """Push one message to every current phone of a partner. Returns phones reached."""
     if partner_id is None:
         return 0
+    from app.config.database import async_session_maker
+
     try:
-        from app.models.partner_device import PartnerDevice
-        from app.services.fcm_service import FCMService
-
-        devices = (
-            await db.execute(
-                select(PartnerDevice.token, PartnerDevice.locale).where(
-                    PartnerDevice.partner_id == partner_id, PartnerDevice.is_active.is_(True)
-                )
-            )
-        ).all()
-        if not devices:
-            return 0
-
-        by_lang: Dict[str, list] = {}
-        for token, locale in devices:
-            by_lang.setdefault(normalize_lang(locale), []).append(token)
-
-        data = {"type": kind, "screen": SCREENS[kind]}
-        reached = 0
-        dead: list = []
-        for lang, tokens in by_lang.items():
-            result = await FCMService.send_to_tokens(
-                tokens,
-                title=BRAND_TITLE,
-                body=render(kind, lang, **values),
-                data=data,
-                channel_id=PARTNER_CHANNEL_ID,
-                tag=f"{kind}:{partner_id}" if kind == "earnings_ready" else None,
-            )
-            reached += int(result.get("success_count", 0))
-            dead.extend(result.get("invalid_tokens", []))
-
-        if dead:
-            await db.execute(
-                update(PartnerDevice).where(PartnerDevice.token.in_(dead)).values(is_active=False)
-            )
-            await db.commit()
-        return reached
+        async with async_session_maker() as db:
+            return await _notify(db, partner_id, kind, **values)
     except Exception:
         logger.exception(f"Partner push {kind} failed for partner={partner_id}")
         return 0
 
 
-async def notify_earnings_ready(db: AsyncSession, commissions: Iterable) -> int:
+async def _notify(db: AsyncSession, partner_id: UUID, kind: str, **values) -> int:
+    from app.models.partner import Partner
+    from app.models.partner_device import PartnerDevice
+    from app.services.fcm_service import FCMService
+    from app.services.partner_service import password_stamp
+
+    partner = await db.get(Partner, partner_id)
+    if partner is None or not partner.is_active:
+        return 0
+    devices = (
+        await db.execute(
+            select(PartnerDevice.token, PartnerDevice.locale).where(
+                PartnerDevice.partner_id == partner_id,
+                PartnerDevice.is_active.is_(True),
+                PartnerDevice.pwv == password_stamp(partner),
+            )
+        )
+    ).all()
+    if not devices:
+        return 0
+
+    by_lang: Dict[str, list] = {}
+    for token, locale in devices:
+        by_lang.setdefault(normalize_lang(locale), []).append(token)
+
+    data = {"type": kind, "screen": SCREENS[kind]}
+    reached = 0
+    dead: list = []
+    for lang, tokens in by_lang.items():
+        result = await FCMService.send_to_tokens(
+            tokens,
+            title=BRAND_TITLE,
+            body=render(kind, lang, **values),
+            data=data,
+            channel_id=PARTNER_CHANNEL_ID,
+            tag=f"{kind}:{partner_id}" if kind == "earnings_ready" else None,
+        )
+        reached += int(result.get("success_count", 0))
+        dead.extend(result.get("invalid_tokens", []))
+
+    if dead:
+        await db.execute(
+            update(PartnerDevice).where(PartnerDevice.token.in_(dead)).values(is_active=False)
+        )
+        await db.commit()
+    return reached
+
+
+async def notify_earnings_ready(commissions: Iterable) -> int:
     """One push per partner per vesting sweep, with the total."""
     totals: Dict[UUID, Decimal] = {}
     orders: Dict[UUID, set] = {}
@@ -178,14 +200,12 @@ async def notify_earnings_ready(db: AsyncSession, commissions: Iterable) -> int:
     sent = 0
     for partner_id, amount in totals.items():
         sent += await notify_partner(
-            db, partner_id, "earnings_ready",
+            partner_id, "earnings_ready",
             amount=money(amount), orders=len(orders[partner_id]),
         )
     return sent
 
 
-async def notify_withdrawal_decided(db: AsyncSession, withdrawal) -> int:
-    kind = "withdrawal_paid" if withdrawal.status == "paid" else "withdrawal_rejected"
-    return await notify_partner(
-        db, withdrawal.partner_id, kind, amount=money(withdrawal.amount)
-    )
+async def notify_withdrawal_decided(partner_id: UUID, status: str, amount) -> int:
+    kind = "withdrawal_paid" if status == "paid" else "withdrawal_rejected"
+    return await notify_partner(partner_id, kind, amount=money(amount))

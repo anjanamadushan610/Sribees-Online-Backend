@@ -13,6 +13,10 @@
 -- locale: en / si / ta, the language the app was in at registration, so the
 --   push is written in the partner's language.
 -- is_active: false after sign-out or when FCM says the token is dead.
+-- pwv: the partner's password stamp when the phone registered. A password
+--   change or reset ends every session (same stamp as the token's pwv claim),
+--   so a phone registered under an older password gets no more pushes --
+--   a stolen phone stops showing earnings once the partner resets.
 --
 -- Idempotent -- the deploy applies this file again on each release.
 -- =============================================================================
@@ -25,6 +29,7 @@ CREATE TABLE IF NOT EXISTS partner_devices (
     locale        VARCHAR(5)   NOT NULL DEFAULT 'en',
     app_version   VARCHAR(40)  NULL,
     is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
+    pwv           BIGINT       NOT NULL DEFAULT 0,
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
     last_seen_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT uq_partner_devices_token UNIQUE (token),

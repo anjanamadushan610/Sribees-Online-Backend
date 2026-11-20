@@ -466,7 +466,7 @@ async def register_partner_device(
     from app.services.partner_push import register_device
 
     await register_device(
-        db, partner.partner_id, body.token, body.platform, body.locale, body.app_version
+        db, partner, body.token, body.platform, body.locale, body.app_version
     )
     await db.commit()
     return {"success": True}
