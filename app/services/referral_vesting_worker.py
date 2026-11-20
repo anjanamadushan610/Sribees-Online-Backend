@@ -51,6 +51,14 @@ async def sweep_once() -> int:
             "the money is claimable either way"
         )
 
+    # Partners hear it in the SRIBEES Partner app (customers above, in theirs).
+    try:
+        from app.services.partner_push import notify_earnings_ready
+
+        await notify_earnings_ready(vested)
+    except Exception:
+        logger.exception("Partner earnings-ready pushes failed; the money is claimable either way")
+
     return len(vested)
 
 

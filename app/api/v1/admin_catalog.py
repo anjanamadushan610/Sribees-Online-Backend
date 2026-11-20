@@ -41,12 +41,13 @@ from app.core.dependencies import (
     get_current_admin,
     inject_branch_filter,
     require_permission,
+    require_roles,
 )
 from app.core.media import media_path, media_url
 from app.models.admin import Admin, AdminRole
 from app.models.product import BranchInventory
 from app.models.search_miss import SearchMissStatus
-from app.schemas.category import CategoryCreate, CategoryUpdate
+from app.schemas.category import CategoryCreate, CategoryReorderRequest, CategoryUpdate
 from app.schemas.product import (
     ProductCreate,
     ProductImageCreate,
@@ -283,6 +284,18 @@ async def list_categories(
         "success": True,
         "data": {"categories": [_format_category(c) for c in categories]},
     }
+
+
+@router.put("/categories/reorder", response_model=dict,
+            dependencies=[Depends(require_roles("super_admin"))])
+async def reorder_categories(
+    data: CategoryReorderRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Save the storefront order of one complete sibling group."""
+    await CategoryService.reorder(db, data)
+    await db.commit()
+    return {"success": True, "message": "Category order saved."}
 
 
 @router.post(
@@ -836,6 +849,7 @@ async def create_product(
 
     try:
         await CategoryService.validate_subcategory(db, data.category_id, data.subcategory_id)
+        await CategoryService.validate_extra_categories(db, data.extra_category_ids)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
@@ -945,6 +959,12 @@ async def update_product(
     # move the category without resending subcategory_id (or vice versa), and
     # the stale half still has to satisfy the parent-child contract.
     fields = data.model_dump(exclude_unset=True)
+    if "extra_category_ids" in fields:
+        try:
+            await CategoryService.validate_extra_categories(db, data.extra_category_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     next_category = fields.get("category_id", product.category_id)
     next_subcategory = fields.get("subcategory_id", product.subcategory_id)
     if next_category is None:

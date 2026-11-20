@@ -1,15 +1,18 @@
-"""Customer-consented, Super Admin-approved partner upgrades and withdrawals."""
+"""Linked Partner Wallet, customer upgrades, and partner withdrawals."""
 import os
+import secrets
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
+from app.config.redis import get_redis
 from app.core.dependencies import (
     get_current_partner,
     get_current_user,
@@ -51,6 +54,21 @@ class ApplicationDecision(Body):
     decision: Literal['approve', 'reject']
     master_partner_id: UUID | None = None
     note: str | None = Field(None, max_length=500)
+
+
+class AdminUpgradeBody(Body):
+    invitation_channel: Literal['email', 'sms'] = 'email'
+    master_partner_id: UUID | None = None
+    customer_consent_confirmed: Literal[True]
+    note: str = Field(min_length=1, max_length=400)
+
+
+class MasterUpgradeBody(Body):
+    customer_consent_confirmed: Literal[True]
+
+
+class ResendInvitationBody(Body):
+    invitation_channel: Literal['email', 'sms']
 
 
 class AmountBody(Body):
@@ -136,6 +154,80 @@ async def portal_linked(db, partner):
     await Service.user_lock(db, partner.user_id)
 
 
+@router.post('/partner/customers/{user_id}/upgrade')
+async def master_upgrade_customer(user_id: UUID, body: MasterUpgradeBody, db: AsyncSession = Depends(get_db),
+                                  redis: Redis = Depends(get_redis),
+                                  partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
+    """Promote a Master Partner's own referred customer without admin approval."""
+    from app.services.partner_invitation import (
+        portal_base,
+        send_dual_invitation,
+    )
+
+    if partner.role != 'master_partner':
+        raise HTTPException(403, 'Only Master Partners can make a direct customer a Partner.')
+    if body.customer_consent_confirmed is not True:
+        raise HTTPException(400, 'Confirm that the customer agreed to become a Partner.')
+
+    user = await Service.user_lock(db, user_id)
+    if user.referred_by_partner_id != partner.partner_id:
+        raise HTTPException(404, 'Customer not found in your direct customer list.')
+    # Validate the shared link destination before creating the account.
+    portal_base()
+    cooldown_key = f'partner:invitation:wait:{partner.partner_id}:{user_id}'
+    if not await redis.set(cooldown_key, '1', ex=60, nx=True):
+        raise HTTPException(429, 'Please wait one minute before trying again.')
+
+    try:
+        upgraded = await Service.master_upgrade(
+            db, user_id, partner.partner_id, secrets.token_urlsafe(48)
+        )
+        # The random initial credential is never shared; the setup links
+        # let the customer choose their own password.
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        await redis.delete(cooldown_key)
+        raise
+
+    delivery = await send_dual_invitation(upgraded, user, redis)
+    sent = any(delivery.values())
+    return {'success': True, 'data': partner_json(upgraded), 'invitation_sent': sent,
+            'invitation_channel': 'email_and_sms', 'invitation_delivery': delivery}
+
+
+@router.post('/partner/customers/{user_id}/invitation')
+async def resend_customer_invitation(user_id: UUID, body: ResendInvitationBody, db: AsyncSession = Depends(get_db),
+                                     redis: Redis = Depends(get_redis),
+                                     partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
+    """Send setup links to an existing Partner in this Master's direct team."""
+    from app.services.partner_invitation import portal_base, send_invitation_channel
+
+    if partner.role != 'master_partner':
+        raise HTTPException(403, 'Only Master Partners can resend Partner invitations.')
+    user = await Service.user_lock(db, user_id)
+    if user.referred_by_partner_id != partner.partner_id:
+        raise HTTPException(404, 'Customer not found in your direct customer list.')
+    linked = await Service.linked(db, user_id, active=False)
+    if linked is None or linked.parent_partner_id != partner.partner_id:
+        raise HTTPException(404, 'Partner not found in your direct team.')
+    if not linked.is_active:
+        raise HTTPException(409, 'This Partner account is inactive. Contact support.')
+    if linked.password_changed_at is not None or linked.last_login is not None:
+        raise HTTPException(409, 'Password setup is complete. The customer can use Forgot Password in the Partner Portal.')
+    portal_base()
+    cooldown_key = f'partner:invitation:wait:{partner.partner_id}:{user_id}'
+    if not await redis.set(cooldown_key, '1', ex=60, nx=True):
+        raise HTTPException(429, 'Please wait one minute before sending another invitation.')
+    # Release the verification lock before contacting external providers.
+    await db.commit()
+    sent = await send_invitation_channel(linked, user, redis, body.invitation_channel)
+    delivery = {'sms': False, 'email': False}
+    delivery[body.invitation_channel] = sent
+    return {'success': True, 'data': partner_json(linked), 'invitation_sent': sent,
+            'invitation_channel': body.invitation_channel, 'invitation_delivery': delivery}
+
+
 @router.get('/partner/wallet')
 async def portal_wallet(db: AsyncSession = Depends(get_db), partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
     await portal_linked(db, partner)
@@ -167,6 +259,52 @@ async def applications(db: AsyncSession = Depends(get_db), admin=Depends(require
     return {'success': True, 'data': [dict(application_json(r), name=n, email=e, phone=p) for r, n, e, p in rows]}
 
 
+@router.post('/admin/partners/customers/{user_id}/upgrade')
+async def upgrade_customer(user_id: UUID, body: AdminUpgradeBody, db: AsyncSession = Depends(get_db),
+                           redis: Redis = Depends(get_redis),
+                           admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
+    from app.models.partner import Partner
+    from app.services import email_sender
+    from app.services.partner_invitation import (
+        portal_base,
+        send_invitation,
+        send_sms_invitation,
+        sms_gateway,
+        verified_sms_phone,
+    )
+    from app.services.sms_gateway import SmsSendError
+
+    if body.invitation_channel == 'email' and not email_sender.is_configured():
+        raise HTTPException(503, 'Partner invitation email is not configured. No upgrade was performed.')
+    # Lock the customer first, matching the existing wallet/referral lock order.
+    user = await Service.user_lock(db, user_id)
+    if body.invitation_channel == 'sms':
+        verified_sms_phone(user)
+        sms_gateway()
+    partner = (await db.execute(select(Partner).where(Partner.user_id == user_id))).scalar_one_or_none()
+    if partner is None:
+        partner = await Service.admin_upgrade(db, user_id, admin.admin_id, secrets.token_urlsafe(48),
+                                             body.master_partner_id, body.note)
+    elif not partner.is_active or partner.email.lower() != (user.email or '').strip().lower():
+        raise HTTPException(409, 'The linked Partner email or account status needs review. Contact support.')
+    portal_base()  # Validate configuration before committing the upgrade.
+    cooldown_key = f'partner:invitation:wait:{partner.partner_id}'
+    if not await redis.set(cooldown_key, '1', ex=60, nx=True):
+        raise HTTPException(429, 'Please wait one minute before resending the invitation.')
+    await db.commit()
+    try:
+        if body.invitation_channel == 'sms':
+            await send_sms_invitation(partner, user, redis)
+        else:
+            await send_invitation(partner)
+    except (email_sender.EmailSendError, SmsSendError):
+        await redis.delete(cooldown_key)
+        # The upgrade has committed. Return an explicit partial-success result
+        # so retrying sends another invitation without duplicating the upgrade.
+        return {'success': True, 'data': partner_json(partner), 'invitation_sent': False, 'invitation_channel': body.invitation_channel}
+    return {'success': True, 'data': partner_json(partner), 'invitation_sent': True, 'invitation_channel': body.invitation_channel}
+
+
 @router.post('/admin/partners/applications/{application_id}/decision')
 async def decide_application(application_id: UUID, body: ApplicationDecision, db: AsyncSession = Depends(get_db), admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
     partner = await Service.decide_application(db, application_id, admin.admin_id, body.decision == 'approve', body.master_partner_id, body.note)
@@ -181,9 +319,13 @@ async def withdrawals(db: AsyncSession = Depends(get_db), admin=Depends(require_
 
 
 @router.post('/admin/partners/withdrawals/{withdrawal_id}/decision')
-async def decide_withdrawal(withdrawal_id: UUID, body: WithdrawalDecision, db: AsyncSession = Depends(get_db), admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
+async def decide_withdrawal(withdrawal_id: UUID, body: WithdrawalDecision, background: BackgroundTasks, db: AsyncSession = Depends(get_db), admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
     row = await Service.decide_withdrawal(db, withdrawal_id, admin.admin_id, body.decision == 'paid', body.payment_reference, body.note)
     await db.commit()
+    # After the response, on its own session: the decision stands whether or
+    # not the push goes out, and a push failure can never reach the admin.
+    from app.services.partner_push import notify_withdrawal_decided
+    background.add_task(notify_withdrawal_decided, row.partner_id, row.status, row.amount)
     return {'success': True, 'data': withdrawal_json(row, admin=True)}
 
 

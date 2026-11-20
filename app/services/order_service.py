@@ -175,9 +175,15 @@ class OrderService:
         prices = await ProductService.get_price_map(
             db, [u for u in (_uuid(i.get("product_id")) for i in items) if u], branch_id
         )
+        regular_prices = await ProductService.get_regular_price_map(
+            db, [u for u in (_uuid(i.get("product_id")) for i in items) if u], branch_id
+        )
         # A weight option (variant) is priced like its product: branch
         # override, else its own price, less the product's discount here.
         variants = await weight_options_service.price_map(
+            db, [u for u in (_uuid(i.get("variant_id")) for i in items) if u], branch_id
+        )
+        regular_variants = await weight_options_service.regular_price_map(
             db, [u for u in (_uuid(i.get("variant_id")) for i in items) if u], branch_id
         )
 
@@ -192,8 +198,19 @@ class OrderService:
             if variant is not None and variant[0] == product_id and product_id in prices:
                 line["price"] = float(variant[1])
                 line["variant_name"] = variant[2]
+                regular_variant = regular_variants.get(str(item.get("variant_id")))
+                line["original_price"] = float(
+                    max(variant[1], regular_variant[1])
+                    if regular_variant and regular_variant[0] == product_id
+                    else variant[1]
+                )
             elif product_id in prices:
                 line["price"] = float(prices[product_id])
+                regular = regular_prices.get(product_id)
+                if regular is not None and regular > prices[product_id]:
+                    line["original_price"] = float(regular)
+                else:
+                    line["original_price"] = float(prices[product_id])
             elif strict:
                 name = item.get("name") or "An item in your cart"
                 raise ValueError(f"{name} is no longer available. Please remove it and try again.")
@@ -2186,6 +2203,7 @@ class OrderService:
         cancelled_by: str = "customer",
         actor_admin_id=None,
         context: Optional[dict] = None,
+        commit: bool = True,
     ) -> Order:
         """Cancel an order, refund what was paid, and record who did it."""
         # The same rule the customer's button is drawn from. A parcel a rider
@@ -2195,6 +2213,8 @@ class OrderService:
         if OrderService.customer_cancel_state(order) == OrderService.CANCEL_BLOCKED:
             raise ValueError(f"Order cannot be cancelled in {order.status} status")
 
+        if not commit and OrderService.customer_cancel_state(order) != OrderService.CANCEL_FREE:
+            raise ValueError("Transactional cancellation requires an unbooked order")
         previous_status = order.status
         await OrderService._return_stock_to_branch(db, order, previous_status)
         order.status = OrderStatus.CANCELLED.value
@@ -2212,8 +2232,11 @@ class OrderService:
             context=context,
         )
 
-        await db.commit()
-        await db.refresh(order)
+        if commit:
+            await db.commit()
+            await db.refresh(order)
+        else:
+            await db.flush()
 
         if order.courier_shipment_id:
             await OrderService._cancel_courier_shipment(

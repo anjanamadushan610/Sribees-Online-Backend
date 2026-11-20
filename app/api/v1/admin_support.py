@@ -200,6 +200,7 @@ async def update_support_ticket(
             detail="You cannot update support tickets from other branches",
         )
 
+    previous_status = ticket.status
     if payload.status:
         valid_statuses = {s.value for s in TicketStatus}
         if payload.status.lower() not in valid_statuses:
@@ -218,6 +219,9 @@ async def update_support_ticket(
         ticket.resolution_notes = payload.resolution_notes.strip()
 
     ticket.updated_at = datetime.now(timezone.utc)
+    if ticket.preferred_language and previous_status != ticket.status:
+        from app.services.whatsapp_notifications import queue_ticket_status
+        await queue_ticket_status(db, ticket)
     await db.commit()
     await db.refresh(ticket)
 

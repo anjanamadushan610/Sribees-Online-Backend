@@ -56,6 +56,8 @@ class Settings(BaseSettings):
         ),
     )
     wallet_currency: str = Field(default="LKR", description="Wallet currency code")
+    # Enable after Express schema/API and Finance rider_cash_change posting are deployed.
+    rider_wallet_change_enabled: bool = False
     loyalty_spend_per_point: float = Field(
         default=1000.0,
         gt=0,
@@ -83,8 +85,9 @@ class Settings(BaseSettings):
         ge=0.0,
         le=100.0,
         description=(
-            "UNUSED since migration 081: the upline now earns "
-            "app_settings.referral_level2_share of each product's rate. Kept "
+            "UNUSED since migration 081: the Master Partner earns "
+            "app_settings.referral_level2_share of the direct Partner's "
+            "commission. Kept "
             "so an environment that still sets it does not fail to boot."
         ),
     )
@@ -250,6 +253,7 @@ class Settings(BaseSettings):
     # =========================================================================
     # Used only by app/services/email_sender.py (partner password reset).
     # Until MAIL_USERNAME and MAIL_PASSWORD are set, no mail goes out.
+    partner_portal_url: str = Field(default="https://new-sribees-frontend-referral.vercel.app", description="Public HTTPS Partner Portal origin for invitation links")
     mail_from: str = Field(default="noreply@sribeesonline.com", description="From email address")
     mail_from_name: str = Field(default="Sribees Online", description="From name")
     mail_server: str = Field(default="smtp.gmail.com", description="SMTP server")

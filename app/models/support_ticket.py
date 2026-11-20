@@ -56,6 +56,9 @@ class SupportTicket(Base):
         ForeignKey("admins.admin_id", ondelete="SET NULL"),
         nullable=True,
     )
+    preferred_language = Column(String(2), nullable=True)
+    related_order_id = Column(UUID(as_uuid=True), ForeignKey("orders.order_id", ondelete="SET NULL"), index=True)
+    notification_status = Column(String(20), nullable=True)
     resolution_notes = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)

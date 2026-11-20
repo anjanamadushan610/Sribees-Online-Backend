@@ -41,8 +41,8 @@ def _parse(raw: Optional[str], low: Decimal, high: Decimal, fallback: Decimal, k
 class ReferralProgramConfig:
     """
     ``branch_max_percent``: the highest rate a Branch Manager may set (a
-    typo of 50 instead of 5 is real money). ``level2_share``: the upline's
-    fraction of the level-1 rate.
+    typo of 50 instead of 5 is real money). ``level2_share``: the Master
+    Partner's fraction of the direct Partner's commission.
     """
 
     branch_max_percent: Decimal = DEFAULT_BRANCH_MAX_PERCENT

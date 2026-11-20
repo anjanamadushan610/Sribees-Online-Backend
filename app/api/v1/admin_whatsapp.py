@@ -71,6 +71,7 @@ def message_data(row):
         "id": str(row.reply_id),
         "incoming": row.inbound_text,
         "incoming_type": row.inbound_type,
+        "has_attachment": bool(row.inbound_media),
         "received_at": row.received_at.isoformat() if row.received_at else None,
         "outgoing": outgoing,
         "is_staff": row.is_staff,
@@ -125,6 +126,9 @@ async def history(
         else None,
         "reply_until": closes_at.isoformat() if closes_at else None,
         "enabled": settings.whatsapp_enabled,
+        "language": getattr(ticket, "preferred_language", None),
+        "related_order_id": str(ticket.related_order_id) if getattr(ticket, "related_order_id", None) else None,
+        "staff_notification_status": getattr(ticket, "notification_status", None),
         "messages": [message_data(row) for row in reversed(rows)],
         "next_before": str(rows[-1].reply_id) if has_more else None,
     }
@@ -169,6 +173,9 @@ async def release(
             409, "Only the assigned staff member can release this conversation"
         )
     conversation.staff_active = False
+    conversation.ticket_id = None
+    from app.services.whatsapp_support import reset
+    reset(conversation)
     ticket.assigned_admin_id = None
     await db.execute(
         update(WhatsAppReply)
@@ -229,3 +236,18 @@ async def send_reply(
     await db.commit()
     await db.refresh(row)
     return message_data(row)
+
+
+@router.get("/tickets/{ticket_id}/whatsapp/messages/{message_id}/attachment")
+async def attachment(
+    ticket_id: UUID,
+    message_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+):
+    await ticket_context(db, admin, ticket_id)
+    row = await db.get(WhatsAppReply, message_id)
+    if row is None or row.ticket_id != ticket_id or not row.inbound_media:
+        raise HTTPException(404, "Attachment not found")
+    from app.services.whatsapp_media import download_attachment
+    return await download_attachment(row.inbound_media)

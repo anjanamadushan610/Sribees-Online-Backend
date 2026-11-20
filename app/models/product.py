@@ -188,6 +188,7 @@ class Product(Base):
         back_populates="products",
     )
     subcategory = relationship("Category", foreign_keys=[subcategory_id])
+    extra_categories = relationship("ProductExtraCategory", lazy="selectin", cascade="all, delete-orphan")
     images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
     variants = relationship("ProductVariant", back_populates="product", cascade="all, delete-orphan")
     reviews = relationship("Review", back_populates="product", cascade="all, delete-orphan")
@@ -345,7 +346,7 @@ class ProductExtraCategory(Base):
 
     ``Product.category_id``/``subcategory_id`` stay the product's one home —
     the admin form, the product page and every report read those. A row here
-    makes the product also list under another sub-category (and so under that
+    makes the product also list under another category or sub-category (and under that
     sub-category's parent), e.g. a 18g milk powder sachet filed under Dairy ›
     Milk Powder that also belongs on Beverages › Tea. Listing filters and
     category counts read both; nothing else needs to know.

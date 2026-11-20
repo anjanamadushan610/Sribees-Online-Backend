@@ -21,6 +21,112 @@ from app.services.referral_service import ReferralError, ReferralService
 from tests.conftest import requires_db
 
 
+@pytest.mark.asyncio
+async def test_admin_upgrade_requires_super_admin_and_explicit_consent(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from fastapi import FastAPI
+
+    from app.api.v1.linked_partner_wallet import router
+    from app.config.database import get_db
+    from app.config.redis import get_redis
+    from app.core.dependencies import get_current_admin
+    from app.models.admin import AdminRole
+
+    app = FastAPI()
+    app.include_router(router)
+    db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_redis] = lambda: AsyncMock()
+    role = AdminRole.CUSTOMER_SUPPORT
+    app.dependency_overrides[get_current_admin] = lambda: SimpleNamespace(role=role, admin_id=uuid4())
+    monkeypatch.setenv('LINKED_PARTNER_WALLET_ENABLED', 'true')
+    monkeypatch.setenv('PARTNER_WALLET_FINANCE_READY', 'true')
+    upgrade = AsyncMock()
+    monkeypatch.setattr(Service, 'admin_upgrade', upgrade)
+    payload = {'note': 'Test ticket, identity verified',
+               'customer_consent_confirmed': True}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        response = await client.post(f'/admin/partners/customers/{uuid4()}/upgrade', json=payload)
+        assert response.status_code == 403
+        role = AdminRole.SUPER_ADMIN
+        payload['customer_consent_confirmed'] = False
+        response = await client.post(f'/admin/partners/customers/{uuid4()}/upgrade', json=payload)
+        assert response.status_code == 422
+    upgrade.assert_not_awaited()
+    db.commit.assert_not_awaited()
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_admin_upgrade_preserves_referrals_and_initializes_wallet(money_db):
+    import secrets
+
+    from app.core.security import verify_password
+    from app.models.partner_wallet import PartnerApplication
+
+    db, user = money_db
+    friend = User(email=f'{uuid4().hex}@example.test', full_name='Referral test', referred_by_user_id=user.user_id)
+    db.add(friend)
+    await db.flush()
+    password = secrets.token_urlsafe(20)
+    admin_id = uuid4()
+    partner = await Service.admin_upgrade(db, user.user_id, admin_id, password, note='Support test request')
+    await db.refresh(friend)
+    application = await db.scalar(select(PartnerApplication).where(PartnerApplication.user_id == user.user_id))
+    assert partner.user_id == user.user_id
+    assert partner.role == 'partner'
+    assert partner.parent_partner_id is None
+    assert partner.referral_code == user.referral_code
+    assert friend.referred_by_user_id is None
+    assert friend.referred_by_partner_id == partner.partner_id
+    assert verify_password(password, partner.password_hash)
+    assert application.status == 'approved' and application.decision_by == admin_id
+    assert 'customer consent confirmed' in application.decision_note
+    assert application.password_hash is None
+    assert await db.scalar(select(PartnerWallet.balance).where(PartnerWallet.partner_id == partner.partner_id)) == 0
+    assert await db.scalar(select(Wallet.balance).where(Wallet.user_id == user.user_id)) == 100
+    with pytest.raises(HTTPException) as duplicate:
+        await Service.admin_upgrade(db, user.user_id, admin_id, password, note='Retry')
+    assert duplicate.value.status_code == 409
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_admin_upgrade_approves_pending_request_with_explicit_portal_password(money_db):
+    import secrets
+
+    from app.core.security import verify_password
+
+    db, user = money_db
+    application = await Service.apply(db, user.user_id, secrets.token_urlsafe(20))
+    password = secrets.token_urlsafe(20)
+    partner = await Service.admin_upgrade(db, user.user_id, uuid4(), password, note='Verified request')
+    assert application.status == 'approved'
+    assert verify_password(password, partner.password_hash)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_failed_admin_upgrade_rolls_back_new_code_and_application(money_db):
+    import secrets
+
+    from app.models.partner_wallet import PartnerApplication
+
+    db, user = money_db
+    user.referral_code = None
+    await db.flush()
+    with pytest.raises(HTTPException):
+        async with db.begin_nested():
+            await Service.admin_upgrade(db, user.user_id, uuid4(), secrets.token_urlsafe(20),
+                                        master_id=uuid4(), note='Invalid master test')
+    await db.refresh(user)
+    assert user.referral_code is None
+    assert await db.scalar(select(PartnerApplication).where(PartnerApplication.user_id == user.user_id)) is None
+    assert await Service.linked(db, user.user_id, active=False) is None
+
+
 def test_invalid_money_and_reverse_payload_are_rejected():
     for invalid in ['0', '-1', 'NaN', 'Infinity', '1.001', '1000000000']:
         with pytest.raises(HTTPException):
@@ -420,3 +526,47 @@ async def test_export_real_partner_lifecycle_for_finance_consumer(money_db, monk
     # Only this synthetic fixture: permit cross-service verification when artifact quota is full.
     with capsys.disabled():
         print('ONLINE_PARTNER_CONTRACT=' + json.dumps(bundle, separators=(',', ':')))
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_promoted_master_keeps_customer_wallet_and_can_receive_a_new_partner(money_db):
+    import secrets
+
+    from sqlalchemy import func
+
+    from app.services.audit_service import AuditLog
+    from app.services.partner_service import PartnerService
+
+    PartnerWalletService = Service
+    db, user = money_db
+    parent = Partner(email=f'{uuid4().hex}@example.test', full_name='Master A', role='master_partner', password_hash=secrets.token_urlsafe(32), is_active=True)
+    db.add(parent)
+    await db.flush()
+    promoted = Partner(user_id=user.user_id, email=user.email, full_name=user.full_name, role='partner', parent_partner_id=parent.partner_id, referral_code=user.referral_code, password_hash=secrets.token_urlsafe(32), is_active=True)
+    db.add(promoted)
+    await db.flush()
+    wallet = PartnerWallet(partner_id=promoted.partner_id, balance=Decimal('123.45'))
+    customer = User(email=f'{uuid4().hex}@example.test', full_name='Existing customer', referred_by_partner_id=promoted.partner_id)
+    db.add_all([wallet, customer])
+    await db.flush()
+    original_hash = promoted.password_hash
+    original_code = promoted.referral_code
+    admin_id = uuid4()
+    await PartnerService.promote_to_master(db, promoted.partner_id, admin_id, 'Super Admin approved promotion')
+    await PartnerService.promote_to_master(db, promoted.partner_id, admin_id, 'Retry approved promotion')
+    await db.refresh(customer)
+    await db.refresh(wallet)
+    assert promoted.role == 'master_partner' and promoted.parent_partner_id == parent.partner_id
+    assert promoted.referral_code == original_code and promoted.password_hash == original_hash
+    assert customer.referred_by_partner_id == promoted.partner_id and wallet.balance == Decimal('123.45')
+    count = await db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.target_id == promoted.partner_id, AuditLog.action == 'partner.promote_to_master'))
+    assert count == 1
+
+    # A promoted Master may have an upline and still be assigned new Partners.
+    new_user = User(email=f'{uuid4().hex}@example.test', full_name='New Partner C', referral_code=f'T{uuid4().hex[:8]}', is_active=True)
+    db.add(new_user)
+    await db.flush()
+    application = await PartnerWalletService.apply(db, new_user.user_id, secrets.token_urlsafe(24))
+    child = await PartnerWalletService.decide_application(db, application.application_id, admin_id, True, promoted.partner_id, 'Approved test Partner')
+    assert child.role == 'partner' and child.parent_partner_id == promoted.partner_id

@@ -199,6 +199,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         "/api/v1/partner/auth/forgot-password",
         "/api/v1/partner/auth/verify-otp",
         "/api/v1/partner/auth/reset-password",
+        "/api/v1/partner/auth/set-password",
     }
 
     # Endpoints to skip rate limiting

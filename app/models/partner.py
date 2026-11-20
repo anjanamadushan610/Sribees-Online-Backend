@@ -7,12 +7,13 @@ table would mean every admin route is one missing role check away from being
 reachable by an agent, and role checks are exactly the thing that gets
 forgotten on the next endpoint someone adds.
 
-Two levels, and only two:
+Each customer order pays two beneficiaries at most:
 
     Partner A recruits Partner B   (B.parent_partner_id = A)
     B signs up a customer          (users.referred_by_partner_id = B)
     That customer orders           -> B earns level 1, A earns level 2
 
+Promotion changes the role while retaining ``parent_partner_id``.
 ``parent_partner_id`` is write-once for the same reason a customer's referrer
 is: moving it retroactively changes who was owed money on orders already
 recorded.

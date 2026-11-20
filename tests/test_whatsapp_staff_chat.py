@@ -34,11 +34,13 @@ def test_receipts_never_regress(current, incoming, expected):
     assert advances_status(current, incoming) is expected
 
 
-async def test_staff_handoff_keeps_hi_in_ticket_until_explicit_menu():
+async def test_staff_handoff_preserves_all_messages_until_staff_releases():
     from app.services.whatsapp_service import receive_messages
 
     db = MemoryDB()
+    await receive_messages(db, envelope("en", message_id="language"), "123")
     await receive_messages(db, envelope("support", message_id="start"), "123")
+    await receive_messages(db, envelope("2", message_id="new"), "123")
     await receive_messages(
         db, envelope("Please help with my order", message_id="issue"), "123"
     )
@@ -50,8 +52,9 @@ async def test_staff_handoff_keeps_hi_in_ticket_until_explicit_menu():
     assert db.messages["followup"].ticket_id == ticket_id
     assert db.messages["followup"].payload is None
     await receive_messages(db, envelope("MENU", message_id="exit"), "123")
-    assert conversation.ticket_id is None
-    assert not conversation.staff_active
+    assert conversation.ticket_id == ticket_id
+    assert conversation.staff_active
+    assert db.messages["exit"].payload is None
 
 
 @pytest.fixture

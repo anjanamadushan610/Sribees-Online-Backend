@@ -25,6 +25,7 @@ Design notes that matter:
 import uuid
 
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -229,11 +230,20 @@ class ReferralCommissionLine(Base):
     quantity = Column(Integer, nullable=False)
     basis = Column(Numeric(10, 2), nullable=False)
     rate_percentage = Column(Numeric(6, 3), nullable=False)
+    pool_rate_percentage = Column(Numeric(5, 2), nullable=True)
+    # Actual Master fraction of the pool, snapshotted as ratio/(1+ratio) at sale.
+    pool_master_share = Column(Numeric(), nullable=True)
     amount = Column(Numeric(10, 2), nullable=False)
     returned_quantity = Column(Integer, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     commission = relationship("ReferralCommission", back_populates="lines")
+    __table_args__ = (CheckConstraint(
+        "(pool_rate_percentage IS NULL AND pool_master_share IS NULL) OR "
+        "(pool_rate_percentage IS NOT NULL AND pool_master_share IS NOT NULL "
+        "AND pool_rate_percentage BETWEEN 0 AND 100 AND pool_master_share BETWEEN 0 AND 1)",
+        name="ck_referral_line_pool_snapshot",
+    ),)
 
     def __repr__(self):
         return f"<ReferralCommissionLine {self.product_name} x{self.quantity} {self.amount}>"

@@ -97,17 +97,17 @@ def test_each_line_earns_its_own_rate_on_what_was_paid():
     assert [(b.basis, b.amount) for b in built] == [(D("900.00"), D("45.00")), (D("250.00"), D("6.25"))]
 
 
-def test_level_two_earns_half_of_each_line():
+def test_level_two_earns_half_of_partner_share():
     lines = [_line("1000", "5"), _line("333", "3")]
     l2 = build_lines(lines, LevelPolicy(D("0.5")).for_level(2))
-    # 1000 x 2.5% = 25.00 ; 333 x 1.5% = 4.995 -> 5.00 (half up)
-    assert [b.amount for b in l2] == [D("25.00"), D("5.00")]
-    assert [b.rate for b in l2] == [D("2.500"), D("1.500")]
+    # A 50% Master-to-Partner ratio makes the Master one third of the pool.
+    assert [b.amount for b in l2] == [D("16.67"), D("3.33")]
+    assert [b.rate for b in l2] == [D("1.667"), D("1.000")]
 
 
 def test_level_two_rate_keeps_three_places():
-    # Half of 2.25% is 1.125%, not 1.13%.
-    assert LevelPolicy(D("0.5")).rate(2, D("2.25")) == D("1.125")
+    # Half of the Partner's one-third pool share is 0.75% of the product.
+    assert LevelPolicy(D("0.5")).rate(2, D("2.25")) == D("0.750")
 
 
 def test_rounding_is_half_up_per_line():
@@ -151,7 +151,7 @@ def test_kept_amount_is_stable_when_recomputed():
 
 @pytest.mark.parametrize(
     "branch,product,expected",
-    [(D("4"), D("2"), D("4")), (None, D("2"), D("2")), (None, None, D("0")), (D("0"), D("5"), D("0"))],
+    [(D("4"), D("2"), D("2")), (None, D("2"), D("2")), (None, None, D("0")), (D("4"), None, D("0")), (D("0"), D("5"), D("0"))],
 )
 def test_branch_then_product_then_zero(branch, product, expected):
     assert effective_rate(branch, product) == expected
@@ -183,3 +183,33 @@ def test_offer_text_is_written_by_the_server_in_the_callers_language():
     si = offer_text(D("2.50"), audience="friend", accept_language="si")
     assert "කොමිස්" in si and "%" not in si, "no rate is shown: it differs per product"
     assert "None are on offer" in offer_text(D("0"), audience="friend", accept_language="en")
+
+
+@pytest.mark.parametrize("share", ["0", "0.25", "0.3", "0.5", "1"])
+def test_product_commission_is_one_shared_pool(share):
+    from app.services.referral_commission import build_shared_lines
+    direct, master = build_shared_lines([_line("1000", "1")], D(share))
+    assert sum((line.amount for line in direct + master), D("0")) == D("10.00")
+    if share == "0.25":
+        assert direct[0].amount == D("8.00") and master[0].amount == D("2.00")
+
+
+def test_small_pools_and_returns_conserve_every_cent():
+    from app.services.referral_commission import build_shared_lines, kept_shared_amount
+    rng = random.Random(120)
+    for _ in range(1000):
+        qty = rng.randint(1, 20)
+        line = _line(str(D(rng.randint(1, 200000)) / 100), str(D(rng.randint(1, 10000)) / 100), qty=qty)
+        share = D(rng.randint(0, 1000)) / 1000
+        direct, master = build_shared_lines([line], share)
+        pool_share = share / (D("1") + share)
+        pool = money(line.basis * line.rate / 100)
+        assert sum((entry.amount for entry in direct + master), D("0")) == pool
+        previous = [sum((entry.amount for entry in direct), D("0")), sum((entry.amount for entry in master), D("0"))]
+        for returned in range(qty + 1):
+            kept = [kept_shared_amount(line.basis, line.rate, pool_share, level, qty, returned) for level in (1, 2)]
+            assert sum(kept) == kept_amount(line.basis, line.rate, qty, returned)
+            assert all(D("0") <= current <= old for current, old in zip(kept, previous, strict=False))
+            previous = kept
+    direct, master = build_shared_lines([_line("0.10", "5")], D("0.5"))
+    assert direct[0].amount == D("0.01") and master == []

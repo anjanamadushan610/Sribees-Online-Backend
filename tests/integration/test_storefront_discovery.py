@@ -93,7 +93,8 @@ async def test_a_category_counts_what_the_shopper_can_buy(api, db, world, make_p
 
 async def test_a_product_on_a_second_shelf_lists_and_counts_there(api, db, world, make_product):
     """One home in the product row, a second shelf through product_extra_categories."""
-    from app.models.product import ProductExtraCategory
+    from app.schemas.product import ProductUpdate
+    from app.services.product_service import ProductService
 
     dairy = await _category(db, world)
     milk_powder = await _category(db, world, parent=dairy)
@@ -103,8 +104,8 @@ async def test_a_product_on_a_second_shelf_lists_and_counts_there(api, db, world
     tea_only = await make_product()
     await _file(db, sachet, dairy, milk_powder)
     await _file(db, tea_only, beverages, tea)
-    db.add(ProductExtraCategory(product_id=sachet, subcategory_id=tea))
-    await db.commit()
+    product = await ProductService.get_by_id(db, sachet)
+    await ProductService.update(db, product, ProductUpdate(extra_category_ids=[tea, tea, beverages]))
 
     headers = _device()
     await _choose_location(api, world, headers)
@@ -130,6 +131,15 @@ async def test_a_product_on_a_second_shelf_lists_and_counts_there(api, db, world
     assert counts[str(tea)] == 2 and counts[str(beverages)] == 2
     r = await api.get(f"/api/v1/products/{sachet}", headers=headers)
     assert r.json()["data"]["subcategory_id"] == str(milk_powder)
+    assert set(r.json()["data"]["extra_category_ids"]) == {str(tea), str(beverages)}
+
+    # An unrelated edit preserves shelves; explicit [] removes them.
+    await ProductService.update(db, product, ProductUpdate(name="ZZ renamed sachet"))
+    r = await api.get(f"/api/v1/products/{sachet}", headers=headers)
+    assert set(r.json()["data"]["extra_category_ids"]) == {str(tea), str(beverages)}
+    await ProductService.update(db, product, ProductUpdate(extra_category_ids=[]))
+    r = await api.get("/api/v1/products", params={"category_id": str(beverages)}, headers=headers)
+    assert _ids(r) == [str(tea_only)]
 
 
 async def test_the_filter_panel(api, db, world, make_product, make_customer):

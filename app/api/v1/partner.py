@@ -22,6 +22,7 @@ Prefix "/partner" is applied by app/api/v1/router.py.
 import os
 import re
 from datetime import timedelta
+from typing import Literal, Optional
 
 from fastapi import (
     APIRouter,
@@ -32,6 +33,7 @@ from fastapi import (
     status,
 )
 from loguru import logger
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -328,7 +330,7 @@ async def recruit_partner(
     so credentials are handed over out of band, the same way the seed data's
     demo partner passwords are.
     """
-    if partner.role != "master_partner" or partner.parent_partner_id is not None:
+    if partner.role != "master_partner":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
@@ -409,3 +411,76 @@ async def get_my_top_products(
     """The products the partner's commission came from, best first."""
     rows = await PartnerService.top_products(db, partner.partner_id, limit)
     return {"success": True, "data": {"products": rows}}
+
+
+# Invitation credentials cannot be used as access tokens. Reading the page
+# does not consume the invitation, including automated email-link scanners.
+class PartnerSetupPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    token: SecretStr = Field(min_length=1, max_length=4096)
+    password: SecretStr = Field(min_length=8, max_length=128)
+
+    @field_validator('password')
+    @classmethod
+    def nonblank(cls, value):
+        if not value.get_secret_value().strip():
+            raise ValueError('Password cannot be blank.')
+        return value
+
+
+@router.post('/auth/set-password')
+async def partner_set_password(body: PartnerSetupPasswordRequest, db: AsyncSession = Depends(get_db),
+                               redis: Redis = Depends(get_redis)):
+    from app.services.partner_invitation import accept_invitation
+    await accept_invitation(db, body.token.get_secret_value(), body.password.get_secret_value(), redis=redis)
+    await db.commit()
+    return {'success': True, 'message': 'Password set successfully. You can now sign in to the Partner Portal.'}
+
+
+# ============================================================================
+# POST /devices, POST /devices/unregister  (SRIBEES Partner app pushes)
+# ============================================================================
+
+class PartnerDeviceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    token: str = Field(..., min_length=20, max_length=512)
+    platform: Literal["android", "ios"] = "android"
+    locale: Literal["en", "si", "ta"] = "en"
+    app_version: Optional[str] = Field(None, max_length=40)
+
+
+class PartnerDeviceRemoveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    token: str = Field(..., min_length=20, max_length=512)
+
+
+@router.post("/devices", response_model=dict)
+async def register_partner_device(
+    body: PartnerDeviceBody,
+    db: AsyncSession = Depends(get_db),
+    partner=Depends(get_current_partner),
+):
+    """The Partner app calls this after sign-in and whenever FCM rotates the token."""
+    from app.services.partner_push import register_device
+
+    await register_device(
+        db, partner, body.token, body.platform, body.locale, body.app_version
+    )
+    await db.commit()
+    return {"success": True}
+
+
+@router.post("/devices/unregister", response_model=dict)
+async def unregister_partner_device(
+    body: PartnerDeviceRemoveBody,
+    db: AsyncSession = Depends(get_db),
+    partner=Depends(get_current_partner),
+):
+    """Sign-out: stop pushes to this phone."""
+    from app.services.partner_push import unregister_device
+
+    await unregister_device(db, partner.partner_id, body.token)
+    await db.commit()
+    return {"success": True}

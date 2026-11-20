@@ -1,26 +1,63 @@
-"""Commit tickets and replies together before acknowledging Meta's webhook."""
+"""Commit incoming messages, tickets and queued replies atomically."""
 
+import re
 from datetime import datetime, timedelta, timezone
 
+from loguru import logger
+from sqlalchemy import func, select
 from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import insert
 
-from app.api.v1.support import _generate_ticket_number
-from app.models.support_ticket import SupportTicket, TicketStatus
 from app.models.whatsapp import WhatsAppConversation, WhatsAppReply
-from app.services.whatsapp_menu import answer, incoming_messages, menu, text_reply
+from app.services.whatsapp_content import text_message
+from app.services.whatsapp_menu import incoming_messages
 from app.services.whatsapp_receipts import receive_statuses
+from app.services.whatsapp_support import handle_message, reset
+
+
+def safe_text(body):
+    # Retain the issue without retaining credentials volunteered by a customer.
+    body = re.sub(
+        r"(?i)\b(password|passwd|otp|cvv|cvc|pin)\s*[:=]?\s*\S+", r"\1 [REDACTED]", body
+    )
+    body = re.sub(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)", "[REDACTED]", body)
+    if re.fullmatch(r"\s*\d{4,8}\s*", body):
+        return "[REDACTED]"
+    return body
+
+
+def media_references(payload, phone_number_id):
+    refs = {}
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            if value.get("metadata", {}).get("phone_number_id") != phone_number_id:
+                continue
+            for message in value.get("messages", []):
+                kind = message.get("type")
+                media = message.get(kind, {}) if kind in {"image", "document"} else {}
+                media_id = media.get("id", "")
+                mime = media.get("mime_type", "")
+                if (
+                    isinstance(media_id, str)
+                    and media_id.isascii()
+                    and media_id.isdigit()
+                    and len(media_id) <= 100
+                    and mime in {"image/jpeg", "image/png", "application/pdf"}
+                ):
+                    refs[message.get("id")] = {"id": media_id, "mime_type": mime}
+    return refs
 
 
 async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
     now = datetime.now(timezone.utc)
-    # Serialize menu state transitions across concurrent webhook deliveries.
-    # This lock is released at transaction end, and never covers an HTTP send.
     await db.execute(sql_text("SELECT pg_advisory_xact_lock(8767000836)"))
     await receive_statuses(db, payload, phone_number_id)
+    media = media_references(payload, phone_number_id)
     for message_id, phone, received_at, body, kind in incoming_messages(
         payload, phone_number_id, now
     ):
+        body = safe_text(body)
         claimed = (
             await db.execute(
                 insert(WhatsAppReply)
@@ -29,6 +66,7 @@ async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
                     phone=phone,
                     inbound_text=body,
                     inbound_type=kind,
+                    inbound_media=media.get(message_id),
                     received_at=received_at,
                     status="ignored",
                     expires_at=received_at + timedelta(seconds=86100),
@@ -45,99 +83,45 @@ async def receive_messages(db, payload: dict, phone_number_id: str) -> None:
             conversation = WhatsAppConversation(
                 phone=phone,
                 language="en",
+                language_selected=False,
                 last_message_at=received_at,
                 awaiting_details=False,
+                staff_active=False,
+                menu="main",
+                context={},
             )
             db.add(conversation)
-        elif (received_at - conversation.last_message_at).total_seconds() >= 86400:
-            conversation.awaiting_details = False
-            conversation.ticket_id = None
-            conversation.staff_active = False
+            await db.flush()
+        elif (
+            received_at - conversation.last_message_at
+        ).total_seconds() >= 86400 and not conversation.staff_active:
+            # Language persists. An unfinished request expires after a day.
+            reset(conversation)
         conversation.last_message_at = max(conversation.last_message_at, received_at)
-        command = body.casefold()
-        reset_commands = {
-            "menu",
-            "start",
-            "hi",
-            "hello",
-            "si",
-            "en",
-            "සිංහල",
-            "english",
-        }
-        if command == "menu" or (
-            not conversation.staff_active and command in reset_commands
-        ):
-            if command in {"si", "සිංහල"}:
-                conversation.language = "si"
-            elif command in {"en", "english"}:
-                conversation.language = "en"
-            conversation.awaiting_details = False
-            conversation.ticket_id = None
-            conversation.staff_active = False
-            reply.payload = menu(conversation.language)
-        elif conversation.ticket_id:
-            ticket = await db.get(SupportTicket, conversation.ticket_id)
-            if ticket and ticket.status in {
-                TicketStatus.PENDING.value,
-                TicketStatus.IN_PROGRESS.value,
-            }:
-                reply.ticket_id = ticket.ticket_id
-                addition = (
-                    body
-                    or "[Customer sent a non-text message; request details by phone.]"
-                )
-                # Bound ticket size even if a sender floods the conversation.
-                ticket.message = (
-                    ticket.message + "\n\nWhatsApp follow-up: " + addition
-                )[-16000:]
-            else:
-                conversation.ticket_id = None
-                conversation.staff_active = False
-                reply.payload = menu(conversation.language)
-        elif command == "support":
-            conversation.awaiting_details = True
-            reply.payload = text_reply(
-                "ඔබේ ගැටලුව text message එකකින් එවන්න. අවශ්‍ය නම් order number එකත් එක් කරන්න. Password, OTP හෝ card විස්තර එවන්න එපා."
-                if conversation.language == "si"
-                else "Please describe the issue in a text message. Include your order number if relevant. Do not send passwords, OTPs or card details."
+        recent_count = await db.scalar(
+            select(func.count())
+            .select_from(WhatsAppReply)
+            .where(
+                WhatsAppReply.phone == phone,
+                WhatsAppReply.received_at >= now - timedelta(minutes=1),
             )
-        elif conversation.awaiting_details:
-            if kind != "text" or len(body) < 5:
-                reply.payload = text_reply(
-                    "Please describe the issue in text (at least 5 characters). / ගැටලුව text ලෙස එවන්න."
+        )
+        if (recent_count or 0) > 30:
+            # Retain the signed inbound event but do not amplify a flood with replies.
+            continue
+        try:
+            async with db.begin_nested():
+                reply.payload = await handle_message(
+                    db, conversation, reply, body, kind
                 )
-            else:
-                ticket = SupportTicket(
-                    ticket_number=_generate_ticket_number(),
-                    contact_phone="+" + phone,
-                    category="general",
-                    message="WhatsApp support request:\n" + body,
-                    status=TicketStatus.PENDING.value,
-                )
-                db.add(ticket)
-                await db.flush()
-                reply.ticket_id = ticket.ticket_id
-                conversation.ticket_id = ticket.ticket_id
-                conversation.awaiting_details = False
-                reply.payload = text_reply(
-                    (
-                        "ඔබගේ support ඉල්ලීම ලැබුණා. යොමු අංකය "
-                        if conversation.language == "si"
-                        else "Your support request has been received. Reference "
-                    )
-                    + ticket.ticket_number
-                    + "\nSupport: support@sribeesonline.com"
-                )
-        elif command in {"delivery", "app"}:
-            reply.payload = answer(command, conversation.language)
-        else:
-            if any("\u0d80" <= character <= "\u0dff" for character in body):
-                conversation.language = "si"
-            reply.payload = menu(conversation.language)
+        except Exception:
+            # Savepoint rolls back partial inquiries but retains the inbound claim.
+            # Restore expired ORM attributes before using the localized fallback.
+            await db.refresh(conversation)
+            await db.refresh(reply)
+            reply.payload = text_message("error", conversation.language)
+            logger.error("WhatsApp support flow failed; inbound message retained")
         if reply.payload:
             reply.status = "pending"
-        # autoflush is disabled in this application. A second message from the
-        # same sender in this batch must find the newly created conversation.
         await db.flush()
     await db.commit()

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,6 +18,7 @@ from app.models.branch import Branch
 from app.models.free_delivery import FreeDeliveryBranchOffer, FreeDeliveryGrant
 from app.models.user import User
 from app.services import free_delivery_service
+from app.services.free_delivery_notifications import notify_grants
 
 router = APIRouter(tags=["Free Delivery"])
 
@@ -153,18 +154,28 @@ async def create_grants(
     )
     if len(found) != len(set(body.user_ids)):
         raise HTTPException(404, "A selected customer no longer exists")
-    if body.branch_id is not None and await db.get(Branch, body.branch_id) is None:
+    branch = await db.get(Branch, body.branch_id) if body.branch_id else None
+    if body.branch_id is not None and branch is None:
         raise HTTPException(404, "Branch not found")
+    branch_name = branch.name if branch else None
     now = datetime.now(timezone.utc)
+    grants = []
     for user_id in found:
+        grant_id = uuid4()
+        grants.append((user_id, grant_id))
         db.add(
             FreeDeliveryGrant(
-                user_id=user_id, branch_id=body.branch_id, starts_at=now, ends_at=body.ends_at,
+                grant_id=grant_id, user_id=user_id, branch_id=body.branch_id, starts_at=now, ends_at=body.ends_at,
                 min_order=body.min_order, note=body.note, granted_by=getattr(admin, "admin_id", None),
             )
         )
     await db.commit()
-    return {"success": True, "data": {"granted": len(found)}}
+    # Never announce an entitlement that failed to commit. Notification delivery
+    # is best effort, as with customer coupon gifts; the grant remains usable.
+    notified = await notify_grants(
+        db, grants, ends_at=body.ends_at, min_order=body.min_order, branch_name=branch_name
+    )
+    return {"success": True, "data": {"granted": len(found), "notified": notified}}
 
 
 @router.delete("/admin/free-delivery/grants/{grant_id}", response_model=dict, dependencies=[Depends(require_super_admin)])

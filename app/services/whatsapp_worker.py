@@ -139,6 +139,9 @@ async def run_whatsapp_worker():
         while True:
             try:
                 processed = await send_next(client)
+                from app.services.whatsapp_notifications import notify_next_ticket
+
+                await notify_next_ticket()
             except asyncio.CancelledError:
                 raise
             except Exception:

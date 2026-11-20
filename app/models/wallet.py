@@ -110,3 +110,15 @@ class WalletTransaction(Base):
 
     def __repr__(self):
         return f"<WalletTransaction {self.type} {self.amount}>"
+
+
+class CourierWalletCredit(Base):
+    """Durable receipt deduplicates courier retries against the shopping wallet."""
+
+    __tablename__ = "courier_wallet_credits"
+    source = Column(String(255), primary_key=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.order_id"), unique=True, nullable=False)
+    transaction_id = Column(UUID(as_uuid=True), ForeignKey("wallet_transactions.transaction_id"),
+                            unique=True, nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

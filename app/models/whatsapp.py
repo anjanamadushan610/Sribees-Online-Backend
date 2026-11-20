@@ -22,6 +22,10 @@ class WhatsAppConversation(Base):
 
     phone = Column(String(20), primary_key=True)
     language = Column(String(2), nullable=False, default="en")
+    language_selected = Column(Boolean, nullable=False, default=False)
+    menu = Column(String(30), nullable=False, default="main")
+    stage = Column(String(30))
+    context = Column(JSONB, nullable=False, default=dict)
     awaiting_details = Column(Boolean, nullable=False, default=False)
     ticket_id = Column(
         UUID(as_uuid=True), ForeignKey("support_tickets.ticket_id", ondelete="SET NULL")
@@ -39,6 +43,7 @@ class WhatsAppReply(Base):
     payload = Column(JSONB, nullable=True)
     inbound_text = Column(Text)
     inbound_type = Column(String(30))
+    inbound_media = Column(JSONB)
     received_at = Column(DateTime(timezone=True))
     ticket_id = Column(
         UUID(as_uuid=True),
