@@ -52,6 +52,7 @@ from app.models.notification import (
 from app.models.offer_cap import OfferCap, OfferCapItem, OfferCapUsage
 from app.models.order import Order, OrderItem, OrderStatus, PaymentStatus
 from app.models.partner import Partner
+from app.models.partner_device import PartnerDevice
 from app.models.partner_wallet import (
     PartnerApplication,
     PartnerWallet,
@@ -130,6 +131,7 @@ __all__ = [
     "PaymentAttemptStatus",
     # Referrals
     "Partner",
+    "PartnerDevice",
     "PartnerApplication",
     "PartnerWallet",
     "PartnerWalletEntry",

@@ -151,9 +151,17 @@ async def redeem_referral_code(
     Write-once: a second call always fails, whatever code is supplied.
     """
     try:
-        await ReferralService.bind_referrer(db, current_user, body.referral_code)
+        bound = await ReferralService.bind_referrer(db, current_user, body.referral_code)
     except ReferralError as exc:
         raise _referral_error(exc)
+
+    # The binding is committed; tell the partner (SRIBEES Partner app).
+    # Best-effort: notify_partner never raises.
+    partner_id = getattr(bound, "referred_by_partner_id", None)
+    if partner_id is not None:
+        from app.services.partner_push import notify_partner
+
+        await notify_partner(db, partner_id, "customer_joined")
 
     return {
         "success": True,

@@ -322,6 +322,9 @@ async def withdrawals(db: AsyncSession = Depends(get_db), admin=Depends(require_
 async def decide_withdrawal(withdrawal_id: UUID, body: WithdrawalDecision, db: AsyncSession = Depends(get_db), admin=Depends(require_super_admin), ready=Depends(rollout_enabled)):
     row = await Service.decide_withdrawal(db, withdrawal_id, admin.admin_id, body.decision == 'paid', body.payment_reference, body.note)
     await db.commit()
+    # After the commit: the decision stands whether or not the push goes out.
+    from app.services.partner_push import notify_withdrawal_decided
+    await notify_withdrawal_decided(db, row)
     return {'success': True, 'data': withdrawal_json(row, admin=True)}
 
 
