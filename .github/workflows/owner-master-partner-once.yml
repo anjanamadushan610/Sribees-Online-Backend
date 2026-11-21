@@ -1,0 +1,40 @@
+name: Owner requested Master Partner provisioning
+on:
+  push:
+    branches: [codex/provision-master-partner-20261121]
+permissions:
+  contents: read
+concurrency:
+  group: owner-master-partner-provision-once
+  cancel-in-progress: false
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure pinned SSH access
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/owner_once
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host owner-target\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/owner_once\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  BatchMode yes\n' "$SSH_HOST" "$SSH_USER" "$SSH_PORT" > ~/.ssh/config
+      - name: Run identity-guarded operation
+        env:
+          PAYLOAD: ${{ secrets.OWNER_MASTER_PARTNER_ONCE }}
+        run: |
+          test -n "$PAYLOAD"
+          scp scripts/owner_master_partner_once.py owner-target:/tmp/sribees-owner-master-once.py
+          ssh owner-target 'docker cp /tmp/sribees-owner-master-once.py sribees-online-prod-app-1:/tmp/sribees-owner-master-once.py'
+          printf '%s' "$PAYLOAD" | ssh owner-target 'docker exec -i sribees-online-prod-app-1 python /tmp/sribees-owner-master-once.py'
+      - name: Remove temporary remote script
+        if: always()
+        run: |
+          ssh owner-target 'docker exec sribees-online-prod-app-1 rm -f /tmp/sribees-owner-master-once.py; rm -f /tmp/sribees-owner-master-once.py'
