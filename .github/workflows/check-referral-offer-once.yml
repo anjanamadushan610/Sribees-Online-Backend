@@ -1,0 +1,37 @@
+name: Read-only referral offer check
+on:
+  push:
+    branches: [codex/check-referral-offer-20261122]
+permissions:
+  contents: read
+concurrency:
+  group: read-only-referral-offer-check
+  cancel-in-progress: false
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure pinned SSH access
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/owner_once
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host owner-target\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/owner_once\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  BatchMode yes\n' "$SSH_HOST" "$SSH_USER" "$SSH_PORT" > ~/.ssh/config
+      - name: Read current referral offer configuration
+        run: |
+          scp scripts/check_referral_offer_once.py owner-target:/tmp/sribees-referral-offer-check.py
+          ssh owner-target 'docker cp /tmp/sribees-referral-offer-check.py sribees-online-prod-app-1:/tmp/sribees-referral-offer-check.py'
+          ssh owner-target 'docker exec sribees-online-prod-app-1 python /tmp/sribees-referral-offer-check.py'
+      - name: Remove temporary diagnostic script
+        if: always()
+        run: |
+          ssh owner-target 'docker exec sribees-online-prod-app-1 rm -f /tmp/sribees-referral-offer-check.py; rm -f /tmp/sribees-referral-offer-check.py'
