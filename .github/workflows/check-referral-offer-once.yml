@@ -1,7 +1,7 @@
-name: Read-only referral offer check
+name: Prepare approved referral campaign draft
 on:
   push:
-    branches: [codex/check-referral-offer-20261122]
+    branches: [codex/prepare-referral-campaign-20261122]
 permissions:
   contents: read
 concurrency:
@@ -26,7 +26,7 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/owner_once
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           printf 'Host owner-target\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/owner_once\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  BatchMode yes\n' "$SSH_HOST" "$SSH_USER" "$SSH_PORT" > ~/.ssh/config
-      - name: Read current referral offer configuration
+      - name: Save campaign draft
         run: |
           scp scripts/check_referral_offer_once.py owner-target:/tmp/sribees-referral-offer-check.py
           ssh owner-target 'docker cp /tmp/sribees-referral-offer-check.py sribees-online-prod-app-1:/tmp/sribees-referral-offer-check.py'

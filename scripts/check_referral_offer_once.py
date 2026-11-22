@@ -1,35 +1,31 @@
-"""Read-only production offer configuration, excluding customer information."""
 import asyncio
-import json
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 
 import app.models  # noqa: F401
-from app.config.database import async_session_maker, engine
-from app.models.referral_promotion import ReferralBenefit, ReferralPromotion
-from app.services.referral_promotion_service import enabled
+from app.api.v1.referral_promotions import CampaignBody, Rules, save
+from app.config.database import get_db_context, engine
+from app.models.referral_promotion import ReferralPromotion
 
 
 async def main():
     try:
-        async with async_session_maker() as db:
-            await db.execute(text('SET TRANSACTION READ ONLY'))
-            now = datetime.now(timezone.utc)
-            rows = (await db.execute(select(ReferralPromotion))).scalars().all()
-            print(json.dumps({'referral_execution_enabled': enabled(), 'campaign_count': len(rows)}))
-            for row in rows:
-                print(json.dumps({'campaign': row.name, 'scope': row.scope, 'active': row.active,
-                    'within_dates': row.starts_at <= now < row.ends_at,
-                    'starts_at': row.starts_at.isoformat(), 'ends_at': row.ends_at.isoformat(),
-                    'delivery_uses': row.rules.get('delivery_uses'), 'free_delivery': row.rules.get('free_delivery'),
-                    'valid_days': row.rules.get('valid_days'), 'min_order': row.rules.get('min_order'),
-                    'max_delivery_fee': row.rules.get('max_delivery_fee'),
-                    'max_customers': row.max_customers, 'enrolled_count': row.enrolled_count,
-                    'delivery_budget': str(row.delivery_budget), 'delivery_spent': str(row.delivery_spent)}))
-            benefits = (await db.execute(select(func.count(ReferralBenefit.benefit_id)))).scalar_one()
-            print(json.dumps({'total_granted_customer_benefits': benefits}))
-            await db.rollback()
+        async with get_db_context() as db:
+            await db.execute(text('SELECT pg_advisory_xact_lock(1811120026)'))
+            name = 'Partner Invite – 10 Free Deliveries'
+            existing = await db.scalar(select(ReferralPromotion).where(ReferralPromotion.name == name))
+            if existing:
+                raise SystemExit('Campaign already exists. No change made.')
+            campaign = CampaignBody(
+                name=name, scope='all', active=False,
+                starts_at=datetime.now(timezone.utc),
+                ends_at=datetime.fromisoformat('2027-01-01T00:00:00+05:30'),
+                max_customers=5000, delivery_budget=100000,
+                rules=Rules(free_delivery=True, delivery_uses=10, valid_days=60,
+                            min_order=1000, max_delivery_fee=2500),
+            )
+            print((await save(db, campaign))['data'])
     finally:
         await engine.dispose()
 
