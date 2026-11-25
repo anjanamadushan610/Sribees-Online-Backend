@@ -206,8 +206,13 @@ def _clean(options: Sequence[OptionIn]) -> List[OptionIn]:
     if len(options) > MAX_OPTIONS:
         raise OptionsError(f"At most {MAX_OPTIONS} options.")
     seen: Set[str] = set()
+    ids: Set[UUID] = set()
     out = []
     for o in options:
+        if o.variant_id is not None:
+            if o.variant_id in ids:
+                raise OptionsError("The same option is listed twice.")
+            ids.add(o.variant_id)
         name = " ".join((o.name or "").split())
         if not name:
             raise OptionsError("Every option needs a name.")

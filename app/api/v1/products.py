@@ -1095,7 +1095,7 @@ async def add_product_variant(
                 "variant_id": str(variant.variant_id),
                 "name": variant.name,
                 "sku": variant.sku,
-                "price": float(variant.price) if variant.price else 0,
+                "price": float(variant.price) if variant.price is not None else None,
                 "compare_at_price": float(variant.compare_at_price) if variant.compare_at_price else None,
                 "stock_quantity": variant.stock_quantity,
                 "image_url": media_url(variant.image_url),

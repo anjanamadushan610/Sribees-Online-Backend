@@ -63,8 +63,15 @@ async def item(db: AsyncSession, product_id, variant_id=None) -> Item:
             ).scalar_one_or_none() or "unit"
     grams = None
     if variant_id is not None:
-        grams = (await db.execute(select(ProductVariant.weight_grams)
-                                  .where(ProductVariant.variant_id == variant_id))).scalar_one_or_none()
+        row = (await db.execute(select(ProductVariant.product_id, ProductVariant.weight_grams)
+                                .where(ProductVariant.variant_id == variant_id))).first()
+        if row is None or row.product_id != product_id:
+            # Not one of this product's options (a client sent another product's
+            # shade, or an id that does not exist): it is a line without one, and
+            # never touches another product's count.
+            variant_id = None
+        else:
+            grams = row.weight_grams
     if mode == "loose" and not grams:
         mode = "unit"  # a line without a weight on a loose product: counted as units
     elif mode == "packed" and variant_id is None:

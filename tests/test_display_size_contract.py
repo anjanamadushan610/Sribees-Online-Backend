@@ -21,6 +21,8 @@ class DisplaySizeContract(unittest.TestCase):
             async def get_regular_price_map(db, ids, branch): return {pid: 250}
             @staticmethod
             async def get_display_size_map(db, ids): return {pid: ('400', 'g')}
+            @staticmethod
+            async def get_option_label_map(db, ids): return {}
         class Options:
             @staticmethod
             async def price_map(db, ids, branch): return {}

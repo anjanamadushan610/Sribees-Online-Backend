@@ -130,13 +130,17 @@ async def _terms(
     return out
 
 
-def _base(variant_price, overrides: Dict[UUID, Decimal], vid: UUID, ratio, own: Decimal) -> Decimal:
-    """An option's price before discount: the branch's override, else its own price
-    scaled to the branch, else (an option without a price) the product's own price."""
+def _base(variant_price, overrides: Dict[UUID, Decimal], vid: UUID, ratio, own: Decimal,
+          grams=None) -> Decimal:
+    """An option's price before discount: the branch's override, else (a weight)
+    its own price scaled to the branch's price per kg, else (a shade) its own
+    price as set, else (a shade without one) the product's own price there."""
     if vid in overrides:
         return overrides[vid]
     if variant_price is None:
         return own
+    if not grams:
+        return Decimal(str(variant_price))
     return _scaled(variant_price, ratio)
 
 
@@ -237,7 +241,7 @@ async def price_map(
     out = {}
     for vid, pid, price, grams, name in rows:
         discount, ratio, own = terms.get(pid, (None, None, Decimal(0)))
-        base = _base(price, overrides, vid, ratio, own)
+        base = _base(price, overrides, vid, ratio, own, grams)
         out[str(vid)] = (
             str(pid),
             _discounted(base, discount),
@@ -260,7 +264,8 @@ async def regular_price_map(
         return {}
     rows = (
         await db.execute(
-            select(ProductVariant.variant_id, ProductVariant.product_id, ProductVariant.price).where(
+            select(ProductVariant.variant_id, ProductVariant.product_id, ProductVariant.price,
+                   ProductVariant.weight_grams).where(
                 ProductVariant.variant_id.in_(ids),
                 ProductVariant.is_active.is_not(False),
             )
@@ -269,9 +274,9 @@ async def regular_price_map(
     overrides = await _branch_prices(db, [r.variant_id for r in rows], branch_id)
     terms = await _terms(db, [r.product_id for r in rows], branch_id)
     out = {}
-    for vid, pid, price in rows:
+    for vid, pid, price, grams in rows:
         _, ratio, own = terms.get(pid, (None, None, Decimal(0)))
-        out[str(vid)] = (str(pid), _base(price, overrides, vid, ratio, own))
+        out[str(vid)] = (str(pid), _base(price, overrides, vid, ratio, own, grams))
     return out
 
 

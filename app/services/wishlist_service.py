@@ -137,8 +137,11 @@ class WishlistService:
         price_drops = []
 
         for item in items:
-            if item.price_at_watch and item.variant and item.variant.price:
-                current_price = item.variant.price
+            current_price = None
+            if item.variant is not None:
+                current_price = (item.variant.price if item.variant.price is not None
+                                 else getattr(item.product, "price", None))
+            if item.price_at_watch and current_price:
                 price_drop = item.price_at_watch - current_price
 
                 if price_drop >= min_drop_amount:

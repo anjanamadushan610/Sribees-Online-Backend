@@ -97,8 +97,8 @@ async def test_shades_have_own_photo_price_and_stock(
     assert shown["Shade 07"]["original_price"] == 420.0 and shown["Shade 07"]["price"] == 378.0
     assert shown["Shade 07"]["image_url"].endswith("products/zz-07.webp")
     assert shown["Shade 68"]["image_url"] is None, "no photo of its own: the app shows the product's"
-    # Its own price (global 450, scaled to the branch's 420/400) less 10 %.
-    assert shown["Shade 68"]["original_price"] == 472.5 and shown["Shade 68"]["price"] == 425.25
+    # Its own price is that price (not scaled by the branch's 420/400), less 10 %.
+    assert shown["Shade 68"]["original_price"] == 450.0 and shown["Shade 68"]["price"] == 405.0
     assert shown["Shade 07"]["available"] == 5 and shown["Shade 40"]["available"] == 0
 
     # The cart charges the same numbers.
@@ -246,3 +246,46 @@ async def test_two_checkouts_for_the_last_of_a_shade(
     codes = sorted(r.status_code for r in results)
     assert codes[0] == 201 and codes[1] != 201, [r.text for r in results]
     assert await stock_keeping.available(db, world.branch_id, product, s07) == 0
+
+
+async def test_another_products_shade_never_touches_its_stock(
+    api, db, app_redis, world, make_admin, make_product, make_customer, fake_courier
+):
+    """Review 2026-11-25: a client sending product A with product B's shade id."""
+    from app.models.order import OrderItem
+
+    boss = await make_admin("super_admin", api=api)
+    manager = await make_admin("branch_manager", api=api)
+    polish, shades, inventory_id = await _polish(api, boss, db, world, make_product)
+    s07 = shades["Shade 07"]["variant_id"]
+    await _count(api, manager, inventory_id, {s07: 5})
+    soap = await make_product(price="120.00", stock=10)
+
+    customer = await make_customer()
+    await _branch_context(app_redis, world, customer)
+    for vid in (s07, str(uuid.uuid4())):
+        r = await _add(api, customer, soap, vid)
+        assert r.status_code == 200, r.text
+        r = await _checkout(api, customer)
+        assert r.status_code == 201, r.text
+        item = (await db.execute(select(OrderItem).where(
+            OrderItem.order_id == uuid.UUID(r.json()["data"]["order_id"])))).scalar_one()
+        assert item.variant_id is None and item.unit_price == Decimal("120.00")
+    assert await stock_keeping.available(db, world.branch_id, polish, s07) == 5, "the shade is untouched"
+    assert await stock_keeping.available(db, world.branch_id, soap) == 8
+
+
+async def test_a_product_edit_cannot_switch_a_shade_products_stock(api, db, world, make_admin, make_product):
+    boss = await make_admin("super_admin", api=api)
+    product, _, _ = await _polish(api, boss, db, world, make_product)
+    for body in ({"stock_mode": "unit"}, {"sold_by_weight": True}):
+        r = await api.put(f"/api/v1/admin/products/{product}", json=body, headers=boss.headers)
+        assert r.status_code in (400, 409), (body, r.text)
+    # A price change is fine (the admin form always sends the category).
+    from tests.integration.test_admin_catalog import _category, _id
+
+    cat = _id(await _category(api, boss), "category_id", "id")
+    r = await api.put(f"/api/v1/admin/products/{product}", json={"price": "420.00", "category_id": cat},
+                      headers=boss.headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["stock_mode"] == "packed"

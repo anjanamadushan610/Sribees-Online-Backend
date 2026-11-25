@@ -102,12 +102,13 @@ def format_wishlist_item(
     if item.variant:
         data["variant_name"] = item.variant.name
         data["variant_sku"] = item.variant.sku
-        data["current_price"] = float(item.variant.price) if item.variant.price else None
+        own = item.variant.price if item.variant.price is not None else getattr(item.product, "price", None)
+        data["current_price"] = float(own) if own else None
         data["variant_image"] = media_url(item.variant.image_url)
 
         # Calculate price drop
-        if item.price_at_watch and item.variant.price:
-            price_drop = float(item.price_at_watch) - float(item.variant.price)
+        if item.price_at_watch and own:
+            price_drop = float(item.price_at_watch) - float(own)
             data["price_drop"] = max(0, round(price_drop, 2))
             if item.price_at_watch > 0:
                 data["price_drop_percentage"] = round(

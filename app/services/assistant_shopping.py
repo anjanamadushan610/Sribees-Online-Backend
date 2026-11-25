@@ -289,7 +289,13 @@ async def build_cart(db, branch_id, original, operations, lang):
             if selected is None:
                 return None, [product]
             unit_price = money(selected["price"])
-            stock = min(product["stock_quantity"], selected["stock_quantity"])
+            left = None
+            if branch_id and product.get("option_label"):
+                # A shade is counted per branch (migration 123), not on the variant row.
+                from app.services import stock_keeping
+
+                left = await stock_keeping.available(db, branch_id, pid, variant)
+            stock = min(product["stock_quantity"], left if left is not None else selected["stock_quantity"])
             name = product["name"] + " · " + selected["name"]
         else:
             if variant:

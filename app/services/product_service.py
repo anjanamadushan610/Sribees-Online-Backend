@@ -399,6 +399,14 @@ class ProductService:
         for not_null in ("is_returnable", "price_review_level", "sold_by_weight", "stock_mode"):
             if not_null in update_data and update_data[not_null] is None:
                 update_data.pop(not_null)
+        if getattr(product, "option_label", None) and (
+            update_data.get("sold_by_weight")
+            or ("stock_mode" in update_data and update_data["stock_mode"] != product.stock_mode)
+        ):
+            # Shades are counted one by one (migration 123); only /options changes that.
+            raise ValueError(
+                "This product is sold in shades / colours; change that under its options first."
+            )
         if "stock_mode" not in update_data or update_data["stock_mode"] == product.stock_mode:
             update_data.pop("stock_mode", None)
         else:
@@ -1276,6 +1284,14 @@ class ProductService:
                 price = (price * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             prices[str(product_id)] = price
         return prices
+
+    @staticmethod
+    async def get_option_label_map(db: AsyncSession, product_ids: List[UUID]) -> Dict[str, str]:
+        """``{product_id: option_label}`` for the products sold in shades / colours
+        (migration 123): checkout refuses their lines without one of the shades."""
+        from app.services import product_options
+
+        return await product_options.labels(db, product_ids)
 
     @staticmethod
     async def get_regular_price_map(
