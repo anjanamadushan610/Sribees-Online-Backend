@@ -431,6 +431,19 @@ async def finance_stock_compare(
     return {"as_of": now.isoformat(), "rows": list(rows.values())}
 
 
+@router.get("/branches")
+async def finance_branches(
+    _: None = Depends(require_finance_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Every branch (id, code, name, active). Finance follows our branches from here, with
+    our ids, instead of waiting for the first order of each branch to carry one."""
+    rows = (await db.execute(select(Branch).order_by(Branch.name))).scalars()
+    return {"branches": [
+        {"branch_id": str(b.branch_id), "code": b.code, "name": b.name,
+         "is_active": bool(b.is_active)} for b in rows]}
+
+
 @router.get("/catalog")
 async def finance_catalog(
     _: None = Depends(require_finance_service),

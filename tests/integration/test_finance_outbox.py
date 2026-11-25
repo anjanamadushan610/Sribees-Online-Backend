@@ -383,3 +383,21 @@ async def test_min_prices_are_stored_newest_first_and_shown_to_the_branch(
     bad = await api.get("/api/v1/admin/inventory/price-floors", headers=hdr,
                         params={"product_ids": "not-an-id"})
     assert bad.status_code == 400
+
+
+async def test_branches_endpoint_lists_every_branch_and_is_locked(api, test_branch, monkeypatch):
+    """Finance follows our branches from here: id, code, name, active; same locks as the rest."""
+    from app.config.settings import settings
+
+    assert (await api.get("/internal/finance/branches")).status_code == 401
+    edge = await api.get("/internal/finance/branches", headers={
+        "Authorization": f"Bearer {TOKEN}", "X-Forwarded-For": "203.0.113.9"})
+    assert edge.status_code == 403
+    r = await api.get("/internal/finance/branches", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert r.status_code == 200, r.text
+    row = next(b for b in r.json()["branches"] if b["branch_id"] == str(test_branch.branch_id))
+    assert row == {"branch_id": str(test_branch.branch_id), "code": test_branch.code,
+                   "name": test_branch.name, "is_active": True}
+    monkeypatch.setattr(settings, "finance_service_token_sha256", "")
+    assert (await api.get("/internal/finance/branches",
+                          headers={"Authorization": f"Bearer {TOKEN}"})).status_code == 404
