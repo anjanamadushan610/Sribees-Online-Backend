@@ -10,6 +10,7 @@ Enforces **Strict Branch-Specific Visibility**:
 """
 from decimal import Decimal
 from typing import List, Literal, Optional
+from unicodedata import normalize
 from uuid import UUID
 
 from fastapi import (
@@ -544,6 +545,28 @@ async def get_popular_products(
     }
 
 
+_RICE_SEARCH_ALIASES = frozenset({"rice", "sahal", "hal", "haal", "සහල්", "හාල්"})
+_RICE_SUBCATEGORY_SLUG = "grocery-essentials-rice"
+
+
+async def _search_storefront(db, branch_id, query, limit, offset):
+    if normalize("NFC", query).strip().casefold() not in _RICE_SEARCH_ALIASES:
+        return await ProductService.get_all_for_branch(
+            db, branch_id=branch_id, limit=limit, offset=offset, search=query,
+        )
+
+    rice = await CategoryService.get_by_slug(db, _RICE_SUBCATEGORY_SLUG)
+    if rice is None or not rice.is_active:
+        return [], 0
+    shelf = await CategoryService.get_branch_category(db, rice.category_id, branch_id)
+    if shelf is None or not shelf.is_active:
+        return [], 0
+    return await ProductService.get_all_for_branch(
+        db, branch_id=branch_id, limit=limit, offset=offset,
+        subcategory_id=rice.category_id, sort_by="name", sort_order="asc",
+    )
+
+
 @router.get("/search", response_model=dict)
 async def search_products(
     request: Request,
@@ -570,13 +593,7 @@ async def search_products(
         branch_id = UUID(context["branch_id"])
         offset = (page - 1) * limit
 
-        items, total = await ProductService.get_all_for_branch(
-            db,
-            branch_id=branch_id,
-            limit=limit,
-            offset=offset,
-            search=q,
-        )
+        items, total = await _search_storefront(db, branch_id, q, limit, offset)
 
         if page == 1:
             session_id = (
