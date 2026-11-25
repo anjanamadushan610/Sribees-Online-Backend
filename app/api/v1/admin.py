@@ -329,17 +329,26 @@ async def get_customers(
         else:
             query = query.where(User.deleted_at.is_(None))
 
+        latest_order = select(Order).where(Order.user_id == User.user_id, User.deleted_at.is_(None))
+        if not scope.is_unscoped:
+            latest_order = latest_order.where(Order.branch_id == scope.branch_id)
+        latest_order = latest_order.order_by(Order.created_at.desc(), Order.order_id.desc()).limit(1)
+        checkout_primary = latest_order.with_only_columns(Order.contact_phone).scalar_subquery()
+        checkout_alternate = latest_order.with_only_columns(Order.alternate_phone).scalar_subquery()
+        primary_phone = func.coalesce(User.phone, checkout_primary)
+        alternate_phone = func.coalesce(User.alternate_phone, checkout_alternate)
+
         if search:
             search_pattern = f"%{search.strip()}%"
             query = query.where(
                 User.email.ilike(search_pattern) |
                 User.full_name.ilike(search_pattern) |
-                User.phone.ilike(search_pattern) |
+                primary_phone.ilike(search_pattern) |
                 # The NIC is what support is given over the phone when
                 # someone asks about their account, so it has to be
                 # searchable here or it is not usable as an identity.
                 User.nic.ilike(search_pattern) |
-                User.alternate_phone.ilike(search_pattern) |
+                alternate_phone.ilike(search_pattern) |
                 # What a closed account held before its contacts were
                 # released, so "this number used to be mine" can be found.
                 User.deleted_phone.ilike(search_pattern) |
@@ -359,9 +368,10 @@ async def get_customers(
 
         # Get users
         offset = (page - 1) * limit
+        query = query.add_columns(primary_phone, alternate_phone)
         query = query.order_by(User.created_at.desc()).limit(limit).offset(offset)
         result = await db.execute(query)
-        users = result.scalars().all()
+        users = result.all()
 
         # Purchasing history for the whole page in one grouped query, scoped
         # to this admin's branch. Net spend counts DELIVERED orders only —
@@ -369,12 +379,12 @@ async def get_customers(
         # to imply it was.
         stats_map = await customer_insight_service.stats_for_users(
             db,
-            [u.user_id for u in users],
+            [u.user_id for u, _, _ in users],
             None if scope.is_unscoped else scope.branch_id,
         )
 
         rows = []
-        for u in users:
+        for u, primary, alternate in users:
             stats = stats_map.get(u.user_id) or customer_insight_service.CustomerStats(
                 user_id=u.user_id
             )
@@ -384,8 +394,10 @@ async def get_customers(
                     "email": u.email,
                     "full_name": u.full_name,
                     "phone": u.phone,
+                    "display_primary_phone": primary if u.deleted_at is None else None,
                     "nic": u.nic,
                     "alternate_phone": u.alternate_phone,
+                    "display_alternate_phone": alternate if u.deleted_at is None and alternate != primary else None,
                     "role": u.role,
                     "is_active": u.is_active,
                     "is_verified": u.is_verified,

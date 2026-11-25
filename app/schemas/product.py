@@ -135,6 +135,7 @@ class ProductCreate(BaseModel):
     low_stock_threshold: int = Field(10, ge=0)
     weight: Optional[Decimal] = None
     weight_unit: str = "kg"
+    delivery_fee_per_kg: Optional[Decimal] = Field(None, gt=0, max_digits=10, decimal_places=2)
     display_size: Optional[str] = Field(default=None, max_length=80)
     display_size_unit: Optional[str] = Field(default=None, max_length=32)
     is_active: bool = True
@@ -214,6 +215,7 @@ class ProductUpdate(BaseModel):
     low_stock_threshold: Optional[int] = Field(None, ge=0)
     weight: Optional[Decimal] = None
     weight_unit: Optional[str] = None
+    delivery_fee_per_kg: Optional[Decimal] = Field(None, gt=0, max_digits=10, decimal_places=2)
     display_size: Optional[str] = Field(default=None, max_length=80)
     display_size_unit: Optional[str] = Field(default=None, max_length=32)
     is_active: Optional[bool] = None

@@ -55,7 +55,7 @@ PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
 
 SUPPORT_EMAIL = "support@sribeesonline.com"
-BRAND_COLOR = "#0F766E"  # the partner portal's primary colour
+BRAND_COLOR = "#8B1447"  # the partner portal's primary colour
 
 
 def reset_error(http: int, message: str, code: str, **extra) -> AppException:
@@ -123,19 +123,20 @@ def _email_bodies(name: str, code: str) -> tuple[str, str, str]:
     )
     spaced = " ".join(code)
     body = f"""<!doctype html>
-<html><body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:24px 12px">
+<html><body style="margin:0;padding:0;background:#faf3f7;font-family:Arial,Helvetica,sans-serif;color:#241623">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#faf3f7;padding:24px 12px">
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:12px;overflow:hidden">
-<tr><td style="background:{BRAND_COLOR};padding:20px 24px;color:#ffffff">
-<div style="font-size:22px;font-weight:bold;letter-spacing:1px">SRIBEES</div>
+<tr><td style="background:{BRAND_COLOR};border-top:5px solid #D81B60;padding:24px;color:#ffffff">
+<div style="font-size:24px;font-weight:bold;letter-spacing:1px">Sribees Online</div>
 <div style="font-size:13px;opacity:.9">Partner Portal</div>
 </td></tr>
 <tr><td style="padding:28px 24px">
+<h1 style="margin:0 0 16px;font-size:22px;line-height:1.3">Reset your password</h1>
 <p style="margin:0 0 12px;font-size:15px">Hello {safe_name},</p>
 <p style="margin:0 0 20px;font-size:15px;line-height:1.5">Use this code to reset your Partner Portal password:</p>
 <div style="text-align:center;margin:0 0 20px">
-<span style="display:inline-block;font-size:32px;font-weight:bold;letter-spacing:6px;color:{BRAND_COLOR};background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:12px 20px">{spaced}</span>
+<span style="display:inline-block;font-size:32px;font-weight:bold;letter-spacing:6px;color:{BRAND_COLOR};background:#fce7f3;border:1px solid #f5b9d6;border-radius:8px;padding:12px 20px">{spaced}</span>
 </div>
 <p style="margin:0 0 12px;font-size:14px;line-height:1.5">It expires in <b>{minutes} minutes</b>. Never share it with anyone &mdash; Sribees staff will never ask for it.</p>
 <p style="margin:0;font-size:13px;line-height:1.5;color:#6b7280">If you did not ask to reset your password, ignore this email. Your password stays the same.</p>

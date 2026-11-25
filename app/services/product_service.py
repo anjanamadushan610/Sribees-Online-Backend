@@ -321,6 +321,7 @@ class ProductService:
             low_stock_threshold=data.low_stock_threshold,
             weight=data.weight,
             weight_unit=data.weight_unit,
+            delivery_fee_per_kg=data.delivery_fee_per_kg,
             display_size=data.display_size.strip() if data.display_size else None,
             display_size_unit=data.display_size_unit.strip() if data.display_size_unit else None,
             is_active=data.is_active,
