@@ -55,3 +55,19 @@ class PartnerWithdrawal(Base):
     created_at = sa.Column(sa.DateTime(timezone=True), server_default=sa.func.now())
     decided_at = sa.Column(sa.DateTime(timezone=True), nullable=True)
     __table_args__ = (sa.UniqueConstraint("partner_id", "request_id", name="uq_partner_withdrawal_request"), sa.CheckConstraint("amount > 0", name="chk_partner_withdrawal_amount"))
+
+
+class PartnerTeamInvitation(Base):
+    __tablename__ = "partner_team_invitations"
+
+    invitation_id = sa.Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    master_id = sa.Column(PG_UUID(as_uuid=True), sa.ForeignKey("partners.partner_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = sa.Column(PG_UUID(as_uuid=True), sa.ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    token_hash = sa.Column(sa.String(64), nullable=False, unique=True)
+    channel = sa.Column(sa.String(5), nullable=False)
+    contact_stamp = sa.Column(sa.String(64), nullable=False)
+    contact_hint = sa.Column(sa.String(254), nullable=False)
+    delivery_state = sa.Column(sa.String(8), nullable=False, default="sending")
+    created_at = sa.Column(sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now())
+    expires_at = sa.Column(sa.DateTime(timezone=True), nullable=False)
+    accepted_at = sa.Column(sa.DateTime(timezone=True))

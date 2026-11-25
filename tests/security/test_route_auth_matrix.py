@@ -70,6 +70,10 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     # credential bound to the current password hash; row-locked single use.
     # Covered by test_partner_invitation and test_partner_invitation_database.
     ("POST", "/api/v1/partner/auth/set-password"),
+    # The opaque invitation proves access to the account's registered contact.
+    # Acceptance consumes the credential under a row lock and checks the contact again.
+    ("POST", "/api/v1/partner/auth/team-invitation"),
+    ("POST", "/api/v1/partner/auth/team-invitation/accept"),
     # --- signed or static callbacks -----------------------------------------
     ("POST", "/api/v1/payments/webhook"),  # Stripe signature, see test_webhooks
     ("GET", "/api/v1/whatsapp/webhook"),  # Meta verification token

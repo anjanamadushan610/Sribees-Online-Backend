@@ -1,6 +1,10 @@
 """Linked Partner Wallet, customer upgrades, and partner withdrawals."""
+import hashlib
+import hmac
+import html
 import os
 import secrets
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -8,7 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
@@ -18,7 +22,12 @@ from app.core.dependencies import (
     get_current_user,
     require_super_admin,
 )
-from app.models.partner_wallet import PartnerApplication, PartnerWithdrawal
+from app.models.partner import Partner
+from app.models.partner_wallet import (
+    PartnerApplication,
+    PartnerTeamInvitation,
+    PartnerWithdrawal,
+)
 from app.models.user import User
 from app.services.partner_wallet_service import PartnerWalletService as Service
 from app.services.partner_wallet_service import withdrawal_json
@@ -48,6 +57,19 @@ class ApplicationBody(Body):
         if not value.get_secret_value().strip():
             raise ValueError('Password cannot be blank.')
         return value
+
+
+class TeamInvitationBody(Body):
+    channel: Literal['email', 'sms']
+    contact: str = Field(min_length=1, max_length=254)
+
+
+class TeamInvitationToken(Body):
+    token: str = Field(pattern=r'^[A-Za-z0-9_-]{43}$')
+
+
+class AcceptTeamInvitationBody(ApplicationBody, TeamInvitationToken):
+    pass
 
 
 class ApplicationDecision(Body):
@@ -338,3 +360,165 @@ async def admin_partner_wallet(partner_id: UUID, db: AsyncSession = Depends(get_
     data = await Service.snapshot(db, partner)
     await db.commit()
     return {'success': True, 'data': data}
+
+
+def require_inviting_master(partner):
+    if partner.role != 'master_partner':
+        raise HTTPException(403, 'Only Master Partners can invite customers.')
+
+
+@router.get('/partner/team-invitations')
+async def list_team_invitations(db: AsyncSession = Depends(get_db),
+                                partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
+    require_inviting_master(partner)
+    rows = (await db.execute(select(PartnerTeamInvitation).where(
+        PartnerTeamInvitation.master_id == partner.partner_id
+    ).order_by(PartnerTeamInvitation.created_at.desc()).limit(50))).scalars()
+    now = datetime.now(timezone.utc)
+    data = []
+    for row in rows:
+        if row.accepted_at:
+            status = 'Accepted'
+        elif row.delivery_state == 'failed':
+            status = 'Failed'
+        elif row.expires_at <= now:
+            status = 'Expired'
+        elif row.delivery_state == 'sending':
+            status = 'Sending'
+        else:
+            status = 'Pending'
+        data.append({'id': str(row.invitation_id), 'channel': row.channel, 'status': status, 'contactHint': row.contact_hint,
+                     'createdAt': row.created_at.isoformat(), 'expiresAt': row.expires_at.isoformat()})
+    return {'success': True, 'data': data}
+
+
+@router.post('/partner/team-invitations')
+async def create_team_invitation(body: TeamInvitationBody, db: AsyncSession = Depends(get_db),
+                                 redis: Redis = Depends(get_redis),
+                                 partner=Depends(get_current_partner), ready=Depends(rollout_enabled)):
+    from app.services import email_sender
+    from app.services.partner_invitation import portal_base, sms_gateway
+    from app.utils.identity import normalize_mobile
+
+    require_inviting_master(partner)
+    contact = body.contact.lower()
+    if body.channel == 'sms':
+        try:
+            contact = normalize_mobile(contact)
+        except ValueError:
+            raise HTTPException(422, 'Enter a valid Sri Lankan mobile number.') from None
+        match = (User.phone == contact) & User.is_phone_verified.is_(True)
+    else:
+        match = func.lower(User.email) == contact
+
+    if not await redis.set(f'partner:team-invite:master:{partner.partner_id}', '1', nx=True, ex=30):
+        raise HTTPException(429, 'Please wait 30 seconds before sending another invitation.')
+    day = datetime.now(timezone.utc).date()
+    daily_key = f'partner:team-invite:daily:{partner.partner_id}:{day}'
+    async with redis.pipeline(transaction=True) as pipe:
+        count, _ = await pipe.incr(daily_key).expire(daily_key, 86400).execute()
+    if count > 30:
+        raise HTTPException(429, 'Daily invitation limit reached.')
+    users = (await db.execute(select(User).where(
+        match, User.is_active.is_(True), User.is_blocked.is_not(True), User.deleted_at.is_(None)
+    ).limit(2))).scalars().all()
+    if len(users) != 1 or await Service.linked(db, users[0].user_id, active=False):
+        raise HTTPException(409, 'No eligible Sribees account could be invited using that contact.')
+    user = users[0]
+    if user.user_id == partner.user_id or not user.email or not user.full_name:
+        raise HTTPException(409, 'No eligible Sribees account could be invited using that contact.')
+
+    base = portal_base()
+    gateway = sms_gateway() if body.channel == 'sms' else None
+    if body.channel == 'email' and not email_sender.is_configured():
+        raise HTTPException(503, 'Partner invitation email is unavailable.')
+    if not await redis.set(f'partner:team-invite:customer:{user.user_id}', '1', nx=True, ex=300):
+        raise HTTPException(429, 'An invitation was recently requested. Try again in five minutes.')
+
+    token = secrets.token_urlsafe(32)
+    url = f'{base}/join-team#token={token}'
+    contact_hint = f'••••{contact[-4:]}' if gateway is not None else email_sender.mask_email(contact)
+    invitation = PartnerTeamInvitation(
+        master_id=partner.partner_id, user_id=user.user_id,
+        token_hash=hashlib.sha256(token.encode()).hexdigest(), channel=body.channel, contact_hint=contact_hint,
+        contact_stamp=team_contact_stamp(token, contact),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    master_name = partner.full_name
+    db.add(invitation)
+    await db.commit()
+    try:
+        message = 'You have been invited to join a Sribees Master Partner team. The invitation is valid for 24 hours.'
+        if gateway is not None:
+            await gateway.send(contact, f'{message} {url}')
+        else:
+            await email_sender.send_email(
+                contact, 'Join a Sribees Partner team',
+                f'{master_name} invited you to join their Sribees Partner team.\n\n{url}\n\n{message}',
+                f'<h1 style="color:#8B1447">Sribees Online</h1><p>{html.escape(master_name)} invited you to join their Partner team.</p>'
+                f'<p><a href="{html.escape(url, quote=True)}">Review invitation</a></p><p>{message}</p>',
+            )
+    except Exception:
+        invitation.delivery_state = 'failed'
+        await db.commit()
+        raise HTTPException(502, 'The invitation could not be sent. Try again later.') from None
+    invitation.delivery_state = 'sent'
+    await db.commit()
+    return {'success': True, 'message': 'Invitation sent.'}
+
+
+def team_contact_stamp(token, contact):
+    return hmac.new(token.encode(), contact.encode(), hashlib.sha256).hexdigest()
+
+
+async def pending_team_invitation(db, token, *, lock=False):
+    query = select(PartnerTeamInvitation).where(
+        PartnerTeamInvitation.token_hash == hashlib.sha256(token.encode()).hexdigest(),
+        PartnerTeamInvitation.accepted_at.is_(None),
+        PartnerTeamInvitation.expires_at > datetime.now(timezone.utc),
+        PartnerTeamInvitation.delivery_state == 'sent',
+    )
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    row = (await db.execute(query)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, 'This invitation is invalid, expired or already used.')
+    return row
+
+
+async def team_invitation_details(db, row, token, user):
+    master = await db.get(Partner, row.master_id)
+    if not master or not master.is_active or master.role != 'master_partner':
+        raise HTTPException(404, 'This invitation is unavailable.')
+    if not user or not user.is_active or user.is_blocked or user.deleted_at is not None:
+        raise HTTPException(404, 'This invitation is unavailable.')
+    if row.channel == 'email':
+        contact = (user.email or '').strip().lower()
+    else:
+        from app.services.partner_invitation import verified_sms_phone
+        contact = verified_sms_phone(user)
+    if not hmac.compare_digest(row.contact_stamp, team_contact_stamp(token, contact)):
+        raise HTTPException(404, 'The account contact has changed. Request a new invitation.')
+    return master
+
+
+@router.post('/partner/auth/team-invitation')
+async def inspect_team_invitation(body: TeamInvitationToken, db: AsyncSession = Depends(get_db),
+                                  ready=Depends(rollout_enabled)):
+    row = await pending_team_invitation(db, body.token)
+    master = await team_invitation_details(db, row, body.token, await db.get(User, row.user_id))
+    return {'success': True, 'data': {'masterName': master.full_name}}
+
+
+@router.post('/partner/auth/team-invitation/accept')
+async def accept_team_invitation(body: AcceptTeamInvitationBody, db: AsyncSession = Depends(get_db),
+                                 ready=Depends(rollout_enabled)):
+    invitation = await pending_team_invitation(db, body.token)
+    user = await Service.user_lock(db, invitation.user_id)
+    row = await pending_team_invitation(db, body.token, lock=True)
+    master = await team_invitation_details(db, row, body.token, user)
+    partner = await Service.join_master_team(db, user.user_id, master.partner_id, body.password.get_secret_value())
+    row.accepted_at = datetime.now(timezone.utc)
+    result = partner_json(partner)
+    await db.commit()
+    return {'success': True, 'data': result}
