@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.settings import settings
+from app.models.branch import Branch
 from app.models.category import Category
 from app.models.product import Product, ProductVariant
 
@@ -68,7 +69,8 @@ async def supply_catalog(
     _: None = Depends(require_supply_service),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Every product (active or not) with its Sinhala name, size and pack sizes."""
+    """Every product (active or not) with its Sinhala name, size and pack sizes, and every
+    branch (id, code, name, active): Sribees Supply follows our branches from here."""
     variants: dict = defaultdict(list)
     for v in (await db.execute(select(ProductVariant).order_by(ProductVariant.sort_order))).scalars():
         variants[v.product_id].append({
@@ -76,9 +78,16 @@ async def supply_catalog(
             "weight_grams": v.weight_grams, "is_active": bool(v.is_active)})
     categories = dict((await db.execute(select(Category.category_id, Category.name))).all())
     products = (await db.execute(select(Product).order_by(Product.name))).scalars()
-    return {"products": [
-        {"product_id": str(p.product_id), "sku": p.sku, "name": p.name, "name_si": p.name_si,
-         "display_size": p.display_size, "display_size_unit": p.display_size_unit,
-         "category": categories.get(p.category_id), "is_active": bool(p.is_active),
-         "variants": variants.get(p.product_id, [])}
-        for p in products]}
+    branch_rows = (await db.execute(select(Branch).order_by(Branch.name))).scalars()
+    return {
+        "branches": [
+            {"branch_id": str(b.branch_id), "code": b.code, "name": b.name,
+             "is_active": bool(b.is_active)}
+            for b in branch_rows],
+        "products": [
+            {"product_id": str(p.product_id), "sku": p.sku, "name": p.name, "name_si": p.name_si,
+             "display_size": p.display_size, "display_size_unit": p.display_size_unit,
+             "category": categories.get(p.category_id), "is_active": bool(p.is_active),
+             "variants": variants.get(p.product_id, [])}
+            for p in products],
+    }

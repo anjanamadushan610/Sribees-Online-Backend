@@ -63,3 +63,12 @@ async def test_catalog_has_sinhala_name_and_size(api, db, make_product):
     assert row["is_active"] is True and row["variants"] == []
     assert set(row) == {"product_id", "sku", "name", "name_si", "display_size",
                         "display_size_unit", "category", "is_active", "variants"}
+
+
+async def test_catalog_lists_the_branches(api, test_branch):
+    """Sribees Supply follows our branches from here: id, code, name, active; nothing else."""
+    r = await api.get("/internal/supply/catalog", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert r.status_code == 200, r.text
+    row = next(b for b in r.json()["branches"] if b["branch_id"] == str(test_branch.branch_id))
+    assert row == {"branch_id": str(test_branch.branch_id), "code": test_branch.code,
+                   "name": test_branch.name, "is_active": True}
