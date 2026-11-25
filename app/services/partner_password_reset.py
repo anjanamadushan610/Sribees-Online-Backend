@@ -128,7 +128,7 @@ def _email_bodies(name: str, code: str) -> tuple[str, str, str]:
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:12px;overflow:hidden">
 <tr><td style="background:{BRAND_COLOR};border-top:5px solid #D81B60;padding:24px;color:#ffffff">
-<div style="font-size:24px;font-weight:bold;letter-spacing:1px">Sribees Online</div>
+<div style="font-size:24px;font-weight:bold;letter-spacing:1px">SRIBEES Online</div>
 <div style="font-size:13px;opacity:.9">Partner Portal</div>
 </td></tr>
 <tr><td style="padding:28px 24px">
