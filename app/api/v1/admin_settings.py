@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from loguru import logger
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.app_public import APP_CONFIG_CACHE_KEY
@@ -34,7 +35,7 @@ from app.schemas.app_settings import (
     PlatformSettingsUpdate,
     SplashVideoResponse,
 )
-from app.services import splash_animation
+from app.services import order_gifts, splash_animation
 from app.services.app_settings_service import AppSettingsService
 from app.services.storage import StorageError, get_storage
 
@@ -107,6 +108,36 @@ async def update_platform_settings(
 
     logger.info("Platform settings updated")
     return PlatformSettingsResponse(success=True, data=PlatformSettings(**values))
+
+
+@router.get("/order-gifts")
+async def get_order_gifts(db: AsyncSession = Depends(get_db), admin=RequireSuperAdmin):
+    from app.models.product import Product
+
+    rule = await order_gifts.get_rule(db)
+    names = {}
+    if rule.items:
+        rows = (await db.execute(select(Product.product_id, Product.name).where(
+            Product.product_id.in_([line.product_id for line in rule.items]),
+        ))).all()
+        names = {str(product_id): name for product_id, name in rows}
+    return {"data": rule, "names": names}
+
+
+@router.put("/order-gifts")
+async def save_order_gifts(rule: order_gifts.GiftRule,
+                           db: AsyncSession = Depends(get_db), admin=RequireSuperAdmin):
+    from app.models.product import Product
+
+    ids = {item.product_id for item in rule.items}
+    if ids:
+        eligible = (await db.execute(select(Product.product_id).where(
+            Product.product_id.in_(ids), *order_gifts.gift_product_filter(),
+        ))).scalars().all()
+        if set(eligible) != ids:
+            raise HTTPException(422, "Choose active products sold by the piece with no options.")
+    await AppSettingsService.upsert(db, order_gifts.KEY, rule.model_dump_json())
+    return {"data": rule}
 
 
 def _format_splash_response(setting) -> SplashVideoResponse:

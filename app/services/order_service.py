@@ -574,7 +574,29 @@ class OrderService:
             )
             if not ordinary_quote.available:
                 raise DeliveryNotAvailableError(ordinary_quote.status, ordinary_quote.message)
-            confirmed_quote = await OrderService._confirm_courier_quote(full_quote.quote_id)
+            from app.services import order_gifts
+
+            gifts = await order_gifts.qualify(
+                db, branch_id, breakdown.subtotal, breakdown.discount, priced_items,
+            )
+            if data.expected_gifts is not None and {
+                (str(item.product_id), item.quantity) for item in data.expected_gifts
+            } != {(item["product_id"], item["quantity"]) for item in gifts}:
+                raise ValueError("Your order gifts have changed. Refresh checkout to review them.")
+            booking_quote = full_quote
+            if gifts:
+                weighted_gifts = await OrderService._attach_weights(db, gifts)
+                booking_quote = await PricingService.quote_delivery(
+                    [*priced_items, *weighted_gifts],
+                    cod_amount=(
+                        breakdown.subtotal - breakdown.discount + breakdown.tax
+                        if destination["payment_method"] == "cod" else Decimal("0")
+                    ),
+                    **destination,
+                )
+                if not booking_quote.available:
+                    raise DeliveryNotAvailableError(booking_quote.status, booking_quote.message)
+            confirmed_quote = await OrderService._confirm_courier_quote(booking_quote.quote_id)
 
         eligible_delivery_fee = ordinary_quote.fee
         subtotal = breakdown.subtotal
@@ -680,7 +702,7 @@ class OrderService:
             gateway_tr_id=gateway_tr_id,
             courier_quote_id=confirmed_quote.quote_id,
             courier_quote_expires_at=confirmed_quote.expires_at,
-            courier_quote_amount=full_quote.fee,
+            courier_quote_amount=booking_quote.fee,
             referral_delivery_discount=waived_delivery_fee,
             free_delivery_source=free_delivery,
             courier_quote_confirmed_at=datetime.now(timezone.utc),
@@ -784,6 +806,14 @@ class OrderService:
                             f"Only {left} available for {item_name}."
                         )
 
+        if gifts:
+            for gift in gifts:
+                try:
+                    await stock_keeping.take(db, branch_id, UUID(gift["product_id"]), None, gift["quantity"])
+                except stock_keeping.OutOfStock:
+                    await db.rollback()
+                    raise ValueError("A gift went out of stock. Refresh checkout to review your gifts.") from None
+
         # Whether each product may be returned, read from the catalog rather
         # than the cart payload (which the client wrote), and frozen onto the
         # order item: the terms are the ones in force at checkout.
@@ -849,6 +879,16 @@ class OrderService:
                 coupon_discount=coupon_share,
             )
             db.add(order_item)
+
+        for gift in gifts:
+            db.add(OrderItem(
+                order_id=order.order_id, product_id=UUID(gift["product_id"]),
+                product_name=gift["name"], product_sku=gift["sku"],
+                display_size=gift["display_size"], display_size_unit=gift["display_size_unit"],
+                quantity=gift["quantity"], unit_price=Decimal("0"), subtotal=Decimal("0"),
+                is_gift=True, is_returnable=False,
+                cashback_percentage=Decimal("0"), referral_commission_percentage=Decimal("0"),
+            ))
 
         # Record wallet movements atomically with the order.
         # Spend first so the earned cashback isn't immediately spendable on the
@@ -1294,6 +1334,8 @@ class OrderService:
         """
         lines = []
         for item in order.items:
+            if getattr(item, "is_gift", False):
+                continue
             product = await db.get(Product, item.product_id)
             if not product or not product.is_active:
                 lines.append((item, None, float(item.unit_price), 0))
