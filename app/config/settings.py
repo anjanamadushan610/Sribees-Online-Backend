@@ -253,7 +253,7 @@ class Settings(BaseSettings):
     # =========================================================================
     # Used only by app/services/email_sender.py (partner password reset).
     # Until MAIL_USERNAME and MAIL_PASSWORD are set, no mail goes out.
-    partner_portal_url: str = Field(default="https://new-sribees-frontend-referral.vercel.app", description="Public HTTPS Partner Portal origin for invitation links")
+    partner_portal_url: str = Field(default="https://referral.sribeesonline.com", description="Public HTTPS Partner Portal origin for invitation links")
     mail_from: str = Field(default="noreply@sribeesonline.com", description="From email address")
     mail_from_name: str = Field(default="Sribees Online", description="From name")
     mail_server: str = Field(default="smtp.gmail.com", description="SMTP server")
@@ -496,7 +496,7 @@ class Settings(BaseSettings):
     # environment) while production keeps to this default.
     cors_origin_regex: str = Field(
         default=(
-            r"https://.*\.vercel\.app|https://([a-z0-9-]+\.)*sribees\.com"
+            r"https://([a-z0-9-]+\.)*sribees\.com"
             r"|https://(www\.|referral\.|admin\.)?sribeesonline\.com"
         ),
         description="Pattern an allowed CORS origin must match in full",

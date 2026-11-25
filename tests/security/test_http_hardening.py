@@ -58,6 +58,10 @@ async def test_health_answers_without_storage(client):
         "https://evilsribeesonline.com",
         "https://sribeesonline.com.evil.example",
         "https://shop.sribeesonline.com",
+        # Production answers only our own domains; any Vercel site could
+        # otherwise call the API with a signed-in user's credentials.
+        "https://new-sribees-frontend.vercel.app",
+        "https://attacker.vercel.app",
         "https://admin.sribeesonline.com.evil.example",
         "https://evil.admin.sribeesonline.com",
         "http://sribeesonline.com",
@@ -207,3 +211,11 @@ def test_every_password_endpoint_gets_the_strict_limit(path):
     from app.core.rate_limiter import RateLimitMiddleware
 
     assert path in RateLimitMiddleware.AUTH_PATHS
+
+
+def test_partner_links_use_our_own_domain():
+    """Invitation and password links in partner emails point at the
+    sribeesonline.com portal, never a hosting provider's address."""
+    from app.config.settings import Settings
+
+    assert Settings.model_fields["partner_portal_url"].default == "https://referral.sribeesonline.com"
