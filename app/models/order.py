@@ -305,6 +305,7 @@ class OrderItem(Base):
 
     # Snapshot data (at time of order)
     product_name = Column(String(255), nullable=False)
+    is_gift = Column(Boolean, nullable=False, default=False, server_default="false")
     display_size = Column(String(80), nullable=True)
     display_size_unit = Column(String(32), nullable=True)
     # The weight option bought ("500g") for a sold-by-weight product, else NULL.

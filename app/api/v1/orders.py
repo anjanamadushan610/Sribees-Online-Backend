@@ -477,6 +477,7 @@ def format_order(
                 "display_size": getattr(item, "display_size", None),
                 "display_size_unit": getattr(item, "display_size_unit", None),
                 "variant_name": item.variant_name,
+                "is_gift": bool(getattr(item, "is_gift", False)),
                 "product_sku": item.product_sku,
                 "product_image": item.product_image,
                 "quantity": item.quantity,
@@ -557,6 +558,7 @@ def format_order_summary(order) -> dict:
                 "display_size": getattr(item, "display_size", None),
                 "display_size_unit": getattr(item, "display_size_unit", None),
                 "variant_name": item.variant_name,
+                "is_gift": bool(getattr(item, "is_gift", False)),
                 "product_image": item.product_image,
                 "quantity": item.quantity,
                 "unit_price": float(item.unit_price),
@@ -773,6 +775,9 @@ async def quote_order(
             delivery=delivery,
         )
 
+        from app.services import order_gifts
+
+        gifts = await order_gifts.qualify(db, destination.branch_id, breakdown.subtotal, breakdown.discount, items)
         item_count = sum(i.get("quantity", 0) for i in quote_items)
 
         # Blended rate for display: with per-product cashback there is no single
@@ -791,6 +796,7 @@ async def quote_order(
                 "wallet_balance": float(wallet_balance),
                 "wallet_applied": breakdown.wallet_deduction > 0,
                 "item_count": item_count,
+                "gifts": gifts,
                 "delivery": delivery_quote_service.delivery_payload(delivery, destination),
                 "coupon": (
                     {

@@ -237,6 +237,8 @@ class InvoiceService:
             ret_qty = returned_qty_map.get(it_id_str, 0)
 
             prod_title = it.product_name or "—"
+            if getattr(it, "is_gift", False):
+                prod_title += " (Free gift)"
             qty_text = str(it.quantity)
 
             if is_return_active and ret_qty > 0:
