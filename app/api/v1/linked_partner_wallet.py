@@ -23,7 +23,11 @@ from app.core.dependencies import (
     require_super_admin,
 )
 from app.models.partner import Partner
-from app.models.partner_wallet import PartnerApplication, PartnerTeamInvitation, PartnerWithdrawal
+from app.models.partner_wallet import (
+    PartnerApplication,
+    PartnerTeamInvitation,
+    PartnerWithdrawal,
+)
 from app.models.user import User
 from app.services.partner_wallet_service import PartnerWalletService as Service
 from app.services.partner_wallet_service import withdrawal_json
