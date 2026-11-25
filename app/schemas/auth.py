@@ -233,7 +233,7 @@ class UserResponse(BaseModel):
         from app.utils.identity import missing_profile_fields
 
         return missing_profile_fields(
-            full_name=self.full_name, email=self.email, nic=self.nic
+            full_name=self.full_name, email=self.email
         )
 
     class Config:
