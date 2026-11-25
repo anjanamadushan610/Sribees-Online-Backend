@@ -58,6 +58,8 @@ async def test_health_answers_without_storage(client):
         "https://evilsribeesonline.com",
         "https://sribeesonline.com.evil.example",
         "https://shop.sribeesonline.com",
+        "https://admin.sribeesonline.com.evil.example",
+        "https://evil.admin.sribeesonline.com",
         "http://sribeesonline.com",
         # Only the development server takes Netlify previews, and only because
         # its environment says so (CORS_ORIGIN_REGEX).
@@ -80,6 +82,8 @@ async def test_cors_does_not_reflect_untrusted_origins(client, origin):
         "https://sribees.com",
         "https://sribeesonline.com",
         "https://www.sribeesonline.com",
+        "https://referral.sribeesonline.com",
+        "https://admin.sribeesonline.com",
     ],
 )
 async def test_cors_allows_our_own_origins(client, origin):
