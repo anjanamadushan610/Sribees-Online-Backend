@@ -83,6 +83,8 @@ def _format_inventory_row(inv: BranchInventory, product: Product, branch: Branch
         # How the stock is kept (migration 100). For loose goods stock_quantity shows packs of
         # the smallest weight and stock_grams is the figure; packed sizes are on /weights.
         "stock_mode": product.stock_mode or "unit",
+        # "Shade" / "Colour": packed per shade (migration 123), counted on /weights too.
+        "option_label": getattr(product, "option_label", None),
         "stock_grams": inv.stock_grams or 0,
         "reserved_quantity": reserved,
         "available_quantity": max(0, stock - reserved),
@@ -492,11 +494,7 @@ async def _weights(db: AsyncSession, inv: BranchInventory, product: Product) -> 
     from app.services import stock_keeping
     from app.services.weight_options_service import label
 
-    variants = (await db.execute(
-        select(ProductVariant).where(ProductVariant.product_id == product.product_id,
-                                     ProductVariant.weight_grams.is_not(None),
-                                     ProductVariant.is_active.is_not(False))
-        .order_by(ProductVariant.weight_grams))).scalars().all()
+    variants = await _counted_options(db, product)
     counts = dict((await db.execute(
         select(BranchVariantInventory.variant_id, BranchVariantInventory.stock_quantity)
         .where(BranchVariantInventory.branch_id == inv.branch_id,
@@ -504,7 +502,8 @@ async def _weights(db: AsyncSession, inv: BranchInventory, product: Product) -> 
     options = []
     for v in variants:
         options.append({
-            "variant_id": str(v.variant_id), "weight_grams": v.weight_grams, "label": label(v.weight_grams),
+            "variant_id": str(v.variant_id), "weight_grams": v.weight_grams,
+            "label": label(v.weight_grams) if v.weight_grams else v.name,
             "packs": counts.get(v.variant_id, 0) if product.stock_mode == "packed" else None,
             "available": await stock_keeping.available(db, inv.branch_id, product.product_id, v.variant_id),
         })
@@ -512,8 +511,21 @@ async def _weights(db: AsyncSession, inv: BranchInventory, product: Product) -> 
         "inventory_id": str(inv.inventory_id), "product_id": str(product.product_id),
         "stock_mode": product.stock_mode or "unit", "stock_grams": inv.stock_grams or 0,
         "stock_quantity": inv.stock_quantity or 0, "options": options,
+        "option_label": getattr(product, "option_label", None),
         "kept_by_finance": bool(settings.finance_stock_authority),
     }
+
+
+async def _counted_options(db: AsyncSession, product: Product) -> list:
+    """What a packed product is counted in: its shades (migration 123) when it has
+    an option label, else its weight options, lightest first."""
+    q = select(ProductVariant).where(ProductVariant.product_id == product.product_id,
+                                     ProductVariant.is_active.is_not(False))
+    if getattr(product, "option_label", None):
+        q = q.where(ProductVariant.weight_grams.is_(None)).order_by(ProductVariant.sort_order)
+    else:
+        q = q.where(ProductVariant.weight_grams.is_not(None)).order_by(ProductVariant.weight_grams)
+    return list((await db.execute(q)).scalars().all())
 
 
 async def _scoped_row(db: AsyncSession, scope: BranchScope, inventory_id: UUID):
@@ -563,12 +575,11 @@ async def set_weight_stock(
     elif mode == "packed":
         if not body.packs:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Give the packs of each weight.")
-        mine = set((await db.execute(select(ProductVariant.variant_id).where(
-            ProductVariant.product_id == product.product_id, ProductVariant.weight_grams.is_not(None)))).scalars())
+        mine = {v.variant_id for v in await _counted_options(db, product)}
         for pack in body.packs:
             if pack.variant_id not in mine:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                    detail="That weight is not one of this product's options.")
+                                    detail="That weight or shade is not one of this product's options.")
             await stock_keeping.set_level(db, inv.branch_id, stock_keeping.Item(
                 "packed", product.product_id, pack.variant_id, None), pack.stock_quantity)
     else:

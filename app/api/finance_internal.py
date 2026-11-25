@@ -489,6 +489,12 @@ async def _branch_prices(db: AsyncSession, products: list) -> dict:
                    BranchInventory.discount_percentage)
             .where(BranchInventory.branch_id == branch_id))}
         options = await weight_options_service.options_for(db, packed, branch_id)
+        # Shades / colours of a packed product (migration 123) sell the same way.
+        from app.services import product_options
+
+        for pid in packed:
+            if getattr(by_id[pid], "option_label", None):
+                options[str(pid)] = await product_options.options_for(db, by_id[pid], branch_id)
         for pid_s, price in paid.items():
             p = by_id[uuid.UUID(pid_s)]
             branch_price, branch_discount = overrides.get(p.product_id) or (None, None)
