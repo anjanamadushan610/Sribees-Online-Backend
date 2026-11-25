@@ -587,7 +587,12 @@ class OrderService:
             if gifts:
                 weighted_gifts = await OrderService._attach_weights(db, gifts)
                 booking_quote = await PricingService.quote_delivery(
-                    [*priced_items, *weighted_gifts], **destination,
+                    [*priced_items, *weighted_gifts],
+                    cod_amount=(
+                        breakdown.subtotal - breakdown.discount + breakdown.tax
+                        if destination["payment_method"] == "cod" else Decimal("0")
+                    ),
+                    **destination,
                 )
                 if not booking_quote.available:
                     raise DeliveryNotAvailableError(booking_quote.status, booking_quote.message)
