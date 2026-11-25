@@ -134,6 +134,7 @@ def format_product(
         "sold_by_weight": bool(getattr(product, "sold_by_weight", False)),
         "stock_mode": getattr(product, "stock_mode", None) or "unit",
         "weight":float(product.weight) if getattr(product, "weight", None) is not None else None,
+        "delivery_fee_per_kg": float(product.delivery_fee_per_kg) if getattr(product, "delivery_fee_per_kg", None) is not None else None,
         "weight_unit": getattr(product, "weight_unit", None) or "kg",
         "display_size": getattr(product, "display_size", None),
         "display_size_unit": getattr(product, "display_size_unit", None),

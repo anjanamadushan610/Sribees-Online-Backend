@@ -89,6 +89,7 @@ class Product(Base):
     # migration 100: unit / loose (branch stock in grams) / packed (stock per weight option)
     stock_mode = Column(String(8), nullable=False, default="unit", server_default="unit")
     low_stock_threshold = Column(Integer, default=10)
+    delivery_fee_per_kg = Column(Numeric(10, 2), nullable=True)
     weight = Column(Numeric(10, 3), nullable=True)
     weight_unit = Column(String(10), default="kg")
     # Customer-facing retail size, independent of courier weight above.

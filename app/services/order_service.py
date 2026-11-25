@@ -538,44 +538,55 @@ class OrderService:
         # its outlet. Always a fresh quote, never the cart's cached one: this is
         # the quote that gets confirmed and later booked.
         async with courier_credentials.optional_for_branch(db, branch_id):
+            destination = {
+                "postal_city_id": postal_city_id,
+                "payment_method": to_courier_payment_method(data.payment_method),
+                "outlet_id": await delivery_quote_service.outlet_for(db, branch_id),
+            }
             breakdown = await PricingService.quote(
-                items=priced_items,
-                coupon=coupon_for_pricing,
-                use_wallet=data.use_wallet,
-                wallet_balance=wallet_balance,
-                tax_rate=pricing_config["tax_rate"],
-                postal_city_id=postal_city_id,
-                payment_method=to_courier_payment_method(data.payment_method),
-                wallet_amount=data.wallet_amount,
-                outlet_id=await delivery_quote_service.outlet_for(db, branch_id),
+                items=priced_items, coupon=coupon_for_pricing, use_wallet=data.use_wallet,
+                wallet_balance=wallet_balance, wallet_amount=data.wallet_amount,
+                tax_rate=pricing_config["tax_rate"], **destination,
             )
             if not breakdown.delivery_available:
-                # No price, no order. There is no flat fee to fall back to, and
-                # an order placed without a delivery charge is either a gift of
-                # the delivery or a customer billed after the fact.
                 raise DeliveryNotAvailableError(
                     breakdown.delivery_status,
                     DELIVERY_MESSAGES.get(breakdown.delivery_status)
                     or "Delivery to this address can't be priced right now.",
                 )
-            confirmed_quote = await OrderService._confirm_courier_quote(breakdown.courier_quote_id)
+            full_quote = DeliveryQuote(
+                status=breakdown.delivery_status, fee=breakdown.delivery_fee,
+                quote_id=breakdown.courier_quote_id, expires_at=breakdown.courier_quote_expires_at,
+            )
+            ordinary, fixed_delivery_fee = await delivery_quote_service.split_delivery_items(db, priced_items)
+            ordinary_quote = await delivery_quote_service.ordinary_delivery_quote(
+                ordinary, priced_items, full_quote, **destination,
+            )
+            if not ordinary_quote.available:
+                raise DeliveryNotAvailableError(ordinary_quote.status, ordinary_quote.message)
+            confirmed_quote = await OrderService._confirm_courier_quote(full_quote.quote_id)
 
-        original_delivery_fee = breakdown.delivery_fee
+        eligible_delivery_fee = ordinary_quote.fee
+        subtotal = breakdown.subtotal
         free_delivery = (
-            await free_delivery_service.covering_source(db, user_id, branch_id, breakdown.subtotal)
-            if original_delivery_fee and original_delivery_fee > 0
+            await free_delivery_service.covering_source(db, user_id, branch_id, subtotal)
+            if eligible_delivery_fee > 0
             else None
         )
         delivery_benefit = None if free_delivery else await ReferralPromotionService.delivery(
-            db, user_id, breakdown.subtotal, original_delivery_fee, lock=True)
+            db, user_id, subtotal, eligible_delivery_fee, lock=True)
         if data.expected_referral_free_delivery and not (delivery_benefit or free_delivery):
             raise ValueError('Your free delivery offer is no longer available. Refresh checkout to review the delivery charge.')
-        if delivery_benefit or free_delivery:
+        waived_delivery_fee = eligible_delivery_fee if delivery_benefit or free_delivery else Decimal("0.00")
+        customer_delivery_fee = fixed_delivery_fee + eligible_delivery_fee - waived_delivery_fee
+        if customer_delivery_fee != full_quote.fee:
             breakdown = await PricingService.quote(
                 items=priced_items, coupon=coupon_for_pricing, use_wallet=data.use_wallet,
-                wallet_balance=wallet_balance, wallet_amount=data.wallet_amount, tax_rate=pricing_config["tax_rate"],
-                delivery=DeliveryQuote(status=breakdown.delivery_status, fee=Decimal('0.00'),
-                    quote_id=breakdown.courier_quote_id, expires_at=breakdown.courier_quote_expires_at))
+                wallet_balance=wallet_balance, wallet_amount=data.wallet_amount,
+                tax_rate=pricing_config["tax_rate"],
+                delivery=DeliveryQuote(status=full_quote.status, fee=customer_delivery_fee,
+                    quote_id=full_quote.quote_id, expires_at=full_quote.expires_at),
+            )
 
         wallet_deduction = breakdown.wallet_deduction
         cashback_earned = breakdown.cashback_earned
@@ -659,8 +670,8 @@ class OrderService:
             gateway_tr_id=gateway_tr_id,
             courier_quote_id=confirmed_quote.quote_id,
             courier_quote_expires_at=confirmed_quote.expires_at,
-            courier_quote_amount=original_delivery_fee,
-            referral_delivery_discount=original_delivery_fee if (delivery_benefit or free_delivery) else Decimal('0.00'),
+            courier_quote_amount=full_quote.fee,
+            referral_delivery_discount=waived_delivery_fee,
             free_delivery_source=free_delivery,
             courier_quote_confirmed_at=datetime.now(timezone.utc),
         )
@@ -669,7 +680,7 @@ class OrderService:
         await db.flush()  # Get order_id
         offer_cap_service.stage_usage(db, user_id, order.order_id, offer_verdict)
         if delivery_benefit:
-            await ReferralPromotionService.reserve(db, order, delivery_benefit[0].benefit_id, original_delivery_fee)
+            await ReferralPromotionService.reserve(db, order, delivery_benefit[0].benefit_id, eligible_delivery_fee)
 
         history = OrderStatusHistory(
             order_id=order.order_id,
