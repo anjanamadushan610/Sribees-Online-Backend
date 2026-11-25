@@ -146,7 +146,33 @@ class PartnerWalletService:
         return partner
 
     @staticmethod
-    async def _create_linked_partner(db, user, master_id, password_hash):
+    async def join_master_team(db, user_id, master_id, password):
+        """An authenticated customer chooses their team and Partner credentials."""
+        from app.services.referral_service import ReferralService
+
+        user = await PartnerWalletService.user_lock(db, user_id)
+        if not user.email or not user.full_name:
+            fail('Add your email and full name to My Account before joining.')
+        master = (await db.execute(select(Partner).where(
+            Partner.partner_id == master_id,
+            Partner.role == 'master_partner',
+            Partner.is_active.is_(True),
+        ))).scalar_one_or_none()
+        if master is None or master.user_id == user_id:
+            fail('This Master Partner invitation is unavailable.')
+        await ReferralService.get_or_create_code(db, user, commit=False)
+        partner = await PartnerWalletService._create_linked_partner(
+            db, user, master.partner_id, hash_password(password),
+            application_note='Customer accepted a Master Partner invitation from their Sribees account.',
+        )
+        await PartnerWalletService.wallet_lock(db, partner.partner_id)
+        return partner
+
+    @staticmethod
+    async def _create_linked_partner(
+        db, user, master_id, password_hash, *,
+        application_note='Partner account activated by the customer’s Master Partner with the customer’s consent.',
+    ):
         """Create the linked portal account and move only unpaid entitlements."""
         if await PartnerWalletService.linked(db, user.user_id, active=False):
             fail('Customer is already linked.', 409)
@@ -182,7 +208,7 @@ class PartnerWalletService:
             application.status = 'approved'
             application.password_hash = None
             application.decision_by = None
-            application.decision_note = 'Partner account activated by the customer’s Master Partner with the customer’s consent.'
+            application.decision_note = application_note
             application.decided_at = datetime.now(timezone.utc)
         await PartnerWalletService.credit_available(db, partner.partner_id)
         return partner
