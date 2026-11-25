@@ -134,12 +134,21 @@ async def test_phone_sign_in_with_a_real_code(api, app_redis, world):
     access = _tokens(r.json())["access_token"]
     r = await api.get("/api/v1/auth/me", headers=_bearer(access))
     assert r.status_code == 200, r.text
-    # A new account owes all three; the app and the website both read this
+    # A new account only needs its name and email; the app and the website both read this
     # list, so neither asks again for what the other one saved.
-    assert r.json()["user"]["missingProfileFields"] == ["full_name", "nic", "email"]
+    assert r.json()["user"]["missingProfileFields"] == ["full_name", "email"]
 
     r = await api.patch("/api/v1/auth/me", json={"full_name": "Kamal Perera"}, headers=_bearer(access))
-    assert r.json()["user"]["missingProfileFields"] == ["nic", "email"], r.text
+    assert r.json()["user"]["missingProfileFields"] == ["email"], r.text
+
+    r = await api.patch(
+        "/api/v1/auth/me",
+        json={"email": f"{uuid.uuid4().hex}@example.com"},
+        headers=_bearer(access),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["missingProfileFields"] == []
+    assert r.json()["user"].get("nic") is None
 
     # The code was consumed; the same code cannot sign in twice.
     r = await api.post("/api/v1/auth/phone/verify-otp", json={"phone": phone, "code": code})
@@ -162,7 +171,7 @@ async def test_a_second_device_finds_what_the_first_one_saved(api, app_redis, wo
     assert r.status_code == 200, r.text
     user = r.json()["user"]
     assert user["fullName"] == "Kamal Perera"
-    assert user["missingProfileFields"] == ["nic", "email"]
+    assert user["missingProfileFields"] == ["email"]
 
 
 async def test_profile_updates_are_validated(api, make_customer, world):

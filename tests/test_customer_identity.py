@@ -207,13 +207,12 @@ async def test_a_half_finished_account_is_asked_only_for_what_it_lacks():
     assert response.user.missing_profile_fields == []
 
 
-def test_a_new_account_owes_its_name_its_nic_and_its_email():
-    assert missing_profile_fields(full_name="", email=None, nic=None) == [
+def test_shopping_profile_requires_only_name_and_email():
+    assert missing_profile_fields(full_name="", email=None) == [
         "full_name",
-        "nic",
         "email",
     ]
-    assert missing_profile_fields(full_name="  ", email="a@b.lk", nic="952345678V") == [
+    assert missing_profile_fields(full_name="  ", email="a@b.lk") == [
         "full_name"
     ]
 
