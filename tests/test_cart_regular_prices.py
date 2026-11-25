@@ -18,6 +18,7 @@ async def test_regular_price_is_authoritative_for_discount_display(monkeypatch, 
     monkeypatch.setattr(ProductService, 'get_price_map', AsyncMock(return_value={product_key: Decimal('420')}))
     monkeypatch.setattr(ProductService, 'get_regular_price_map', AsyncMock(return_value={product_key: Decimal('480')}))
     monkeypatch.setattr(ProductService, 'get_display_size_map', AsyncMock(return_value={}))
+    monkeypatch.setattr(ProductService, 'get_option_label_map', AsyncMock(return_value={}))
     monkeypatch.setattr(weight_options_service, 'price_map', AsyncMock(return_value=(
         {variant_key: (product_key, Decimal('210'), '500g', 500)} if weighted else {}
     )))

@@ -191,16 +191,20 @@ class OrderService:
             db, [u for u in (_uuid(i.get("product_id")) for i in items) if u]
         )
         # A product with shades (migration 123) is only sold as one of them.
-        from app.services import product_options
-
-        need_option = await product_options.labels(db, [i.get("product_id") for i in items])
+        need_option = await ProductService.get_option_label_map(
+            db, [u for u in (_uuid(i.get("product_id")) for i in items) if u]
+        )
         repriced = []
         for item in items:
             line = dict(item)
             product_id = str(item.get("product_id") or "")
             variant = variants.get(str(item.get("variant_id") or ""))
-            if strict and product_id in need_option and (variant is None or variant[0] != product_id):
-                raise product_options.OptionRequired(item.get("name") or "", need_option[product_id])
+            if strict and product_id in need_option and (
+                variant is None or variant[0] != product_id or variant[3] is not None
+            ):
+                from app.services.product_options import OptionRequired
+
+                raise OptionRequired(item.get("name") or "", need_option[product_id])
             if variant is not None and variant[0] == product_id and product_id in prices:
                 line["price"] = float(variant[1])
                 line["variant_name"] = variant[2]
@@ -728,8 +732,12 @@ class OrderService:
             for item in order_items:
                 p_id = UUID(str(item["product_id"]))
                 try:
-                    await stock_keeping.take(db, branch_id, p_id, item.get("variant_id"),
-                                             int(item["quantity"]))
+                    # Only an option the pricing step recognised (it set variant_name),
+                    # the same rule the saved order line follows.
+                    await stock_keeping.take(
+                        db, branch_id, p_id,
+                        item.get("variant_id") if item.get("variant_name") else None,
+                        int(item["quantity"]))
                 except stock_keeping.OutOfStock as short:
                     left = short.left
                     await db.rollback()
