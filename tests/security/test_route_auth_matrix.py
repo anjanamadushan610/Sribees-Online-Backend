@@ -87,6 +87,7 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/internal/finance/totals"),
     ("GET", "/internal/finance/opening-snapshot"),
     ("GET", "/internal/finance/stock-compare"),
+    ("GET", "/internal/finance/branches"),
     ("GET", "/internal/finance/catalog"),
     ("GET", "/internal/finance/cod-remittances"),
     ("PUT", "/internal/finance/stock-levels"),
