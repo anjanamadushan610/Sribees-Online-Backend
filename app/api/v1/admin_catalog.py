@@ -15,6 +15,7 @@ frontend RoleGuard as defense-in-depth.
 
 Prefix "/admin" is applied by app/api/v1/router.py — do not repeat it here.
 """
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -29,6 +30,7 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from loguru import logger
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1038,6 +1040,70 @@ async def delete_product(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete product",
         )
+
+
+# ============================================================================
+# Product options: shades / colours (migration 123, app/services/product_options.py)
+# ============================================================================
+
+class ProductOptionIn(BaseModel):
+    variant_id: Optional[UUID] = Field(None, description="An existing option's id; empty = a new option")
+    name: str = Field(..., min_length=1, max_length=50, description="Shade 07, Pink ...")
+    price: Optional[Decimal] = Field(None, gt=0, description="Empty = the product's own price")
+    image_url: Optional[str] = Field(None, max_length=500,
+                                     description="From POST /admin/products/upload-image; empty = product photo")
+    is_active: bool = True
+
+
+class ProductOptionsUpdate(BaseModel):
+    option_label: Optional[str] = Field(None, max_length=20,
+                                        description="Shade / Colour; empty = a plain product again")
+    options: list[ProductOptionIn] = Field(default_factory=list, max_length=60)
+
+
+@router.get("/products/{product_id}/options", response_model=dict)
+async def get_product_options(product_id: str, db: AsyncSession = Depends(get_db)):
+    """The product's shades / colours, inactive ones too, in order."""
+    from app.services import product_options
+
+    product = await ProductService.get_by_id_or_slug(db, product_id, include_inactive=True)
+    if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    return {"success": True, "data": await product_options.admin_options(db, product)}
+
+
+@router.put("/products/{product_id}/options", response_model=dict,
+            dependencies=[Depends(require_permission("products", "update"))])
+async def set_product_options(
+    product_id: str,
+    body: ProductOptionsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+):
+    """Set the product's option label and its options (in this order). An option left
+    out is deactivated, never deleted. Super Admin only: it changes the catalogue."""
+    from app.services import product_options
+
+    if current_admin.role != AdminRole.SUPER_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Only a Super Admin can change a product's shades.")
+    product = await ProductService.get_by_id_or_slug(db, product_id, include_inactive=True)
+    if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    try:
+        await product_options.save_options(db, product, body.option_label, [
+            product_options.OptionIn(name=o.name, variant_id=o.variant_id, price=o.price,
+                                     image_url=o.image_url, is_active=o.is_active)
+            for o in body.options
+        ])
+    except product_options.OptionsError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    await db.commit()
+    await db.refresh(product)
+    logger.info(f"[admin] options of {product.product_id} set by {current_admin.admin_id}: "
+                f"{product.option_label} x{len(body.options)}")
+    return {"success": True, "data": await product_options.admin_options(db, product)}
 
 
 # ============================================================================

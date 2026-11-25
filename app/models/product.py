@@ -124,6 +124,14 @@ class Product(Base):
             "weight options are ProductVariant rows with weight_grams set."
         ),
     )
+    option_label = Column(
+        String(20),
+        nullable=True,
+        comment=(
+            "Shade / Colour ... NULL = plain product. Set = the customer picks one of "
+            "its options (ProductVariant rows without weight_grams), migration 123."
+        ),
+    )
     price_review_level = Column(
         String(10),
         nullable=False,
@@ -384,9 +392,11 @@ class ProductVariant(Base):
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.product_id", ondelete="CASCADE"), nullable=False)
     name = Column(String(100), nullable=False)
     sku = Column(String(100), unique=True, nullable=True)
-    price = Column(Numeric(10, 2), nullable=False)
+    # NULL (options only, migration 123) = the product's own price in the branch.
+    price = Column(Numeric(10, 2), nullable=True)
     compare_at_price = Column(Numeric(10, 2), nullable=True)
     stock_quantity = Column(Integer, default=0)
+    # An option's own photo (white-square cut-out); NULL = the product's photo.
     image_url = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True)
     sort_order = Column(Integer, default=0)

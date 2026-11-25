@@ -86,13 +86,16 @@ def _ratio(new, old) -> Optional[Decimal]:
 
 async def _terms(
     db: AsyncSession, product_ids: Iterable[UUID], branch_id: Optional[UUID]
-) -> Dict[UUID, Tuple[object, Optional[Decimal]]]:
+) -> Dict[UUID, Tuple[object, Optional[Decimal], Decimal]]:
     """
-    ``{product_id: (discount %, branch ratio)}`` in *branch_id*.
+    ``{product_id: (discount %, branch ratio, own price)}`` in *branch_id*.
 
     The discount follows the same rule as get_price_map. The ratio is the
     branch's own price per kg over the global one (None when the branch has no
-    price of its own): an option the branch has not priced follows it.
+    price of its own): an option the branch has not priced follows it. The own
+    price is the product's price there before any discount (branch price, else
+    the global one) -- what an option without a price of its own costs
+    (product options, migration 123).
     """
     ids = list(set(product_ids))
     if not ids:
@@ -117,13 +120,24 @@ async def _terms(
             .where(Product.product_id.in_(ids))
         )
     ).all()
-    out: Dict[UUID, Tuple[object, Optional[Decimal]]] = {}
+    out: Dict[UUID, Tuple[object, Optional[Decimal], Decimal]] = {}
     for pid, global_discount, price, inventory_id, branch_discount, branch_price in rows:
         discount = global_discount
         if inventory_id is not None and branch_discount is not None:
             discount = branch_discount
-        out[pid] = (discount, _ratio(branch_price, price))
+        own = Decimal(str(branch_price if branch_price is not None else (price or 0)))
+        out[pid] = (discount, _ratio(branch_price, price), own)
     return out
+
+
+def _base(variant_price, overrides: Dict[UUID, Decimal], vid: UUID, ratio, own: Decimal) -> Decimal:
+    """An option's price before discount: the branch's override, else its own price
+    scaled to the branch, else (an option without a price) the product's own price."""
+    if vid in overrides:
+        return overrides[vid]
+    if variant_price is None:
+        return own
+    return _scaled(variant_price, ratio)
 
 
 async def _branch_prices(
@@ -175,7 +189,7 @@ async def options_for(
     for v in variants:
         global_price = Decimal(str(v.price or 0))
         branch_price = overrides.get(v.variant_id)
-        discount, ratio = terms.get(v.product_id, (None, None))
+        discount, ratio, _own = terms.get(v.product_id, (None, None, Decimal(0)))
         original = branch_price if branch_price is not None else _scaled(global_price, ratio)
         out.setdefault(str(v.product_id), []).append({
             "variant_id": str(v.variant_id),
@@ -196,7 +210,8 @@ async def price_map(
     ``{variant_id: (product_id, price, label, weight_grams)}`` for active variants.
 
     The price is what the customer pays in *branch_id*: branch override, else
-    the variant's own price scaled to the branch's price per kg, less the
+    the variant's own price scaled to the branch's price per kg (a product
+    option without a price: the product's own price there), less the
     product's effective discount. Checkout's only source for a variant line's
     price.
     """
@@ -221,8 +236,8 @@ async def price_map(
     terms = await _terms(db, [r.product_id for r in rows], branch_id)
     out = {}
     for vid, pid, price, grams, name in rows:
-        discount, ratio = terms.get(pid, (None, None))
-        base = overrides[vid] if vid in overrides else _scaled(price, ratio)
+        discount, ratio, own = terms.get(pid, (None, None, Decimal(0)))
+        base = _base(price, overrides, vid, ratio, own)
         out[str(vid)] = (
             str(pid),
             _discounted(base, discount),
@@ -255,8 +270,8 @@ async def regular_price_map(
     terms = await _terms(db, [r.product_id for r in rows], branch_id)
     out = {}
     for vid, pid, price in rows:
-        _, ratio = terms.get(pid, (None, None))
-        out[str(vid)] = (str(pid), overrides[vid] if vid in overrides else _scaled(price, ratio))
+        _, ratio, own = terms.get(pid, (None, None, Decimal(0)))
+        out[str(vid)] = (str(pid), _base(price, overrides, vid, ratio, own))
     return out
 
 

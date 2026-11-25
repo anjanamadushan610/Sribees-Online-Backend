@@ -309,9 +309,23 @@ async def get_cart(
         )
 
 
+async def _guard_option(db: AsyncSession, request: Request, product_id, variant_id) -> None:
+    """409 OPTION_REQUIRED when a product with shades comes without a valid shade
+    (an app version that cannot pick one). The app shows the message as is."""
+    from app.services import product_options
+
+    try:
+        await product_options.check_line(
+            db, product_id, variant_id, resolve_language(request.headers.get("accept-language")))
+    except product_options.OptionRequired as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "message": str(exc), "code": product_options.OPTION_REQUIRED})
+
+
 @router.post("/items", response_model=dict)
 async def add_to_cart(
     data: AddToCartRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     redis: Optional[Redis] = Depends(get_redis_optional),
     current_user = Depends(get_current_user)
@@ -320,6 +334,7 @@ async def add_to_cart(
     Add an item to cart.
     """
     try:
+        await _guard_option(db, request, data.product_id, data.variant_id)
         if redis:
             branch_id = await _optional_branch_id(redis, current_user)
             if branch_id:

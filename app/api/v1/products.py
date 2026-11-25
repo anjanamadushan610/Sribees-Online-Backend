@@ -66,6 +66,7 @@ def format_product(
     lang: str = DEFAULT_LANGUAGE,
     include_translations: bool = False,
     weight_options: list = None,
+    options: list = None,
 ) -> dict:
     """
     Format product for API response.
@@ -133,6 +134,9 @@ def format_product(
         "price_review_level": getattr(product, "price_review_level", None),
         "sold_by_weight": bool(getattr(product, "sold_by_weight", False)),
         "stock_mode": getattr(product, "stock_mode", None) or "unit",
+        # "Shade" / "Colour": the customer must pick one of the product's options
+        # (migration 123). Cards show "choose a shade" and open the product page.
+        "option_label": getattr(product, "option_label", None),
         "weight":float(product.weight) if getattr(product, "weight", None) is not None else None,
         "delivery_fee_per_kg": float(product.delivery_fee_per_kg) if getattr(product, "delivery_fee_per_kg", None) is not None else None,
         "weight_unit": getattr(product, "weight_unit", None) or "kg",
@@ -208,6 +212,10 @@ def format_product(
     if weight_options is not None:
         data["weight_options"] = weight_options
 
+    # Shades / colours, priced and counted for the branch (product_options.py).
+    if options is not None:
+        data["options"] = options
+
     # Variants
     generic = [
         v for v in (getattr(product, "variants", None) or [])
@@ -220,7 +228,8 @@ def format_product(
                 "variant_id": str(v.variant_id),
                 "name": v.name,
                 "sku": v.sku,
-                "price": float(v.price) if v.price else 0,
+                # No price of its own = the product's (migration 123).
+                "price": float(v.price) if v.price is not None else data["price"],
                 "compare_at_price": float(v.compare_at_price) if v.compare_at_price else None,
                 "stock_quantity": v.stock_quantity,
                 "image_url": media_url(v.image_url),
@@ -740,6 +749,12 @@ async def get_product(
                 if branch_id else None
             )
 
+    options = None
+    if getattr(product, "option_label", None):
+        from app.services import product_options
+
+        options = await product_options.options_for(db, product, branch_id)
+
     return {
         "success": True,
         "data": format_product(
@@ -749,6 +764,7 @@ async def get_product(
             rating={"average": average, "count": count},
             lang=lang,
             weight_options=weight_options,
+            options=options,
         ),
     }
 
@@ -786,6 +802,7 @@ async def get_product_variants(
         )
 
     variants = await ProductService.get_variants(db, product_uuid)
+    own_price = (result.get("effective") or {}).get("effective_price") or 0
 
     return {
         "success": True,
@@ -795,7 +812,8 @@ async def get_product_variants(
                     "variant_id": str(v.variant_id),
                     "name": v.name,
                     "sku": v.sku,
-                    "price": float(v.price) if v.price else 0,
+                    # No price of its own = the product's (migration 123).
+                    "price": float(v.price) if v.price is not None else float(own_price),
                     "compare_at_price": float(v.compare_at_price) if v.compare_at_price else None,
                     "stock_quantity": v.stock_quantity,
                     "image_url": media_url(v.image_url),

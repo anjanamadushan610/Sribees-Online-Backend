@@ -6,6 +6,8 @@ One rule for a branch's stock, whatever kind of product (migration 100).
 * ``loose``  -- ``branch_inventory.stock_grams`` holds grams; a weight option
                 of G grams ordered N times takes N x G.
 * ``packed`` -- each weight option has its own count in ``branch_variant_inventory``.
+                A product with options (shades, migration 123) is always packed:
+                each shade has its own count there.
 
 For loose and packed goods ``branch_inventory.stock_quantity`` is kept as the
 figure every screen, filter and the app already read: packs of the smallest
@@ -63,8 +65,10 @@ async def item(db: AsyncSession, product_id, variant_id=None) -> Item:
     if variant_id is not None:
         grams = (await db.execute(select(ProductVariant.weight_grams)
                                   .where(ProductVariant.variant_id == variant_id))).scalar_one_or_none()
-    if mode != "unit" and not grams:
-        mode = "unit"  # a non-weight option of a weight product: counted as units
+    if mode == "loose" and not grams:
+        mode = "unit"  # a line without a weight on a loose product: counted as units
+    elif mode == "packed" and variant_id is None:
+        mode = "unit"  # a line without a size / shade: the product's own row, as before
     return Item(mode, product_id, variant_id, grams)
 
 

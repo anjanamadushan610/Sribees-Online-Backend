@@ -190,11 +190,17 @@ class OrderService:
         display_sizes = await ProductService.get_display_size_map(
             db, [u for u in (_uuid(i.get("product_id")) for i in items) if u]
         )
+        # A product with shades (migration 123) is only sold as one of them.
+        from app.services import product_options
+
+        need_option = await product_options.labels(db, [i.get("product_id") for i in items])
         repriced = []
         for item in items:
             line = dict(item)
             product_id = str(item.get("product_id") or "")
             variant = variants.get(str(item.get("variant_id") or ""))
+            if strict and product_id in need_option and (variant is None or variant[0] != product_id):
+                raise product_options.OptionRequired(item.get("name") or "", need_option[product_id])
             if variant is not None and variant[0] == product_id and product_id in prices:
                 line["price"] = float(variant[1])
                 line["variant_name"] = variant[2]
