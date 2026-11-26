@@ -384,6 +384,20 @@ class Settings(BaseSettings):
         default="",
         description="Comma-separated IPs/CIDRs allowed to call /internal/supply/* (empty = any peer).",
     )
+    # Pack scan (Supply joint-go-live plan, phase E): packers scan each unit's QR label and
+    # Sribees Supply checks it at once. Off = packing works as before (ships dark).
+    supply_pack_scan_enabled: bool = Field(
+        default=False,
+        description="Every unit must be scanned (QR label, checked by Sribees Supply) before an order is packed.",
+    )
+    supply_api_url: str = Field(
+        default="",
+        description="Sribees Supply's internal address (Docker network), e.g. http://sribees-supply-api:8000.",
+    )
+    supply_pick_token: str = Field(
+        default="",
+        description="Bearer token Online presents on Supply's /internal/online/* (Supply keeps its SHA-256).",
+    )
     finance_stock_authority: bool = Field(
         default=False,
         description=(

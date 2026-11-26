@@ -88,6 +88,8 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("PUT", "/internal/finance/stock-levels"),
     ("PUT", "/internal/finance/min-prices"),
     ("GET", "/internal/supply/catalog"),
+    # pack scan (phase E): Supply reads the order events; same locks as the catalog
+    ("GET", "/internal/supply/events"),
     # --- app bootstrap -------------------------------------------------------
     ("GET", "/api/v1/app/splash-config"),
     ("GET", "/api/v1/app/support-info"),

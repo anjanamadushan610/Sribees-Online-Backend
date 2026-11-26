@@ -20,7 +20,7 @@ import hmac
 import ipaddress
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,7 @@ from app.config.database import get_db
 from app.config.settings import settings
 from app.models.branch import Branch
 from app.models.category import Category
+from app.models.finance_outbox import FinanceOutbox
 from app.models.product import Product, ProductVariant
 
 router = APIRouter(prefix="/internal/supply", tags=["Internal: Supply"], include_in_schema=False)
@@ -91,3 +92,31 @@ async def supply_catalog(
              "variants": variants.get(p.product_id, [])}
             for p in products],
     }
+
+
+# Pack scan (Supply joint-go-live plan, phase E): Supply settles the units its scans hold
+# from what happened to the order. The same outbox Finance reads, only the order events.
+SUPPLY_EVENT_TYPES = ("order.status", "order.undelivered")
+
+
+@router.get("/events")
+async def supply_events(
+    after: int = Query(default=0, ge=0, description="return events with seq greater than this"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    _: None = Depends(require_supply_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Every event after ``after`` in order; only the order events carry their details
+    (others come as ``{"seq", "type", "occurred_at"}`` with an empty payload). Supply sees
+    each number, so a hole means an event not committed yet, which it waits for."""
+    rows = (await db.execute(
+        select(FinanceOutbox).where(FinanceOutbox.seq > after)
+        .order_by(FinanceOutbox.seq).limit(limit))).scalars().all()
+    events = [
+        {"seq": r.seq, "event_id": str(r.event_id), "type": r.event_type,
+         "aggregate_id": str(r.aggregate_id) if r.aggregate_id else None,
+         "occurred_at": r.occurred_at.isoformat(),
+         "payload": r.payload if r.event_type in SUPPLY_EVENT_TYPES else {}}
+        for r in rows
+    ]
+    return {"events": events, "enabled": bool(settings.finance_outbox_enabled)}

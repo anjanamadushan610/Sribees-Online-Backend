@@ -49,7 +49,12 @@ from app.schemas.order import (
     ReturnNoteRequest,
     UpdateOrderStatusRequest,
 )
-from app.services import courier_sync_service, order_workflow, partial_delivery
+from app.services import (
+    courier_sync_service,
+    order_workflow,
+    partial_delivery,
+    supply_pick,
+)
 from app.services.invoice_service import InvoiceService
 from app.services.notification_service import NotificationService
 from app.services.order_service import OrderService, resolve_recipient_name
@@ -1039,6 +1044,8 @@ async def update_order_status(
     role gets a 400. Notifies the customer on the milestone transitions.
     """
     order = await _load_scoped_order(db, order_id, scope)
+    if body.status == OrderStatusEnum.PACKED:
+        await supply_pick.require_complete(db, order)
 
     admin_name = getattr(admin, "full_name", None) or getattr(admin, "email", "Admin")
     try:
@@ -1061,6 +1068,79 @@ async def update_order_status(
         "data": _format_order_detail(order, branch_name),
         "message": f"Order status updated to {body.status.value}",
     }
+
+
+class PackScanRequest(BaseModel):
+    order_item_id: UUID
+    label: str = Field(min_length=1, max_length=40)
+    weight_kg: Optional[Decimal] = Field(default=None, gt=0, max_digits=10, decimal_places=3)
+
+
+class PackUndoRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=40)
+
+
+_SCAN_STATUSES = (OrderStatusEnum.CONFIRMED.value, OrderStatusEnum.PROCESSING.value,
+                  OrderStatusEnum.PACKING.value)
+
+
+def _packer(admin) -> str:
+    return getattr(admin, "email", None) or getattr(admin, "full_name", None) or "admin"
+
+
+@router.get("/{order_id}/pack-scan", response_model=dict)
+async def get_pack_scan(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(get_current_admin),
+):
+    """What each line needs and what is scanned (QR labels checked by Sribees Supply).
+    ``enabled`` false = packing works as before; nothing needs scanning."""
+    order = await _load_scoped_order(db, order_id, scope)
+    if not supply_pick.enabled():
+        return {"success": True, "data": {"enabled": False, "complete": True, "lines": []}}
+    return {"success": True, "data": await supply_pick.progress(db, order)}
+
+
+@router.post("/{order_id}/pack-scan", response_model=dict)
+async def post_pack_scan(
+    order_id: UUID,
+    body: PackScanRequest,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(require_permission("orders", "update")),
+):
+    """One scanned unit. Supply answers at once: a wrong product, another branch's stock,
+    an expired batch or a label scanned before is refused with the reason."""
+    order = await _load_scoped_order(db, order_id, scope)
+    if not supply_pick.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Pack scan is switched off")
+    if order.status not in _SCAN_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"Order is {order.status}; scan while it is being packed")
+    data = await supply_pick.scan(db, order, body.order_item_id, body.label, body.weight_kg,
+                                  _packer(admin))
+    return {"success": True, "data": data}
+
+
+@router.post("/{order_id}/pack-scan/undo", response_model=dict)
+async def undo_pack_scan(
+    order_id: UUID,
+    body: PackUndoRequest,
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+    admin=Depends(require_permission("orders", "update")),
+):
+    """Take back a mistaken scan (before the order is packed)."""
+    order = await _load_scoped_order(db, order_id, scope)
+    if not supply_pick.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Pack scan is switched off")
+    if order.status not in _SCAN_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"Order is {order.status}; a packed order is not changed here")
+    await supply_pick.undo(order, body.label)
+    return {"success": True, "data": await supply_pick.progress(db, order)}
 
 
 @router.post("/{order_id}/courier/request-pickup", response_model=dict)
