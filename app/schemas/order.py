@@ -156,6 +156,7 @@ class CreateOrderRequest(BaseModel):
     payment_method: str = "COD"
     coupon_code: Optional[str] = None
     expected_referral_free_delivery: bool = False
+    expected_subtotal: Optional[Decimal] = Field(None, ge=0)
     expected_gifts: Optional[list[ExpectedGift]] = Field(None, max_length=10)
     # When true, the wallet is applied to reduce the total. Defaults to the
     # full available balance (capped at the order total); wallet_amount
@@ -427,6 +428,7 @@ class OrderQuoteBreakdown(BaseModel):
     wallet_balance: float
     wallet_applied: bool
     item_count: int
+    priced_lines: Optional[list[dict]] = None
     gifts: list[dict] = Field(default_factory=list)
     # The coupon on this order and what it did: `applied` false with a
     # `reason` (in the customer's language) when checkout would not take it,

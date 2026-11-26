@@ -55,11 +55,15 @@ async def record(db: AsyncSession, order: Order, items: list[dict]) -> Order:
 
     lines = {str(i.order_item_id): i for i in order.items}
     clean: list[dict] = []
+    seen = set()
     for want in items:
         line = lines.get(str(want.get("order_item_id")))
         qty = int(want.get("quantity") or 0)
         if line is None:
             raise PartialDeliveryError("That item is not on this order.")
+        if line.order_item_id in seen:
+            raise PartialDeliveryError("List each undelivered order line once.")
+        seen.add(line.order_item_id)
         if qty <= 0 or qty > int(line.quantity):
             raise PartialDeliveryError(f"{line.product_name}: between 1 and {int(line.quantity)} came back.")
         clean.append({"order_item_id": str(line.order_item_id), "quantity": qty})
@@ -69,7 +73,11 @@ async def record(db: AsyncSession, order: Order, items: list[dict]) -> Order:
     if order.branch_id is not None:
         for c in clean:
             line = lines[c["order_item_id"]]
-            await stock_keeping.give_back(db, order.branch_id, line.product_id, line.variant_id, c["quantity"])
+            batch_id = getattr(line, "inventory_batch_id", None)
+            await stock_keeping.give_back(
+                db, order.branch_id, line.product_id, line.variant_id, c["quantity"],
+                **({"batch_id": batch_id} if batch_id else {}),
+            )
     order.undelivered_items = clean
     order.undelivered_recorded_at = datetime.now(timezone.utc)
     await finance_outbox.order_undelivered(db, order)

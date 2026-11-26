@@ -723,7 +723,10 @@ async def quote_order(
 
         # The same catalogue prices checkout will charge; see
         # OrderService._attach_server_prices.
+        from app.services import inventory_batches
+
         quote_items = await OrderService._attach_server_prices(db, quote_items, branch_id)
+        quote_items = await inventory_batches.price_lines(db, branch_id, quote_items)
         items = await OrderService._attach_cashback_rates(
             db, quote_items, branch_id
         )
@@ -797,6 +800,7 @@ async def quote_order(
                 "wallet_applied": breakdown.wallet_deduction > 0,
                 "item_count": item_count,
                 "gifts": gifts,
+                "priced_lines": inventory_batches.quote_lines(items),
                 "delivery": delivery_quote_service.delivery_payload(delivery, destination),
                 "coupon": (
                     {

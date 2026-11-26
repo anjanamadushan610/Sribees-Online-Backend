@@ -4,11 +4,14 @@ Product SQLAlchemy Models
 import uuid
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     Numeric,
@@ -327,6 +330,26 @@ class BranchInventory(Base):
 
     def __repr__(self):
         return f"<BranchInventory product={self.product_id} branch={self.branch_id}>"
+
+
+class InventoryBatch(Base):
+    """An immutable receipt with a mutable sellable balance."""
+
+    __tablename__ = "inventory_batches"
+
+    batch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    inventory_id = Column(UUID(as_uuid=True), ForeignKey("branch_inventory.inventory_id"), nullable=False)
+    sequence = Column(BigInteger, Identity(), nullable=False, unique=True)
+    received_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    lot_code = Column(String(80))
+    expires_on = Column(Date)
+    quantity_received = Column(Integer, nullable=False)
+    remaining = Column(Integer, nullable=False)
+    purchase_cost = Column(Numeric(10, 2))
+    listed_price = Column(Numeric(10, 2), nullable=False)
+    selling_price = Column(Numeric(10, 2), nullable=False)
+
+    __table_args__ = (Index("ix_inventory_batches_fifo", "inventory_id", "sequence"),)
 
 
 class ProductImage(Base):

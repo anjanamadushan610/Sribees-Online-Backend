@@ -407,6 +407,11 @@ class ProductService:
             raise ValueError(
                 "This product is sold in shades / colours; change that under its options first."
             )
+        if update_data.get("sold_by_weight") or update_data.get("stock_mode", "unit") != "unit":
+            from app.services import inventory_batches
+
+            if await inventory_batches.product_has_batches(db, product.product_id):
+                raise ValueError("Inventory is tracked in batches and cannot be converted to weight stock.")
         if "stock_mode" not in update_data or update_data["stock_mode"] == product.stock_mode:
             update_data.pop("stock_mode", None)
         else:
@@ -1500,6 +1505,7 @@ class ProductService:
             raise ProductNotFoundError(str(product_id))
 
         inv = await ProductService.get_or_create_branch_inventory(db, product_id, branch_id)
+        inv = await ProductService._guard_batch_stock_edit(db, inv, fields)
 
         for key, value in fields.items():
             if hasattr(inv, key):
@@ -1614,6 +1620,7 @@ class ProductService:
         override and falls the product back to the global price, so None must
         be written through rather than skipped.
         """
+        inv = await ProductService._guard_batch_stock_edit(db, inv, fields)
         old_branch_price = inv.branch_price
         for key, value in fields.items():
             if hasattr(inv, key):
@@ -1628,6 +1635,22 @@ class ProductService:
             f"Inventory row {inv.inventory_id} updated: fields={list(fields.keys())}"
         )
         return inv
+
+    @staticmethod
+    async def _guard_batch_stock_edit(db, inventory, fields):
+        if "stock_quantity" not in fields:
+            return inventory
+        from app.core.exceptions import ValidationError
+        from app.services import inventory_batches
+
+        inventory = await db.get(
+            BranchInventory, inventory.inventory_id, with_for_update=True, populate_existing=True,
+        )
+        if await inventory_batches.has_batches(db, inventory.inventory_id):
+            if fields["stock_quantity"] != inventory.stock_quantity:
+                raise ValidationError("Add stock using Stock batches.")
+            fields.pop("stock_quantity")
+        return inventory
 
     @staticmethod
     async def _follow_branch_price(

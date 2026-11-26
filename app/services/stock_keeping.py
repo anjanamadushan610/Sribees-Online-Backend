@@ -34,9 +34,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.product import (
     BranchInventory,
     BranchVariantInventory,
+    InventoryBatch,
     Product,
     ProductVariant,
 )
+from app.services import inventory_batches
 
 
 class OutOfStock(Exception):
@@ -158,31 +160,50 @@ async def available(db: AsyncSession, branch_id, product_id, variant_id=None) ->
     return max(_get(row, it), 0) // per_line(it)
 
 
-async def take(db: AsyncSession, branch_id, product_id, variant_id, quantity: int) -> None:
-    """Take an order line off the shelf, under a row lock. Raises OutOfStock(left)."""
+async def take(db: AsyncSession, branch_id, product_id, variant_id, quantity: int, *, batch_id=None):
+    """Deduct stock under lock and return each batch and quantity taken."""
     branch_id = _uuid(branch_id)
     it = await item(db, product_id, variant_id)
     row = await _row(db, branch_id, it, lock=True)
     if row is None:
-        return
+        return [(None, quantity)]
     need = quantity * per_line(it)
     have = _get(row, it)
     if have < need:
         raise OutOfStock(max(have, 0) // per_line(it))
+    parts = [(None, quantity)]
+    if it.mode == "unit" and it.variant_id is None:
+        if batch_id is not None:
+            batch = await db.get(InventoryBatch, batch_id)
+            if batch is None or batch.inventory_id != row.inventory_id or batch.remaining < quantity:
+                raise OutOfStock(0)
+            parts = [(batch, quantity)]
+        else:
+            parts, short = inventory_batches.allocate(
+                await inventory_batches.list_batches(db, row.inventory_id), have, quantity, {},
+            )
+            if short:
+                raise OutOfStock(quantity - short)
+        for batch, count in parts:
+            if batch is not None:
+                batch.remaining -= count
     await _put(db, branch_id, row, it, have - need)
+    return [(batch.batch_id if batch else None, count) for batch, count in parts]
 
 
-async def give_back(db: AsyncSession, branch_id, product_id, variant_id, quantity: int) -> None:
-    """A cancelled line's goods back on the shelf."""
+async def give_back(db: AsyncSession, branch_id, product_id, variant_id, quantity: int, *, batch_id=None) -> None:
+    """Return the units to the batch that originally supplied them."""
     branch_id = _uuid(branch_id)
     it = await item(db, product_id, variant_id)
     row = await _row(db, branch_id, it, lock=True)
     if row is not None:
+        if batch_id is not None:
+            batch = await db.get(InventoryBatch, batch_id)
+            if batch is None or batch.inventory_id != row.inventory_id:
+                raise ValueError("Order batch does not match its inventory.")
+            batch.remaining += quantity
         await _put(db, branch_id, row, it, _get(row, it) + quantity * per_line(it))
         if it.mode == "unit" and variant_id is None:
-            # A line without a size, placed before the product became loose or
-            # pre-packed, lands on the product's own row -- for those modes only
-            # the screens' summary, worked out from the sizes. Put it back to that.
             await refresh_summary(db, branch_id, it.product_id)
 
 
@@ -199,6 +220,8 @@ async def set_level(db: AsyncSession, branch_id, it: Item, value: int) -> bool:
     branch_id = _uuid(branch_id)
     row = await _row(db, branch_id, it, lock=True)
     if row is None:
+        return False
+    if it.mode == "unit" and await inventory_batches.has_batches(db, row.inventory_id):
         return False
     await _put(db, branch_id, row, it, max(int(value), 0))
     return True
