@@ -384,6 +384,13 @@ class Settings(BaseSettings):
         default="",
         description="Comma-separated IPs/CIDRs allowed to call /internal/supply/* (empty = any peer).",
     )
+    supply_stock_in_enabled: bool = Field(
+        default=False,
+        description=(
+            "Let Sribees Supply add received goods to a branch's stock "
+            "(POST /internal/supply/receipts). Off = that route does not exist (404)."
+        ),
+    )
     finance_stock_authority: bool = Field(
         default=False,
         description=(

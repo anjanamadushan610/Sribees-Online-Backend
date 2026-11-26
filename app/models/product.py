@@ -352,6 +352,24 @@ class InventoryBatch(Base):
     __table_args__ = (Index("ix_inventory_batches_fifo", "inventory_id", "sequence"),)
 
 
+class SupplyStockReceipt(Base):
+    """One goods-received line of Sribees Supply that was added to a branch's stock
+    (migration 128). The line id is the key, so a line is never added twice."""
+
+    __tablename__ = "supply_stock_receipts"
+
+    line_id = Column(UUID(as_uuid=True), primary_key=True)
+    receipt_no = Column(String(40), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), nullable=False)
+    product_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    variant_id = Column(UUID(as_uuid=True))
+    units = Column(Integer, nullable=False)
+    grams = Column(Integer)
+    purchase_cost = Column(Numeric(10, 2))
+    batch_id = Column(UUID(as_uuid=True))
+    applied_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class ProductImage(Base):
     """Product images model."""
 

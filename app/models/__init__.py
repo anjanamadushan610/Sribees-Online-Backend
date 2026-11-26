@@ -68,6 +68,7 @@ from app.models.product import (
     ProductImage,
     ProductVariant,
     Review,
+    SupplyStockReceipt,
     VariantOption,
     VariantType,
 )
@@ -170,6 +171,7 @@ __all__ = [
     "Product",
     "ProductExtraCategory",
     "ProductImage",
+    "SupplyStockReceipt",
     "ProductVariant",
     "VariantType",
     "VariantOption",
