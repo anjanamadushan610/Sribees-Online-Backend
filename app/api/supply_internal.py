@@ -3,7 +3,13 @@ Internal: the product list Sribees Supply mirrors (``GET /internal/supply/catalo
 
 Sribees Supply (supplier price lists, purchasing, base prices) matches each supplier's
 mostly-Sinhala price lines to our products, so it needs the Sinhala name and the size
-as well as the ids. Read only; nothing here changes Online.
+as well as the ids, and the product's courier weight (Supply splits a delivery charge
+by it).
+
+Two more routes serve receiving. ``POST /stock-info`` reads what a branch sells an item
+for now. ``POST /receipts`` is the one route that changes Online: it **adds** received
+goods to a branch's stock (never sets a figure), each Supply receipt line once only, and
+exists only while ``SUPPLY_STOCK_IN_ENABLED`` is on.
 
 Same three locks as ``/internal/finance/*`` (app/api/finance_internal.py), with its
 own token so the two services can be revoked separately:
@@ -18,9 +24,12 @@ own token so the two services can be revoked separately:
 import hashlib
 import hmac
 import ipaddress
+import uuid
 from collections import defaultdict
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +39,7 @@ from app.core.media import media_url
 from app.models.branch import Branch
 from app.models.category import Category
 from app.models.product import Product, ProductImage, ProductVariant
+from app.services import supply_stock_in
 
 router = APIRouter(prefix="/internal/supply", tags=["Internal: Supply"], include_in_schema=False)
 
@@ -65,6 +75,70 @@ def require_supply_service(request: Request) -> None:
         raise HTTPException(status_code=403, detail="caller not allowed")
 
 
+_GRAMS_PER = {"kg": Decimal(1000), "g": Decimal(1), "l": Decimal(1000), "ml": Decimal(1),
+              "lb": Decimal("453.592")}
+
+
+def weight_grams(weight, unit) -> int | None:
+    """A product's courier weight in grams (1 ml = 1 g). None when it is not entered or
+    its unit is not one we know: Supply then asks for it, and never guesses."""
+    factor = _GRAMS_PER.get((unit or "kg").strip().lower())
+    if weight is None or factor is None:
+        return None
+    grams = int((Decimal(str(weight)) * factor).to_integral_value())
+    return grams if grams > 0 else None
+
+
+class StockInfoIn(BaseModel):
+    branch_id: uuid.UUID
+    items: list[supply_stock_in.ItemRef] = Field(min_length=1, max_length=500)
+
+
+class ReceiptLinesIn(BaseModel):
+    branch_id: uuid.UUID
+    receipt_no: str = Field(min_length=1, max_length=40)
+    lines: list[supply_stock_in.Line] = Field(min_length=1, max_length=500)
+
+
+def require_stock_in(_: None = Depends(require_supply_service)) -> None:
+    if not settings.supply_stock_in_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def _branch(db: AsyncSession, branch_id: uuid.UUID) -> None:
+    if await db.get(Branch, branch_id) is None:
+        raise HTTPException(status_code=404, detail="unknown branch")
+
+
+@router.post("/stock-info")
+async def supply_stock_info(
+    body: StockInfoIn,
+    _: None = Depends(require_supply_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """What the branch holds and sells each item for now (read only)."""
+    await _branch(db, body.branch_id)
+    return {"stock_in_enabled": bool(settings.supply_stock_in_enabled),
+            "items": await supply_stock_in.info(db, body.branch_id, body.items)}
+
+
+@router.post("/receipts")
+async def supply_receipts(
+    body: ReceiptLinesIn,
+    _: None = Depends(require_stock_in),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Add received goods to the branch's stock. One transaction per line; a line sent
+    again answers ``already``; a refused line changes nothing and may be sent again."""
+    if settings.finance_stock_authority:
+        raise HTTPException(status_code=409, detail="stock is kept by Sribees Finance")
+    await _branch(db, body.branch_id)
+    results = []
+    for line in body.lines:
+        results.append(await supply_stock_in.apply(db, body.branch_id, body.receipt_no, line))
+    return {"results": results}
+
+
 @router.get("/catalog")
 async def supply_catalog(
     _: None = Depends(require_supply_service),
@@ -96,6 +170,7 @@ async def supply_catalog(
              "display_size": p.display_size, "display_size_unit": p.display_size_unit,
              "category": categories.get(p.category_id), "is_active": bool(p.is_active),
              "image_url": image.get(p.product_id),
+             "weight_grams": weight_grams(p.weight, p.weight_unit),
              "variants": variants.get(p.product_id, [])}
             for p in products],
     }
