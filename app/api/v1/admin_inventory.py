@@ -10,6 +10,8 @@ while Super Admins see all branches (optionally narrowed by ``?branch_id=``).
 
 Prefix "/admin/inventory" is applied by app/api/v1/router.py.
 """
+from datetime import date
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -27,11 +29,12 @@ from app.models.finance_outbox import FinanceMinPrice
 from app.models.product import (
     BranchInventory,
     BranchVariantInventory,
+    InventoryBatch,
     Product,
     ProductVariant,
 )
 from app.schemas.inventory import BranchOverrideCreate, InventoryUpdateRequest
-from app.services import branch_cashback
+from app.services import branch_cashback, inventory_batches
 from app.services.product_service import ProductService
 from app.services.referral_commission.rate_admin import describe_rates
 
@@ -364,6 +367,9 @@ async def set_branch_cashback(
     """Set or clear a branch's cashback (Branch Manager / Super Admin, capped)."""
     inv, product = await _cashback_view(db, scope, product_id, body.branch_id)
     fields = {"cashback_percentage": body.cashback_percentage}
+    # Avoid overwriting a concurrently changed stock count during a price-only edit.
+    if fields.get("stock_quantity") == inv.stock_quantity:
+        fields.pop("stock_quantity", None)
     await branch_cashback.guard(db, scope.role, fields, current=inv.cashback_percentage)
     inv = await ProductService.update_inventory_row(db, inv, **fields)
     logger.info(f"[admin] cashback {body.cashback_percentage} for product {product_id} branch {inv.branch_id}")
@@ -417,6 +423,67 @@ async def get_price_floors(
     return {"success": True, "data": {"branch_id": str(effective_branch), "floors": out}}
 
 
+class InventoryBatchReceipt(BaseModel):
+    quantity: int = Field(gt=0, le=1_000_000)
+    lot_code: str | None = Field(None, max_length=80)
+    expires_on: date | None = None
+    purchase_cost: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2)
+    listed_price: Decimal = Field(ge=0, max_digits=10, decimal_places=2)
+    selling_price: Decimal = Field(ge=0, max_digits=10, decimal_places=2)
+
+
+async def _batch_inventory(db, scope, inventory_id, *, lock=False):
+    row = await db.get(BranchInventory, inventory_id, with_for_update=lock, populate_existing=lock)
+    if row is None:
+        raise HTTPException(404, "Inventory item not found.")
+    if not scope.is_super_admin and row.branch_id != scope.branch_id:
+        raise HTTPException(403, "You can only access batches for your own branch.")
+    return row
+
+
+@router.get("/{inventory_id}/batches")
+async def get_batches(
+    inventory_id: UUID, db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    row = await _batch_inventory(db, scope, inventory_id)
+    batches = await inventory_batches.list_batches(db, inventory_id)
+    return {"batches": batches, "legacy_stock": max(0, row.stock_quantity - sum(b.remaining for b in batches)),
+            "can_receive": not settings.finance_stock_authority}
+
+
+@router.post("/{inventory_id}/batches", status_code=201,
+             dependencies=[Depends(require_permission("inventory", "update"))])
+async def receive_batch(
+    inventory_id: UUID, body: InventoryBatchReceipt,
+    db: AsyncSession = Depends(get_db), scope: BranchScope = Depends(inject_branch_filter),
+):
+    row = await _batch_inventory(db, scope, inventory_id, lock=True)
+    product = await db.get(Product, row.product_id)
+    if settings.finance_stock_authority:
+        raise HTTPException(409, "This branch receives stock through Sribees Finance.")
+    if product.stock_mode != "unit" or product.sold_by_weight:
+        raise HTTPException(422, "Batches are supported for products sold by the unit.")
+    if body.selling_price > body.listed_price:
+        raise HTTPException(422, "Selling price cannot exceed listed price.")
+    if row.stock_quantity and not await inventory_batches.has_batches(db, inventory_id):
+        existing = ProductService.compute_effective_data(product, row)
+        selling = existing["effective_discount_price"]
+        if selling is None:
+            selling = existing["effective_price"]
+        db.add(InventoryBatch(
+            inventory_id=inventory_id, lot_code="Opening stock",
+            quantity_received=row.stock_quantity, remaining=row.stock_quantity,
+            selling_price=Decimal(str(selling)),
+            listed_price=Decimal(str(existing["effective_price"])),
+        ))
+        await db.flush()
+    batch = await inventory_batches.receive(db, inventory_id, **body.model_dump())
+    batch_id = batch.batch_id
+    await db.commit()
+    return {"batch_id": batch_id}
+
+
 @router.put("/{inventory_id}", response_model=dict,
             dependencies=[Depends(require_permission("inventory", "update"))])
 async def update_inventory(
@@ -449,8 +516,12 @@ async def update_inventory(
             detail="You can only modify inventory for your own branch.",
         )
 
+    inv = await _batch_inventory(db, scope, inventory_id, lock=True)
+
     # The Quick Edit form always sends the stock figure; only a change of it is refused.
     if body.stock_quantity is not None and body.stock_quantity != (inv.stock_quantity or 0):
+        if await inventory_batches.has_batches(db, inventory_id):
+            raise HTTPException(409, "Add new stock using Stock batches.")
         if settings.finance_stock_authority:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="Stock is kept by Sribees Finance; count it there.")

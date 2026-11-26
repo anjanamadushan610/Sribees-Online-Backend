@@ -197,6 +197,9 @@ class OrderService:
         repriced = []
         for item in items:
             line = dict(item)
+            line.pop("inventory_batch_id", None)
+            line.pop("batch_label", None)
+            line.pop("variant_name", None)
             product_id = str(item.get("product_id") or "")
             variant = variants.get(str(item.get("variant_id") or ""))
             if strict and product_id in need_option and (
@@ -436,7 +439,10 @@ class OrderService:
         # Authoritative prices, before anything below reads a line's price:
         # the coupon's eligible subtotal, the pricing breakdown and the stored
         # order lines all use these.
+        from app.services import inventory_batches
+
         order_items = await OrderService._attach_server_prices(db, order_items, branch_id)
+        order_items = await inventory_batches.price_lines(db, branch_id, order_items, lock=True)
 
         # Authoritative coupon: re-validate against the database at checkout and
         # use the DB discount values — never the discount stored in the Redis
@@ -558,6 +564,8 @@ class OrderService:
                 wallet_balance=wallet_balance, wallet_amount=data.wallet_amount,
                 tax_rate=pricing_config["tax_rate"], **destination,
             )
+            if data.expected_subtotal is not None and data.expected_subtotal != breakdown.subtotal:
+                raise ValueError("Product prices have changed. Refresh checkout to review the new total.")
             if not breakdown.delivery_available:
                 raise DeliveryNotAvailableError(
                     breakdown.delivery_status,
@@ -770,7 +778,9 @@ class OrderService:
                     await stock_keeping.take(
                         db, branch_id, p_id,
                         item.get("variant_id") if item.get("variant_name") else None,
-                        int(item["quantity"]))
+                        int(item["quantity"]),
+                        **({"batch_id": item["inventory_batch_id"]} if item.get("inventory_batch_id") else {}),
+                    )
                 except stock_keeping.OutOfStock as short:
                     left = short.left
                     await db.rollback()
@@ -806,10 +816,17 @@ class OrderService:
                             f"Only {left} available for {item_name}."
                         )
 
+        allocated_gifts = []
         if gifts:
             for gift in gifts:
                 try:
-                    await stock_keeping.take(db, branch_id, UUID(gift["product_id"]), None, gift["quantity"])
+                    parts = await stock_keeping.take(
+                        db, branch_id, UUID(gift["product_id"]), None, gift["quantity"],
+                    )
+                    allocated_gifts.extend(
+                        {**gift, "inventory_batch_id": batch_id, "quantity": quantity}
+                        for batch_id, quantity in parts
+                    )
                 except stock_keeping.OutOfStock:
                     await db.rollback()
                     raise ValueError("A gift went out of stock. Refresh checkout to review your gifts.") from None
@@ -858,6 +875,8 @@ class OrderService:
                     UUID(str(item["variant_id"]))
                     if item.get("variant_id") and item.get("variant_name") else None
                 ),
+                inventory_batch_id=item.get("inventory_batch_id"),
+                inventory_batch_label=item.get("batch_label"),
                 variant_name=item.get("variant_name"),
                 product_name=item.get("name") or item.get("product_name", ""),
                 display_size=item.get("display_size"),
@@ -880,9 +899,10 @@ class OrderService:
             )
             db.add(order_item)
 
-        for gift in gifts:
+        for gift in allocated_gifts:
             db.add(OrderItem(
                 order_id=order.order_id, product_id=UUID(gift["product_id"]),
+                inventory_batch_id=gift["inventory_batch_id"],
                 product_name=gift["name"], product_sku=gift["sku"],
                 display_size=gift["display_size"], display_size_unit=gift["display_size_unit"],
                 quantity=gift["quantity"], unit_price=Decimal("0"), subtotal=Decimal("0"),
@@ -2254,12 +2274,16 @@ class OrderService:
         from app.services import stock_keeping
 
         rows = await db.execute(
-            select(OrderItem.product_id, OrderItem.variant_id, func.sum(OrderItem.quantity))
+            select(OrderItem.product_id, OrderItem.variant_id, OrderItem.inventory_batch_id,
+                   func.sum(OrderItem.quantity))
             .where(OrderItem.order_id == order.order_id)
-            .group_by(OrderItem.product_id, OrderItem.variant_id)
+            .group_by(OrderItem.product_id, OrderItem.variant_id, OrderItem.inventory_batch_id)
         )
-        for product_id, variant_id, quantity in rows.all():
-            await stock_keeping.give_back(db, order.branch_id, product_id, variant_id, int(quantity))
+        for product_id, variant_id, batch_id, quantity in rows.all():
+            await stock_keeping.give_back(
+                db, order.branch_id, product_id, variant_id, int(quantity),
+                **({"batch_id": batch_id} if batch_id else {}),
+            )
 
     @staticmethod
     async def cancel_order(

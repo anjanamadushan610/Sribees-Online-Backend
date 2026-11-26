@@ -303,6 +303,9 @@ class OrderItem(Base):
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.product_id"), nullable=False)
     variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.variant_id"), nullable=True)
 
+    inventory_batch_id = Column(UUID(as_uuid=True), ForeignKey("inventory_batches.batch_id"), nullable=True)
+    inventory_batch_label = Column(String(80), nullable=True)
+
     # Snapshot data (at time of order)
     product_name = Column(String(255), nullable=False)
     is_gift = Column(Boolean, nullable=False, default=False, server_default="false")

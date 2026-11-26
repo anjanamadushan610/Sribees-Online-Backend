@@ -7,6 +7,7 @@ elsewhere while in transit), and added to the destination branch on
 completion (arrival). Rejecting a still-pending request touches no stock.
 """
 from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
 
@@ -159,6 +160,13 @@ class StockTransferService:
                 f"Source branch only has {available} units available — cannot commit {transfer.quantity}."
             )
 
+        from app.services import inventory_batches
+
+        source = await db.get(BranchInventory, source.inventory_id, with_for_update=True, populate_existing=True)
+        if await inventory_batches.has_batches(db, source.inventory_id):
+            raise StockTransferError("This inventory is tracked in batches; transfer of batches is unavailable.")
+        if source.stock_quantity < transfer.quantity:
+            raise StockTransferError("Source stock changed. Review the available quantity and retry.")
         source.stock_quantity -= transfer.quantity
         transfer.status = TransferStatus.APPROVED.value
         transfer.approved_by_id = approved_by_id
@@ -221,7 +229,22 @@ class StockTransferService:
                 stock_quantity=transfer.quantity,
             )
         else:
-            dest.stock_quantity += transfer.quantity
+            dest = await db.get(BranchInventory, dest.inventory_id, with_for_update=True, populate_existing=True)
+            from app.services import inventory_batches
+
+            if await inventory_batches.has_batches(db, dest.inventory_id):
+                product = await db.get(Product, dest.product_id)
+                prices = ProductService.compute_effective_data(product, dest)
+                await inventory_batches.receive(
+                    db, dest.inventory_id, quantity=transfer.quantity, purchase_cost=None,
+                    listed_price=Decimal(str(prices["effective_price"])),
+                    selling_price=Decimal(str(prices["effective_discount_price"]
+                                              if prices["effective_discount_price"] is not None
+                                              else prices["effective_price"])),
+                    lot_code=None, expires_on=None,
+                )
+            else:
+                dest.stock_quantity += transfer.quantity
 
         transfer.status = TransferStatus.COMPLETED.value
         transfer.completed_at = datetime.utcnow()

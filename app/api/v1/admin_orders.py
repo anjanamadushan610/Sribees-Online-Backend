@@ -198,6 +198,7 @@ def _format_order_detail(order: Order, branch_name: Optional[str]) -> dict:
                 "product_name": it.product_name,
                 "variant_name": it.variant_name,
                 "product_sku": it.product_sku,
+                "inventory_batch_label": getattr(it, "inventory_batch_label", None),
                 "product_image": it.product_image,
                 "quantity": it.quantity,
                 "unit_price": float(it.unit_price or 0),

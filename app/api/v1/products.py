@@ -306,10 +306,15 @@ async def _format_listing(db: AsyncSession, items: list, lang: str) -> list:
     ratings = await ProductReviewService.get_rating_summaries(
         db, [item["product"].product_id for item in items]
     )
+    from app.services import inventory_batches
+
+    prices = await inventory_batches.catalog_prices(
+        db, [item["effective"]["inventory_id"] for item in items if item["effective"].get("inventory_id")],
+    )
     return [
         format_product(
             item["product"],
-            branch_overrides=item["effective"],
+            branch_overrides=inventory_batches.apply_catalog_price(item["effective"], prices),
             rating=ratings.get(item["product"].product_id),
             lang=lang,
         )
@@ -772,12 +777,17 @@ async def get_product(
 
         options = await product_options.options_for(db, product, branch_id)
 
+    from app.services import inventory_batches
+
+    effective = result["effective"]
+    inventory_id = effective.get("inventory_id")
+    prices = await inventory_batches.catalog_prices(db, [inventory_id] if inventory_id else [])
     return {
         "success": True,
         "data": format_product(
             product,
             include_variants=True,
-            branch_overrides=result["effective"],
+            branch_overrides=inventory_batches.apply_catalog_price(effective, prices),
             rating={"average": average, "count": count},
             lang=lang,
             weight_options=weight_options,

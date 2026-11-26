@@ -207,11 +207,13 @@ async def quote_for_cart(
     if destination.postal_city_id is None or destination.branch_id is None:
         return DeliveryQuote(status=DELIVERY_NOT_SERVICEABLE), destination
 
+    from app.services import inventory_batches
     from app.services.order_service import OrderService
 
     # Quote requests may carry stale/client-supplied prices. Eligibility must use
     # the same catalogue subtotal order creation will charge.
     items = await OrderService._attach_server_prices(db, items, destination.branch_id, strict=False)
+    items = await inventory_batches.price_lines(db, destination.branch_id, items, strict=False)
     weighted = await OrderService._attach_weights(db, items)
     async with courier_credentials.optional_for_branch(db, destination.branch_id) as target:
         outlet_id = await outlet_for(db, destination.branch_id)

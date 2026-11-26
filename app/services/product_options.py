@@ -267,6 +267,12 @@ async def save_options(
     if mode_changes and settings.finance_stock_authority:
         raise OptionsError("Stock is kept by Sribees Finance; change how it is kept there first.")
 
+    if mode_changes:
+        from app.services import inventory_batches
+
+        if await inventory_batches.product_has_batches(db, product.product_id):
+            raise OptionsError("Inventory is tracked in batches and cannot be converted to options.")
+
     kept = set()
     for order, o in enumerate(cleaned, start=1):
         v = existing.get(o.variant_id) if o.variant_id else None
