@@ -62,7 +62,21 @@ async def test_catalog_has_sinhala_name_and_size(api, db, make_product):
     assert (row["display_size"], row["display_size_unit"]) == ("75", "g")
     assert row["is_active"] is True and row["variants"] == []
     assert set(row) == {"product_id", "sku", "name", "name_si", "display_size",
-                        "display_size_unit", "category", "is_active", "variants"}
+                        "display_size_unit", "category", "is_active", "image_url", "variants"}
+
+
+async def test_catalog_has_the_main_photo(api, db, make_product):
+    """Owner 2026-11-26: Supply's matching screen shows the product's photo."""
+    from app.models.product import ProductImage
+
+    pid = await make_product()
+    db.add(ProductImage(product_id=pid, image_url="/uploads/products/side.webp", sort_order=0))
+    db.add(ProductImage(product_id=pid, image_url="/uploads/products/main.webp",
+                        is_primary=True, sort_order=1))
+    await db.commit()
+    r = await api.get("/internal/supply/catalog", headers={"Authorization": f"Bearer {TOKEN}"})
+    row = next(p for p in r.json()["products"] if p["product_id"] == str(pid))
+    assert row["image_url"].endswith("/uploads/products/main.webp")
 
 
 async def test_catalog_lists_the_branches(api, test_branch):

@@ -26,10 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import get_db
 from app.config.settings import settings
+from app.core.media import media_url
 from app.models.branch import Branch
 from app.models.category import Category
 from app.models.finance_outbox import FinanceOutbox
-from app.models.product import Product, ProductVariant
+from app.models.product import Product, ProductImage, ProductVariant
 
 router = APIRouter(prefix="/internal/supply", tags=["Internal: Supply"], include_in_schema=False)
 
@@ -70,13 +71,19 @@ async def supply_catalog(
     _: None = Depends(require_supply_service),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Every product (active or not) with its Sinhala name, size and pack sizes, and every
+    """Every product (active or not) with its Sinhala name, size, main photo and pack sizes, and every
     branch (id, code, name, active): Sribees Supply follows our branches from here."""
     variants: dict = defaultdict(list)
     for v in (await db.execute(select(ProductVariant).order_by(ProductVariant.sort_order))).scalars():
         variants[v.product_id].append({
             "variant_id": str(v.variant_id), "sku": v.sku, "name": v.name,
             "weight_grams": v.weight_grams, "is_active": bool(v.is_active)})
+    # the product's main photo, so Supply staff see what they match (owner 2026-11-26)
+    image: dict = {}
+    for i in (await db.execute(select(ProductImage).order_by(
+            ProductImage.product_id, ProductImage.is_primary.desc(),
+            ProductImage.sort_order, ProductImage.created_at))).scalars():
+        image.setdefault(i.product_id, media_url(i.image_url))
     categories = dict((await db.execute(select(Category.category_id, Category.name))).all())
     products = (await db.execute(select(Product).order_by(Product.name))).scalars()
     branch_rows = (await db.execute(select(Branch).order_by(Branch.name))).scalars()
@@ -89,6 +96,7 @@ async def supply_catalog(
             {"product_id": str(p.product_id), "sku": p.sku, "name": p.name, "name_si": p.name_si,
              "display_size": p.display_size, "display_size_unit": p.display_size_unit,
              "category": categories.get(p.category_id), "is_active": bool(p.is_active),
+             "image_url": image.get(p.product_id),
              "variants": variants.get(p.product_id, [])}
             for p in products],
     }
