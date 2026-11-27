@@ -62,6 +62,7 @@ async def sweep(db: AsyncSession, today: date | None = None, limit: int = BATCH)
         batch = await db.get(InventoryBatch, batch_id, with_for_update=True,
                              populate_existing=True)
         if row is None or batch is None or not expired(batch, today) or batch.remaining <= 0:
+            await db.rollback()  # let go of the row locks
             continue
         units = int(batch.remaining)
         row.stock_quantity = max(int(row.stock_quantity or 0) - units, 0)
@@ -69,6 +70,7 @@ async def sweep(db: AsyncSession, today: date | None = None, limit: int = BATCH)
         batch.remaining = 0
         batch.expired_at = datetime.now(timezone.utc)
         done += 1
+        await db.commit()  # one row lock at a time: checkouts never wait on the whole sweep
         logger.info(f"Batch {batch.lot_code or batch.sequence} expired on {batch.expires_on}: "
                     f"{units} units off stock (inventory {inventory_id})")
     await db.commit()

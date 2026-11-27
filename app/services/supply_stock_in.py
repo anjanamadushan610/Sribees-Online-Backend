@@ -69,7 +69,9 @@ def same_discount(listed_now: Decimal, selling_now: Decimal, mrp: Decimal) -> De
     if listed_now <= 0 or selling_now >= listed_now:
         return mrp
     price = (mrp * selling_now / listed_now).quantize(Decimal("1"), rounding=ROUND_FLOOR)
-    return min(max(price, Decimal("0")), mrp).quantize(Decimal("0.01"))
+    if price <= 0:  # a tiny MRP must never round down to a free batch
+        return mrp
+    return min(price, mrp).quantize(Decimal("0.01"))
 
 
 async def _prices(db: AsyncSession, product: Product, row: BranchInventory | None,
@@ -130,7 +132,14 @@ async def apply(db: AsyncSession, branch_id: uuid.UUID, receipt_no: str, line: L
         ).on_conflict_do_nothing().returning(SupplyStockReceipt.line_id))
         if claimed.first() is None:
             await db.rollback()
-            return {**done, "status": "already"}
+            # a retry after a lost answer: say which batch it made, so Supply's review is kept
+            taken = await db.get(SupplyStockReceipt, line.line_id)
+            batch = await db.get(InventoryBatch, taken.batch_id) if taken and taken.batch_id else None
+            if batch is None:
+                return {**done, "status": "already"}
+            return {**done, "status": "already", "batch_id": str(batch.batch_id),
+                    "listed_price": str(batch.listed_price),
+                    "selling_price": str(batch.selling_price)}
         priced = await _add(db, branch_id, receipt_no, line)
         if priced is not None:
             taken = await db.get(SupplyStockReceipt, line.line_id)

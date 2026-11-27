@@ -56,6 +56,8 @@ def test_same_discount():
     assert same_discount(Decimal("165"), Decimal("150"), Decimal("175")) == Decimal("159.00")  # 159.09
     assert same_discount(Decimal("200"), Decimal("200"), Decimal("220")) == Decimal("220")
     assert same_discount(Decimal("0"), Decimal("0"), Decimal("90")) == Decimal("90")
+    # a tiny MRP never rounds down to a free batch
+    assert same_discount(Decimal("2.00"), Decimal("1.00"), Decimal("1.50")) == Decimal("1.50")
 
 
 async def test_a_dated_delivery_is_a_batch_and_a_new_mrp_keeps_the_discount(
@@ -71,8 +73,12 @@ async def test_a_dated_delivery_is_a_batch_and_a_new_mrp_keeps_the_discount(
         ("Opening stock", 10, None), ("RCV-EXP-1", 5, date.fromisoformat(exp))]
     assert got[-1].selling_price == Decimal("180.00")
 
-    r = await _send(api, branch, _line(product, 4, expires_on=exp, mrp="220.00"),
-                    receipt_no="RCV-EXP-2")
+    line = _line(product, 4, expires_on=exp, mrp="220.00")
+    r = await _send(api, branch, line, receipt_no="RCV-EXP-2")
+    # a retry after a lost answer names the same batch and its prices
+    again = await _send(api, branch, line, receipt_no="RCV-EXP-2")
+    assert (again[0]["status"], again[0]["batch_id"], again[0]["selling_price"]) == (
+        "already", r[0]["batch_id"], "198.00")
     assert (r[0]["listed_price"], r[0]["selling_price"]) == ("220.00", "198.00")
     assert (r[0]["old_listed_price"], r[0]["old_selling_price"]) == ("200.00", "180.00")
     row, got = await _batches(db, branch, product)
