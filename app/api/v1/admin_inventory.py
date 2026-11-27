@@ -92,12 +92,23 @@ def _format_inventory_row(inv: BranchInventory, product: Product, branch: Branch
         "reserved_quantity": reserved,
         "available_quantity": max(0, stock - reserved),
         "low_stock_threshold": threshold,
+        "max_stock_level": inv.max_stock_level,
         "is_low_stock": stock <= threshold,
         "is_active": inv.is_active,
         "category_id": str(product.category_id) if product.category_id else None,
         "subcategory_id": str(product.subcategory_id) if product.subcategory_id else None,
         "price_review_level": product.price_review_level,
     }
+
+
+def check_max(minimum, maximum) -> None:
+    """The maximum must be above the minimum, or Supply would order nothing (or forever)."""
+    if maximum is not None and maximum <= (minimum or 0):
+        raise HTTPException(status_code=400,
+                            detail="The maximum stock must be more than the low-stock threshold.")
+
+
+_check_max = check_max
 
 
 @router.get("", response_model=dict)
@@ -263,6 +274,7 @@ async def stock_product_in_branch(
         )
 
     overrides = body.model_dump(exclude={"product_id", "branch_id"})
+    check_max(body.low_stock_threshold, body.max_stock_level)
     existing = (
         await db.execute(
             select(BranchInventory.cashback_percentage).where(
@@ -539,6 +551,8 @@ async def update_inventory(
         )
 
     fields = body.model_dump(exclude_unset=True, exclude={"reserved_quantity"})
+    _check_max(fields.get("low_stock_threshold", inv.low_stock_threshold),
+               fields.get("max_stock_level", inv.max_stock_level))
     await branch_cashback.guard(db, scope.role, fields, current=inv.cashback_percentage)
     updated = await ProductService.update_inventory_row(db, inv, **fields)
     logger.info(f"[admin] Inventory {inventory_id} updated in branch {inv.branch_id}")

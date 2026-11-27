@@ -278,6 +278,9 @@ class BranchInventory(Base):
         server_default="10",
         comment="Branch-level low-stock alert threshold",
     )
+    # migration 130: Sribees Supply orders up to this when stock falls below the threshold
+    max_stock_level = Column(Integer, nullable=True,
+                             comment="Most the branch holds; NULL = not reordered automatically")
     discount_percentage = Column(
         Float,
         nullable=True,

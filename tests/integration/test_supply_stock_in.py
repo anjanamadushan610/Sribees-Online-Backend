@@ -170,3 +170,26 @@ def test_weight_in_grams(weight, unit, grams):
     from app.api.supply_internal import weight_grams
 
     assert weight_grams(Decimal(weight) if weight else None, unit) == grams
+
+
+async def test_stock_levels_carry_min_and_max(api, db, world, make_product):
+    from fastapi import HTTPException
+
+    from app.api.v1.admin_inventory import check_max
+
+    branch = world.branch_id
+    product = await make_product(stock=7)
+    row = await _row(db, branch, product)
+    row.low_stock_threshold, row.max_stock_level, row.reserved_quantity = 10, 40, 2
+    await db.commit()
+    r = await api.get("/internal/supply/stock-levels", headers=AUTH, params={"branch_id": str(branch)})
+    assert r.status_code == 200, r.text
+    item = next(i for i in r.json()["items"] if i["product_id"] == str(product))
+    assert (item["stock_quantity"], item["reserved_quantity"], item["low_stock_threshold"],
+            item["max_stock_level"]) == (7, 2, 10, 40)
+    assert (await api.get("/internal/supply/stock-levels",
+                          params={"branch_id": str(branch)})).status_code == 401
+    check_max(10, None)
+    check_max(10, 11)
+    with pytest.raises(HTTPException):
+        check_max(10, 10)

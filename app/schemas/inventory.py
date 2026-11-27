@@ -32,6 +32,10 @@ class InventoryUpdateRequest(BaseModel):
     stock_quantity: Optional[int] = Field(None, ge=0, description="Units on hand")
     reserved_quantity: Optional[int] = Field(None, ge=0, description="Units reserved by orders")
     low_stock_threshold: Optional[int] = Field(None, ge=0, description="Low-stock alert threshold")
+    max_stock_level: Optional[int] = Field(
+        None, gt=0, le=1_000_000,
+        description="Most the branch holds; Sribees Supply orders up to it. Null = no automatic order.",
+    )
     discount_percentage: Optional[float] = Field(
         None,
         ge=0,
@@ -82,6 +86,7 @@ class BranchOverrideCreate(BaseModel):
     )
     stock_quantity: int = Field(..., ge=0)
     low_stock_threshold: int = Field(10, ge=0)
+    max_stock_level: Optional[int] = Field(None, gt=0, le=1_000_000)
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     cashback_percentage: Optional[float] = Field(
         None,

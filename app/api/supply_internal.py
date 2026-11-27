@@ -38,7 +38,7 @@ from app.config.settings import settings
 from app.core.media import media_url
 from app.models.branch import Branch
 from app.models.category import Category
-from app.models.product import Product, ProductImage, ProductVariant
+from app.models.product import BranchInventory, Product, ProductImage, ProductVariant
 from app.services import supply_stock_in
 
 router = APIRouter(prefix="/internal/supply", tags=["Internal: Supply"], include_in_schema=False)
@@ -120,6 +120,29 @@ async def supply_stock_info(
     await _branch(db, body.branch_id)
     return {"stock_in_enabled": bool(settings.supply_stock_in_enabled),
             "items": await supply_stock_in.info(db, body.branch_id, body.items)}
+
+
+@router.get("/stock-levels")
+async def supply_stock_levels(
+    branch_id: uuid.UUID,
+    _: None = Depends(require_supply_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Every product the branch carries: stock, reserved, minimum and maximum (read only).
+    Sribees Supply prepares its draft orders from this (owner, 2026-11-26)."""
+    await _branch(db, branch_id)
+    rows = (await db.execute(
+        select(BranchInventory, Product.stock_mode, Product.is_active)
+        .join(Product, Product.product_id == BranchInventory.product_id)
+        .where(BranchInventory.branch_id == branch_id))).all()
+    return {"branch_id": str(branch_id), "items": [{
+        "product_id": str(inv.product_id), "stock_mode": mode or "unit",
+        "stock_quantity": int(inv.stock_quantity or 0), "stock_grams": int(inv.stock_grams or 0),
+        "reserved_quantity": int(inv.reserved_quantity or 0),
+        "low_stock_threshold": int(inv.low_stock_threshold or 0),
+        "max_stock_level": inv.max_stock_level,
+        "visible": bool(inv.is_active), "product_active": bool(active),
+    } for inv, mode, active in rows]}
 
 
 @router.post("/receipts")
