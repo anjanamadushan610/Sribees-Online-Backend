@@ -391,6 +391,14 @@ class Settings(BaseSettings):
             "(POST /internal/supply/receipts). Off = that route does not exist (404)."
         ),
     )
+    supply_partner_enabled: bool = Field(
+        default=False,
+        description=(
+            "Let Sribees Supply's fulfilment partner set the branch price and stock of a "
+            "branch's Other Products (PUT /internal/supply/partner-*). Off = those routes do "
+            "not exist (404) and no price is locked."
+        ),
+    )
     finance_stock_authority: bool = Field(
         default=False,
         description=(

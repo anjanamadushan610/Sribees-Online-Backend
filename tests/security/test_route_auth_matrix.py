@@ -96,6 +96,14 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("POST", "/internal/supply/stock-info"),
     ("GET", "/internal/supply/stock-levels"),
     ("POST", "/internal/supply/receipts"),
+    # Fulfilment partner (Supply, owner 2026-11-27): same supply service-token locks; the
+    # partner-* routes also 404 unless SUPPLY_PARTNER_ENABLED. See
+    # tests/integration/test_supply_internal.py::test_order_delivery_for_the_partner_app and
+    # tests/integration/test_supply_partner.py::test_the_partner_routes_are_off_by_default_and_locked.
+    ("GET", "/internal/supply/orders/{order_id}"),
+    ("PUT", "/internal/supply/branches/{branch_id}/partner"),
+    ("PUT", "/internal/supply/partner-price"),
+    ("PUT", "/internal/supply/partner-stock"),
     # --- app bootstrap -------------------------------------------------------
     ("GET", "/api/v1/app/splash-config"),
     ("GET", "/api/v1/app/support-info"),

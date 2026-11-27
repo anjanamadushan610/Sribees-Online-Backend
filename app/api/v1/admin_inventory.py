@@ -38,7 +38,7 @@ from app.schemas.inventory import (
     InventoryUpdateRequest,
     SourcingFilter,
 )
-from app.services import branch_cashback, inventory_batches
+from app.services import branch_cashback, inventory_batches, supply_partner
 from app.services.product_service import ProductService
 from app.services.referral_commission.rate_admin import describe_rates
 
@@ -296,6 +296,8 @@ async def stock_product_in_branch(
         # new row -- applied to a stocked one they wiped the branch's settings
         # each time the Price app changed a price.
         overrides = {k: v for k, v in overrides.items() if k in body.model_fields_set}
+        if "branch_price" in overrides:
+            await supply_partner.guard_price(db, scope, effective_branch, body.product_id)
     await branch_cashback.guard(
         db, scope.role, overrides, current=existing[0] if existing else None
     )
@@ -558,6 +560,8 @@ async def update_inventory(
         )
 
     fields = body.model_dump(exclude_unset=True, exclude={"reserved_quantity"})
+    if "branch_price" in fields and fields["branch_price"] != inv.branch_price:
+        await supply_partner.guard_price(db, scope, inv.branch_id, inv.product_id)
     _check_max(fields.get("low_stock_threshold", inv.low_stock_threshold),
                fields.get("max_stock_level", inv.max_stock_level))
     await branch_cashback.guard(db, scope.role, fields, current=inv.cashback_percentage)

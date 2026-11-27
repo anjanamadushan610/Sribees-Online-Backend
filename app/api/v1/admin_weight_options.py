@@ -20,7 +20,7 @@ from app.schemas.product import (
     WeightOptionPrice,
     WeightOptionsReplace,
 )
-from app.services import weight_options_service
+from app.services import supply_partner, weight_options_service
 
 router = APIRouter(
     dependencies=[Depends(require_permission("products", "read"))],
@@ -134,6 +134,7 @@ async def set_weight_option_branch_price(
     option = await weight_options_service.get_option(db, product_id, variant_id)
     if option is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Weight option not found")
+    await supply_partner.guard_price(db, scope, branch_id, product_id)
     await weight_options_service.set_branch_price(db, branch_id, option, body.price)
     await db.commit()
     return {"success": True, "data": await _payload(db, product, branch_id)}

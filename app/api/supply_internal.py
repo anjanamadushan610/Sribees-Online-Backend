@@ -6,6 +6,11 @@ mostly-Sinhala price lines to our products, so it needs the Sinhala name and the
 as well as the ids, and the product's courier weight (Supply splits a delivery charge
 by it).
 
+Fulfilment partner (Sribees Supply, owner 2026-11-27): each catalog product lists the
+branches that sell it with their ``sourcing_group`` (Our Store / Other Products), and
+``GET /orders/{id}`` gives the partner app who an order is for and its lines (the event
+of a brand-new order is written before its lines exist).
+
 Two more routes serve receiving. ``POST /stock-info`` reads what a branch sells an item
 for now. ``POST /receipts`` is the one route that changes Online: it **adds** received
 goods to a branch's stock (never sets a figure), each Supply receipt line once only, and
@@ -38,8 +43,10 @@ from app.config.settings import settings
 from app.core.media import media_url
 from app.models.branch import Branch
 from app.models.category import Category
+from app.models.order import Order, OrderItem
 from app.models.product import BranchInventory, Product, ProductImage, ProductVariant
-from app.services import supply_stock_in
+from app.models.user import Address, User
+from app.services import supply_partner, supply_stock_in
 
 router = APIRouter(prefix="/internal/supply", tags=["Internal: Supply"], include_in_schema=False)
 
@@ -98,6 +105,33 @@ class ReceiptLinesIn(BaseModel):
     branch_id: uuid.UUID
     receipt_no: str = Field(min_length=1, max_length=40)
     lines: list[supply_stock_in.Line] = Field(min_length=1, max_length=500)
+
+
+def require_partner(_: None = Depends(require_supply_service)) -> None:
+    if not settings.supply_partner_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+class PartnerFlagIn(BaseModel):
+    active: bool
+
+
+class PartnerPriceIn(BaseModel):
+    branch_id: uuid.UUID
+    product_id: uuid.UUID
+    variant_id: uuid.UUID | None = None
+    price: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
+
+
+class PartnerStockItem(BaseModel):
+    product_id: uuid.UUID
+    variant_id: uuid.UUID | None = None
+    stock: int = Field(ge=0, le=1_000_000)
+
+
+class PartnerStockIn(BaseModel):
+    branch_id: uuid.UUID
+    items: list[PartnerStockItem] = Field(min_length=1, max_length=500)
 
 
 def require_stock_in(_: None = Depends(require_supply_service)) -> None:
@@ -180,6 +214,14 @@ async def supply_catalog(
             ProductImage.product_id, ProductImage.is_primary.desc(),
             ProductImage.sort_order, ProductImage.created_at))).scalars():
         image.setdefault(i.product_id, media_url(i.image_url))
+    # where each product is on sale and how that branch gets it (migration 131): Supply sends
+    # "Other Products" lines of an order to the branch's fulfilment partner
+    listings: dict = defaultdict(list)
+    for inv in (await db.execute(select(BranchInventory.product_id, BranchInventory.branch_id,
+                                        BranchInventory.sourcing_group)
+                                 .where(BranchInventory.is_active.is_(True)))).all():
+        listings[inv.product_id].append({"branch_id": str(inv.branch_id),
+                                         "sourcing_group": inv.sourcing_group})
     categories = dict((await db.execute(select(Category.category_id, Category.name))).all())
     products = (await db.execute(select(Product).order_by(Product.name))).scalars()
     branch_rows = (await db.execute(select(Branch).order_by(Branch.name))).scalars()
@@ -194,6 +236,83 @@ async def supply_catalog(
              "category": categories.get(p.category_id), "is_active": bool(p.is_active),
              "image_url": image.get(p.product_id),
              "weight_grams": weight_grams(p.weight, p.weight_unit),
-             "variants": variants.get(p.product_id, [])}
+             "variants": variants.get(p.product_id, []),
+             "listings": listings.get(p.product_id, [])}
             for p in products],
     }
+
+
+@router.get("/orders/{order_id}")
+async def supply_order(
+    order_id: uuid.UUID,
+    _: None = Depends(require_supply_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """An order for the fulfilment partner: who it is for (owner 2026-11-27: the partner sees
+    the customer's name, phone and address so orders never get mixed up) and its lines.
+    Read only."""
+    order = await db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="unknown order")
+    user = await db.get(User, order.user_id)
+    address = await db.get(Address, order.delivery_address_id) if order.delivery_address_id else None
+    name = (address.recipient_name if address and address.recipient_name else None) or (
+        user.full_name if user else None)
+    lines = [address.address_line1, address.address_line2, address.postal_city,
+             address.postal_code] if address else []
+    return {
+        "order_id": str(order.order_id),
+        "order_number": order.order_number,
+        "branch_id": str(order.branch_id) if order.branch_id else None,
+        "customer_name": name,
+        "phone": order.contact_phone or (address.phone if address else None)
+        or (user.phone if user else None),
+        "alternate_phone": order.alternate_phone,
+        "address": ", ".join(x for x in lines if x) or None,
+        "notes": order.notes,
+        "status": order.status,
+        "payment_status": order.payment_status,
+        "lines": [
+            {"order_item_id": str(i.order_item_id), "product_id": str(i.product_id),
+             "variant_id": str(i.variant_id) if i.variant_id else None,
+             "name": i.product_name, "variant_name": i.variant_name,
+             "quantity": int(i.quantity or 0)}
+            for i in (await db.execute(select(OrderItem).where(OrderItem.order_id == order.order_id)
+                                       .order_by(OrderItem.created_at, OrderItem.order_item_id)))
+            .scalars()],
+    }
+
+
+# ---------------------------------------------------------------- fulfilment partner
+@router.put("/branches/{branch_id}/partner")
+async def supply_branch_partner(
+    branch_id: uuid.UUID,
+    body: PartnerFlagIn,
+    _: None = Depends(require_partner),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Supply says whether the branch's fulfilment partner is working (migration 132)."""
+    return await supply_partner.set_partner(db, branch_id, body.active)
+
+
+@router.put("/partner-price")
+async def supply_partner_price(
+    body: PartnerPriceIn,
+    _: None = Depends(require_partner),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The partner's customer price for one of the branch's Other Products (Supply has
+    checked the partner serves the branch and audited it)."""
+    return await supply_partner.set_price(db, body.branch_id, body.product_id, body.variant_id,
+                                          body.price)
+
+
+@router.put("/partner-stock")
+async def supply_partner_stock(
+    body: PartnerStockIn,
+    _: None = Depends(require_partner),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The partner's own counts for the branch's Other Products (absolute)."""
+    await _branch(db, body.branch_id)
+    return {"results": await supply_partner.set_stock(db, body.branch_id, body.items)}
