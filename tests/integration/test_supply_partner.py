@@ -153,3 +153,15 @@ async def test_a_loose_products_partner_count_goes_in_grams(api, db, world, make
         "items": [{"product_id": str(pid), "stock": 0, "grams": 5500}]})
     assert r.json()["results"][0]["result"] == "set", r.text
     assert (await _inv(db, world, pid)).stock_grams == 5500
+
+
+async def test_grams_for_a_counted_product_are_refused_not_turned_into_a_count(
+        api, db, world, make_product):
+    pid = await make_product(price="50.00", stock=9)
+    await _group(db, world, pid, "external_daily")
+    await _flag(api, world)
+    r = await api.put("/internal/supply/partner-stock", headers=AUTH, json={
+        "branch_id": str(world.branch_id),
+        "items": [{"product_id": str(pid), "stock": 0, "grams": 4000}]})
+    assert r.json()["results"][0]["result"] == "mode_mismatch"
+    assert (await _inv(db, world, pid)).stock_quantity == 9

@@ -98,6 +98,10 @@ async def set_stock(db: AsyncSession, branch_id: UUID, items: list) -> list[dict
             continue
         mode = (await db.execute(select(Product.stock_mode).where(
             Product.product_id == it.product_id))).scalar_one_or_none()
+        if it.grams is not None and mode != "loose":
+            # Supply thinks it is weighed and we do not: never turn grams into a count
+            out.append({"product_id": str(it.product_id), "result": "mode_mismatch"})
+            continue
         if mode == "loose":
             # weighed into the bag per order: the partner's count is grams on the product
             if it.grams is None:
