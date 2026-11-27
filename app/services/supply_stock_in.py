@@ -9,15 +9,20 @@ Goods received in Sribees Supply, added to a branch's stock (owner, 2026-11-26).
 * A branch that does not carry the product gets a **hidden** row: customers see it only
   after staff switch it on.
 * A unit product with stock batches (migration 127) receives a batch. One without them
-  gets one only when staff typed a price different from today's; then the stock already
-  there becomes its own "Opening stock" batch at the old price, as the admin screen does.
-  Otherwise the count just goes up and pricing keeps working as before.
+  gets one when staff typed a price different from today's, or when the line carries an
+  expiry date (owner 2026-11-27: every delivery is a batch, so its expiry is known and an
+  expired batch is never sold); then the stock already there becomes its own "Opening
+  stock" batch at the old price, as the admin screen does. Otherwise the count just goes up.
+* A new MRP (owner 2026-11-27): old stock keeps selling at its own price; the new batch is
+  listed at the new MRP and sells at the same discount as now (MRP 200 sold at 180 -> MRP
+  220 sells at 198, rounded down to the rupee, never above the MRP). Staff in Supply
+  review that price; ``set_batch_price`` changes it.
 """
 from __future__ import annotations
 
 import uuid
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -51,11 +56,20 @@ class Line(ItemRef):
     purchase_cost: Decimal | None = Money  # per unit, delivered to the store
     listed_price: Decimal | None = Money
     selling_price: Decimal | None = Money
+    mrp: Decimal | None = Money  # the MRP printed on this delivery's packs
     expires_on: date | None = None
 
 
 class _Refused(Exception):
     pass
+
+
+def same_discount(listed_now: Decimal, selling_now: Decimal, mrp: Decimal) -> Decimal:
+    """The new MRP's selling price at today's discount, rounded down to the rupee."""
+    if listed_now <= 0 or selling_now >= listed_now:
+        return mrp
+    price = (mrp * selling_now / listed_now).quantize(Decimal("1"), rounding=ROUND_FLOOR)
+    return min(max(price, Decimal("0")), mrp).quantize(Decimal("0.01"))
 
 
 async def _prices(db: AsyncSession, product: Product, row: BranchInventory | None,
@@ -117,19 +131,22 @@ async def apply(db: AsyncSession, branch_id: uuid.UUID, receipt_no: str, line: L
         if claimed.first() is None:
             await db.rollback()
             return {**done, "status": "already"}
-        batch_id = await _add(db, branch_id, receipt_no, line)
-        if batch_id is not None:
+        priced = await _add(db, branch_id, receipt_no, line)
+        if priced is not None:
             taken = await db.get(SupplyStockReceipt, line.line_id)
-            taken.batch_id = batch_id
+            taken.batch_id = priced["batch_id"]
+            priced = {k: str(v) if v is not None else None for k, v in priced.items()}
         await db.commit()
     except _Refused as why:
         await db.rollback()
         logger.warning(f"Supply receipt {receipt_no} line {line.line_id} refused: {why}")
         return {**done, "status": "refused", "reason": str(why)}
-    return {**done, "status": "added"}
+    return {**done, "status": "added", **(priced or {})}
 
 
-async def _add(db: AsyncSession, branch_id, receipt_no: str, line: Line) -> uuid.UUID | None:
+async def _add(db: AsyncSession, branch_id, receipt_no: str, line: Line) -> dict | None:
+    """None, or the new batch: {"batch_id", "listed_price", "selling_price",
+    "old_listed_price", "old_selling_price"}."""
     product = await db.get(Product, line.product_id)
     if product is None:
         raise _Refused("this product is not in Online")
@@ -170,10 +187,15 @@ async def _add(db: AsyncSession, branch_id, receipt_no: str, line: Line) -> uuid
     listed_now, selling_now = await _prices(db, product, row, batches)
     listed = line.listed_price if line.listed_price is not None else listed_now
     selling = line.selling_price if line.selling_price is not None else selling_now
+    if line.mrp is not None and line.listed_price is None and line.mrp != listed_now:
+        listed = line.mrp  # a new MRP: same discount as today unless staff typed a price
+        if line.selling_price is None:
+            selling = same_discount(listed_now, selling_now, line.mrp)
     repriced = (listed, selling) != (listed_now, selling_now)
     if selling > listed:
         raise _Refused("the selling price is above the listed price")
-    if not batches and (not repriced or product.sold_by_weight):
+    dated = line.expires_on is not None and not product.sold_by_weight
+    if not batches and ((not repriced and not dated) or product.sold_by_weight):
         if repriced:
             raise _Refused("this product cannot take a new price here; change it in Online")
         row.stock_quantity = _plus(row.stock_quantity, line.units)
@@ -189,7 +211,31 @@ async def _add(db: AsyncSession, branch_id, receipt_no: str, line: Line) -> uuid
         db, row.inventory_id, quantity=line.units, purchase_cost=line.purchase_cost,
         listed_price=listed, selling_price=selling, lot_code=receipt_no[:80],
         expires_on=line.expires_on)
-    return batch.batch_id
+    return {"batch_id": batch.batch_id, "listed_price": listed, "selling_price": selling,
+            "old_listed_price": listed_now, "old_selling_price": selling_now}
+
+
+async def set_batch_price(db: AsyncSession, batch_id: uuid.UUID, selling_price: Decimal,
+                          *, branch_id: uuid.UUID) -> dict:
+    """A branch manager's reviewed price for a batch Supply delivered (P6): its unsold units
+    sell at it. Never above the batch's listed price (MRP)."""
+    batch = await db.get(InventoryBatch, batch_id)
+    if batch is None:
+        raise LookupError("batch not found")
+    row = await db.get(BranchInventory, batch.inventory_id, with_for_update=True)
+    batch = await db.get(InventoryBatch, batch_id, with_for_update=True, populate_existing=True)
+    if row is None or row.branch_id != branch_id:
+        raise LookupError("batch not found")
+    if not (Decimal("0") < selling_price <= batch.listed_price):
+        raise ValueError(f"the selling price must be above 0 and not above the MRP "
+                         f"({batch.listed_price})")
+    before = batch.selling_price
+    batch.selling_price = selling_price
+    await db.commit()
+    logger.info(f"Batch {batch.lot_code or batch.sequence}: selling price {before} -> "
+                f"{selling_price} (Supply review)")
+    return {"batch_id": str(batch.batch_id), "listed_price": str(batch.listed_price),
+            "selling_price": str(batch.selling_price), "remaining": int(batch.remaining)}
 
 
 def _plus(have, more: int) -> int:

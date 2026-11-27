@@ -658,6 +658,14 @@ class Settings(BaseSettings):
             "0 = off. The owner chose 2 % (2026-10-25)."
         ),
     )
+    batch_expiry_enabled: bool = Field(
+        default=False,
+        description=(
+            "Take a stock batch's remaining units off branch stock once its expiry date has "
+            "passed (app/services/batch_expiry.py, owner plan 2026-11-27). FIFO pricing never "
+            "sells an expired batch either way. Off = the sweep never starts."
+        ),
+    )
     first_order_nudge_enabled: bool = Field(
         default=True,
         description=(

@@ -243,6 +243,7 @@ def _format_category(cat) -> dict:
             "parent_category_id": str(parent) if parent else None,
             "is_active": cat["is_active"],
             "product_count": cat.get("product_count", 0),
+            "expiry_alert_days": cat.get("expiry_alert_days"),
         }
         data.update({f: cat.get(f) for f in _CATEGORY_TRANSLATION_FIELDS})
         return data
@@ -255,6 +256,7 @@ def _format_category(cat) -> dict:
         "image_url": media_url(cat.image_url),
         "parent_category_id": str(cat.parent_category_id) if cat.parent_category_id else None,
         "is_active": cat.is_active,
+        "expiry_alert_days": getattr(cat, "expiry_alert_days", None),
     }
     data.update({f: getattr(cat, f, None) for f in _CATEGORY_TRANSLATION_FIELDS})
     return data

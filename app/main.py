@@ -129,6 +129,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     from app.services.app_content_service import run_content_watcher
     from app.services.apple_revocation_worker import run_apple_revocation_worker
     from app.services.assistant_reminder_worker import run_reminder_worker
+    from app.services.batch_expiry import run_batch_expiry_worker
     from app.services.campaign_service import run_campaign_worker
     from app.services.coupon_announce_worker import run_coupon_announce_worker
     from app.services.coupon_reminder_worker import run_coupon_reminder_worker
@@ -168,6 +169,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         asyncio.create_task(run_embedding_worker()),
         asyncio.create_task(run_learning_worker()),
         asyncio.create_task(run_offer_cap_worker()),
+        asyncio.create_task(run_batch_expiry_worker()),
     ]
     try:
         yield

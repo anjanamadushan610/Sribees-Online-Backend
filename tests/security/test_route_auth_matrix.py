@@ -96,6 +96,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("POST", "/internal/supply/stock-info"),
     ("GET", "/internal/supply/stock-levels"),
     ("POST", "/internal/supply/receipts"),
+    # the Supply service token (require_supply_service), like the lines above
+    ("POST", "/internal/supply/batches/{batch_id}/price"),
+    ("GET", "/internal/supply/expiring"),
     # --- app bootstrap -------------------------------------------------------
     ("GET", "/api/v1/app/splash-config"),
     ("GET", "/api/v1/app/support-info"),

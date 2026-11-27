@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -39,6 +40,8 @@ class Category(Base):
     image_url = Column(String(500), nullable=True)
     parent_category_id = Column(UUID(as_uuid=True), ForeignKey("categories.category_id"), nullable=True)
     display_order = Column(Integer, nullable=False, default=2147483647, server_default="2147483647")
+    # days before expiry that a batch shows as close to expiry (migration 129)
+    expiry_alert_days = Column(SmallInteger, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

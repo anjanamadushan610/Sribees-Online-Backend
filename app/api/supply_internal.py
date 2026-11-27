@@ -39,7 +39,7 @@ from app.core.media import media_url
 from app.models.branch import Branch
 from app.models.category import Category
 from app.models.product import BranchInventory, Product, ProductImage, ProductVariant
-from app.services import supply_stock_in
+from app.services import batch_expiry, supply_stock_in
 
 router = APIRouter(prefix="/internal/supply", tags=["Internal: Supply"], include_in_schema=False)
 
@@ -162,6 +162,40 @@ async def supply_receipts(
     return {"results": results}
 
 
+class BatchPriceIn(BaseModel):
+    branch_id: uuid.UUID
+    selling_price: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
+
+
+@router.post("/batches/{batch_id}/price")
+async def supply_batch_price(
+    batch_id: uuid.UUID,
+    body: BatchPriceIn,
+    _: None = Depends(require_stock_in),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The branch manager's reviewed selling price for a delivered batch (owner 2026-11-27)."""
+    try:
+        return await supply_stock_in.set_batch_price(db, batch_id, body.selling_price,
+                                                     branch_id=body.branch_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="batch not found")
+    except ValueError as why:
+        raise HTTPException(status_code=422, detail=str(why))
+
+
+@router.get("/expiring")
+async def supply_expiring(
+    branch_id: uuid.UUID | None = None,
+    _: None = Depends(require_supply_service),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Online batches that are expired or close to expiry (each product's alert days)."""
+    return {"today": batch_expiry.colombo_today().isoformat(),
+            "items": await batch_expiry.near_expiry(
+                db, branch_ids=[branch_id] if branch_id else None)}
+
+
 @router.get("/catalog")
 async def supply_catalog(
     _: None = Depends(require_supply_service),
@@ -180,7 +214,8 @@ async def supply_catalog(
             ProductImage.product_id, ProductImage.is_primary.desc(),
             ProductImage.sort_order, ProductImage.created_at))).scalars():
         image.setdefault(i.product_id, media_url(i.image_url))
-    categories = dict((await db.execute(select(Category.category_id, Category.name))).all())
+    cats = {c.category_id: c for c in (await db.execute(select(Category))).scalars()}
+    categories = {k: c.name for k, c in cats.items()}
     products = (await db.execute(select(Product).order_by(Product.name))).scalars()
     branch_rows = (await db.execute(select(Branch).order_by(Branch.name))).scalars()
     return {
@@ -194,6 +229,9 @@ async def supply_catalog(
              "category": categories.get(p.category_id), "is_active": bool(p.is_active),
              "image_url": image.get(p.product_id),
              "weight_grams": weight_grams(p.weight, p.weight_unit),
+             # days before expiry it shows as close to expiry (owner 2026-11-27)
+             "expiry_alert_days": batch_expiry.alert_days(
+                 p, cats.get(p.subcategory_id), cats.get(p.category_id)),
              "variants": variants.get(p.product_id, [])}
             for p in products],
     }

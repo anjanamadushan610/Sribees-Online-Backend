@@ -59,6 +59,10 @@ class CategoryUpdate(BaseModel):
     image_url: Optional[str] = None
     parent_category_id: Optional[UUID] = None
     is_active: Optional[bool] = None
+    expiry_alert_days: Optional[int] = Field(
+        None, ge=1, le=365,
+        description="Days before expiry its products show as close to expiry (default 30)",
+    )
 
 
 # ============================================================================

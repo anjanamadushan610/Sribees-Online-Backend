@@ -92,6 +92,8 @@ class Product(Base):
     # migration 100: unit / loose (branch stock in grams) / packed (stock per weight option)
     stock_mode = Column(String(8), nullable=False, default="unit", server_default="unit")
     low_stock_threshold = Column(Integer, default=10)
+    # days before expiry this product shows as close to expiry; None = its category's (mig 129)
+    expiry_alert_days = Column(SmallInteger, nullable=True)
     delivery_fee_per_kg = Column(Numeric(10, 2), nullable=True)
     weight = Column(Numeric(10, 3), nullable=True)
     weight_unit = Column(String(10), default="kg")
@@ -351,6 +353,9 @@ class InventoryBatch(Base):
     purchase_cost = Column(Numeric(10, 2))
     listed_price = Column(Numeric(10, 2), nullable=False)
     selling_price = Column(Numeric(10, 2), nullable=False)
+    # the expiry sweep took this many units off stock when the batch expired (migration 129)
+    expired_at = Column(DateTime(timezone=True))
+    expired_units = Column(Integer)
 
     __table_args__ = (Index("ix_inventory_batches_fifo", "inventory_id", "sequence"),)
 

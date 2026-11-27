@@ -34,7 +34,7 @@ from app.models.product import (
     ProductVariant,
 )
 from app.schemas.inventory import BranchOverrideCreate, InventoryUpdateRequest
-from app.services import branch_cashback, inventory_batches
+from app.services import batch_expiry, branch_cashback, inventory_batches
 from app.services.product_service import ProductService
 from app.services.referral_commission.rate_admin import describe_rates
 
@@ -239,6 +239,24 @@ async def list_unstocked_catalog(
             "branch_id": str(effective_branch),
         },
     }
+
+
+@router.get("/expiring", response_model=dict)
+async def expiring_batches(
+    branch_id: Optional[UUID] = Query(
+        None, description="Super Admin only: narrow to a single branch (ignored for scoped admins)"),
+    db: AsyncSession = Depends(get_db),
+    scope: BranchScope = Depends(inject_branch_filter),
+):
+    """Stock batches that are expired or close to expiry (owner 2026-11-27): each product's
+    alert days, else its category's, else 30. An expired batch is no longer sold."""
+    effective_branch = scope.resolve(branch_id)
+    items = await batch_expiry.near_expiry(
+        db, branch_ids=[effective_branch] if effective_branch else None)
+    return {"success": True, "data": {
+        "today": batch_expiry.colombo_today().isoformat(), "items": items,
+        "expired": sum(1 for i in items if i["state"] == "expired"),
+        "near": sum(1 for i in items if i["state"] == "near")}}
 
 
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED,

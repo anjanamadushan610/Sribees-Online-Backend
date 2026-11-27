@@ -213,6 +213,10 @@ class ProductUpdate(BaseModel):
         description="Sub-category — must be a child of category_id",
     )
     low_stock_threshold: Optional[int] = Field(None, ge=0)
+    expiry_alert_days: Optional[int] = Field(
+        None, ge=1, le=365,
+        description="Days before expiry a batch shows as close to expiry; empty = the category's",
+    )
     weight: Optional[Decimal] = None
     weight_unit: Optional[str] = None
     delivery_fee_per_kg: Optional[Decimal] = Field(None, gt=0, max_digits=10, decimal_places=2)

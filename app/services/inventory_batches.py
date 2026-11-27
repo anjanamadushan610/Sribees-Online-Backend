@@ -31,12 +31,17 @@ async def product_has_batches(db, product_id):
     ) is not None
 
 
-def allocate(batches, stock, quantity, used):
-    """Plan FIFO allocations, counting unbatched legacy stock first."""
+def allocate(batches, stock, quantity, used, today=None):
+    """Plan FIFO allocations, counting unbatched legacy stock first. A batch past its expiry
+    date is never sold (owner 2026-11-27); its units still count as batched, so they never
+    turn into sellable legacy stock before the expiry sweep takes them off."""
+    from app.services.batch_expiry import expired
+
     tracked = sum(batch.remaining for batch in batches)
     legacy = max(0, stock - tracked)
+    sellable = [batch for batch in batches if not expired(batch, today)]
     parts = []
-    for batch, have in [(None, legacy), *((batch, batch.remaining) for batch in batches)]:
+    for batch, have in [(None, legacy), *((batch, batch.remaining) for batch in sellable)]:
         key = batch.batch_id if batch else None
         take = min(quantity, max(0, have - used.get(key, 0)))
         if take:
@@ -124,6 +129,8 @@ async def catalog_prices(db, inventory_ids):
         return {}
     from sqlalchemy import func
 
+    from app.services.batch_expiry import colombo_today
+
     count = select(func.sum(InventoryBatch.remaining)).where(
         InventoryBatch.inventory_id == BranchInventory.inventory_id,
     ).correlate(BranchInventory).scalar_subquery()
@@ -131,6 +138,7 @@ async def catalog_prices(db, inventory_ids):
         InventoryBatch.inventory_id, InventoryBatch.listed_price, InventoryBatch.selling_price,
     ).join(BranchInventory, BranchInventory.inventory_id == InventoryBatch.inventory_id)
         .where(InventoryBatch.inventory_id.in_(inventory_ids), InventoryBatch.remaining > 0,
+               (InventoryBatch.expires_on.is_(None)) | (InventoryBatch.expires_on >= colombo_today()),
                BranchInventory.stock_quantity <= count)
         .distinct(InventoryBatch.inventory_id)
         .order_by(InventoryBatch.inventory_id, InventoryBatch.sequence))

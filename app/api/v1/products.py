@@ -101,6 +101,7 @@ def format_product(
         "short_description": localized(product, "short_description", lang),
         "sku": product.sku,
         "is_returnable": bool(getattr(product, "is_returnable", True)),
+        "expiry_alert_days": getattr(product, "expiry_alert_days", None),
         "price": eff.get("effective_price", float(product.price) if product.price else 0),
         "global_price": float(product.price) if product.price else 0,
         "compare_at_price": float(product.compare_at_price) if product.compare_at_price else None,

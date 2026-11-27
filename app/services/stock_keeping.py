@@ -38,7 +38,7 @@ from app.models.product import (
     Product,
     ProductVariant,
 )
-from app.services import inventory_batches
+from app.services import batch_expiry, inventory_batches
 
 
 class OutOfStock(Exception):
@@ -175,8 +175,9 @@ async def take(db: AsyncSession, branch_id, product_id, variant_id, quantity: in
     if it.mode == "unit" and it.variant_id is None:
         if batch_id is not None:
             batch = await db.get(InventoryBatch, batch_id)
-            if batch is None or batch.inventory_id != row.inventory_id or batch.remaining < quantity:
-                raise OutOfStock(0)
+            if (batch is None or batch.inventory_id != row.inventory_id
+                    or batch.remaining < quantity or batch_expiry.expired(batch)):
+                raise OutOfStock(0)  # an expired batch is never sold (owner 2026-11-27)
             parts = [(batch, quantity)]
         else:
             parts, short = inventory_batches.allocate(
