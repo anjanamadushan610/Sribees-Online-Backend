@@ -128,3 +128,39 @@ async def test_the_price_app_reads_and_sets_cashback_by_product(
 
     r = await api.get(f"{INV}/cashback/{uuid.uuid4()}", headers=manager.headers)
     assert r.status_code == 404
+
+
+async def test_branch_inventory_sourcing_groups_are_saved_and_filtered(
+    api, db, world, make_product, make_admin
+):
+    manager = await make_admin("branch_manager", api=api)
+    ids = {}
+    for group in ("store", "external_daily", "external_slow"):
+        product_id = await make_product(stock=12)
+        inventory_id = (await _row(db, product_id, world.branch_id)).inventory_id
+        ids[group] = str(inventory_id)
+        response = await api.put(
+            f"{INV}/{inventory_id}", headers=manager.headers, json={"sourcing_group": group}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["sourcing_group"] == group
+        assert response.json()["data"]["stock_quantity"] == 12
+
+    for group, expected in (
+        ("store", {ids["store"]}),
+        ("external", {ids["external_daily"], ids["external_slow"]}),
+        ("external_daily", {ids["external_daily"]}),
+        ("external_slow", {ids["external_slow"]}),
+    ):
+        response = await api.get(
+            INV, headers=manager.headers, params={"sourcing_group": group, "limit": 100}
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert {row["inventory_id"] for row in data["items"]} & set(ids.values()) == expected
+
+    response = await api.put(
+        f"{INV}/{ids['external_daily']}", headers=manager.headers, json={"sourcing_group": None}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["sourcing_group"] is None

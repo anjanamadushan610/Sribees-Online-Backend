@@ -33,7 +33,11 @@ from app.models.product import (
     Product,
     ProductVariant,
 )
-from app.schemas.inventory import BranchOverrideCreate, InventoryUpdateRequest
+from app.schemas.inventory import (
+    BranchOverrideCreate,
+    InventoryUpdateRequest,
+    SourcingFilter,
+)
 from app.services import branch_cashback, inventory_batches
 from app.services.product_service import ProductService
 from app.services.referral_commission.rate_admin import describe_rates
@@ -83,6 +87,7 @@ def _format_inventory_row(inv: BranchInventory, product: Product, branch: Branch
         "is_on_sale": inv.is_on_sale,
         # Stock
         "stock_quantity": stock,
+        "sourcing_group": inv.sourcing_group,
         # How the stock is kept (migration 100). For loose goods stock_quantity shows packs of
         # the smallest weight and stock_grams is the figure; packed sizes are on /weights.
         "stock_mode": product.stock_mode or "unit",
@@ -128,6 +133,7 @@ async def list_inventory(
         pattern="^(all|in|low|out)$",
         description="Filter by stock state (all/in/low/out)",
     ),
+    sourcing_group: Optional[SourcingFilter] = None,
     low_stock_only: bool = Query(False, description="Only rows at/below threshold"),
     branch_id: Optional[UUID] = Query(
         None,
@@ -156,6 +162,7 @@ async def list_inventory(
         subcategory_id=subcategory_id,
         price_review_level=price_review_level,
         stock_state=stock_state,
+        sourcing_group=sourcing_group,
         low_stock_only=low_stock_only,
     )
 

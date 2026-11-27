@@ -7,10 +7,13 @@ follow one rule throughout: **NULL means "fall back to the global product"**,
 so clearing an override and never setting one are the same state.
 """
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+
+SourcingGroup = Literal["store", "external_daily", "external_slow"]
+SourcingFilter = Literal["store", "external", "external_daily", "external_slow", "unclassified"]
 
 
 class InventoryUpdateRequest(BaseModel):
@@ -29,6 +32,7 @@ class InventoryUpdateRequest(BaseModel):
         description="Local price for this branch. Send null to clear the override "
                     "and fall back to the global product price.",
     )
+    sourcing_group: Optional[SourcingGroup] = None
     stock_quantity: Optional[int] = Field(None, ge=0, description="Units on hand")
     reserved_quantity: Optional[int] = Field(None, ge=0, description="Units reserved by orders")
     low_stock_threshold: Optional[int] = Field(None, ge=0, description="Low-stock alert threshold")
@@ -84,6 +88,7 @@ class BranchOverrideCreate(BaseModel):
         gt=0,
         description="Price this branch sells the product at.",
     )
+    sourcing_group: Optional[SourcingGroup] = None
     stock_quantity: int = Field(..., ge=0)
     low_stock_threshold: int = Field(10, ge=0)
     max_stock_level: Optional[int] = Field(None, gt=0, le=1_000_000)
