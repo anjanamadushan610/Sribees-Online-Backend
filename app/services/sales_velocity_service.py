@@ -63,39 +63,38 @@ def classify(units: int, window_days: int = VELOCITY_WINDOW_DAYS) -> str:
     return "none"
 
 
-async def units_sold(
-    db: AsyncSession,
-    branch_id: UUID,
-    product_ids: Optional[Iterable[UUID]] = None,
-    window_days: int = VELOCITY_WINDOW_DAYS,
-) -> dict[UUID, int]:
-    """
-    Units of each product delivered from this branch inside the window.
-
-    One grouped query for the whole page. Products with no sales are simply
-    absent from the result — callers treat absence as zero, which is correct
-    and avoids emitting a row per product in the catalog.
-
-    Joins ``orders`` rather than filtering ``order_items`` alone because the
-    status and the branch both live on the parent order; matching on
-    ``order_items`` by itself would count cancelled baskets as sales.
-    """
+def units_sold_query(
+    branch_id: Optional[UUID], window_days: int = VELOCITY_WINDOW_DAYS
+):
+    """Group delivered, paid-line quantities by product within the catalog scope."""
     since = datetime.now(timezone.utc) - timedelta(days=window_days)
 
-    stmt = (
+    query = (
         select(
             OrderItem.product_id.label("product_id"),
             func.coalesce(func.sum(OrderItem.quantity), 0).label("units"),
         )
         .join(Order, Order.order_id == OrderItem.order_id)
         .where(
-            Order.branch_id == branch_id,
+            OrderItem.is_gift.is_(False),
             Order.status == OrderStatus.DELIVERED.value,
             Order.created_at >= since,
         )
         .group_by(OrderItem.product_id)
     )
 
+    if branch_id is not None:
+        query = query.where(Order.branch_id == branch_id)
+    return query
+
+
+async def units_sold(
+    db: AsyncSession,
+    branch_id: Optional[UUID],
+    product_ids: Optional[Iterable[UUID]] = None,
+    window_days: int = VELOCITY_WINDOW_DAYS,
+) -> dict[UUID, int]:
+    stmt = units_sold_query(branch_id, window_days)
     ids = list(product_ids) if product_ids is not None else None
     if ids is not None:
         if not ids:

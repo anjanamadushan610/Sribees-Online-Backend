@@ -500,7 +500,7 @@ async def list_products(
     category_id: Optional[str] = None,
     subcategory_id: Optional[str] = None,
     is_active: Optional[bool] = Query(None, description="Filter by status; omit for all"),
-    sort_by: str = Query("created_at", pattern="^(created_at|price|name|view_count)$"),
+    sort_by: str = Query("created_at", pattern="^(created_at|price|name|view_count|units_sold_30d)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     movement: Optional[str] = Query(
         None,
@@ -511,7 +511,7 @@ async def list_products(
         ),
     ),
     stock_state: Optional[str] = Query(
-        None, pattern="^(in|low|out)$", description="Branch stock level band"
+        None, pattern="^(in|low|out|low_or_out)$", description="Catalog stock level band"
     ),
     on_quick_sale: Optional[bool] = Query(
         None, description="Only products currently on (or off) Quick Sale in this branch"
@@ -554,6 +554,7 @@ async def list_products(
             )
 
     offset = (page - 1) * limit
+    branch_id = scope.resolve()
     products, total = await ProductService.get_all(
         db,
         limit=limit,
@@ -566,67 +567,48 @@ async def list_products(
         include_inactive=True,
         is_active=is_active,
         price_review_level=price_review_level,
+        catalog_branch_id=branch_id,
+        movement=movement,
+        stock_state=stock_state,
+        on_quick_sale=on_quick_sale,
+        perishable_only=perishable_only,
     )
 
-    if not scope.is_unscoped and scope.branch_id:
-        p_ids = [p.product_id for p in products]
-        inv_map = await _get_branch_inventory_map(db, scope.branch_id, p_ids)
-        # One grouped query for the page's 30-day sales, not one per row.
-        sold_map = await sales_velocity_service.units_sold(db, scope.branch_id, p_ids)
-        formatted_products = []
-        for p in products:
-            inv = inv_map.get(p.product_id)
-            # Overlay the FULL branch-effective data, not just is_active.
-            # Price now lives on branch_inventory (the global catalog entry
-            # carries no price at all for products added after that change),
-            # so overlaying only the status made every such product read
-            # LKR 0.00 on this page while the branch was in fact selling it.
-            eff = ProductService.compute_effective_data(p, inv)
+    product_ids = [p.product_id for p in products]
+    sold_map = await sales_velocity_service.units_sold(db, branch_id, product_ids)
+    branch_inventory = {}
+    catalog_inventory = {}
+    if product_ids and branch_id is not None:
+        branch_inventory = await _get_branch_inventory_map(db, branch_id, product_ids)
+    elif product_ids:
+        inventory = ProductService.catalog_inventory_query(None).where(
+            BranchInventory.product_id.in_(product_ids)
+        )
+        catalog_inventory = {r.product_id: r for r in (await db.execute(inventory)).all()}
+
+    formatted_products = []
+    for product in products:
+        inv = branch_inventory.get(product.product_id)
+        totals = catalog_inventory.get(product.product_id)
+        overrides = None
+        if branch_id is not None:
+            overrides = ProductService.compute_effective_data(product, inv)
             if inv is None:
-                # Not stocked here at all: compute_effective_data falls back to
-                # the global row's is_active, but a product this branch has
-                # never added is not active on its storefront.
-                eff["is_active"] = False
+                overrides["is_active"] = False
+            quantity = int(inv.stock_quantity or 0) if inv is not None else 0
+            on_sale = bool(inv and inv.is_active and inv.is_on_sale)
+        else:
+            quantity = int(totals.quantity or 0) if totals is not None else 0
+            on_sale = bool(totals and totals.on_sale)
 
-            row = format_product(p, branch_overrides=eff)
-
-            # Branch operations: how much is on the shelf, how fast it is
-            # leaving, and whether it is already being cleared. Together these
-            # answer the only question this page is really asked — "what should
-            # I put on Quick Sale?" — which no combination of the global
-            # catalog fields could.
-            units = sold_map.get(p.product_id, 0)
-            qty = int(eff.get("stock_quantity") or 0)
-            low_threshold = p.low_stock_threshold or 10
-            row["units_sold_30d"] = units
-            row["movement"] = sales_velocity_service.classify(units)
-            row["stock_state"] = sales_velocity_service.stock_state(qty, low_threshold)
-            row["is_on_quick_sale"] = bool(eff.get("is_on_sale"))
-            formatted_products.append(row)
-    else:
-        formatted_products = [format_product(p) for p in products]
-
-    # Movement, stock band and Quick-Sale state are all derived per branch, so
-    # they cannot be SQL predicates without duplicating the banding rules in
-    # two languages. Applied to the page instead; `limit` caps it at 100 rows.
-    #
-    # The honest cost: these narrow the CURRENT PAGE, so a filtered view can
-    # show fewer than `limit` rows while `total` still reports the unfiltered
-    # count. The alternative — silently paginating over a filtered set whose
-    # size the query does not know — would misreport the total instead, which
-    # is worse.
-    if movement:
-        formatted_products = [r for r in formatted_products if r.get("movement") == movement]
-    if stock_state:
-        formatted_products = [
-            r for r in formatted_products if r.get("stock_state") == stock_state
-        ]
-    if on_quick_sale is not None:
-        formatted_products = [
-            r for r in formatted_products if bool(r.get("is_on_quick_sale")) is on_quick_sale
-        ]
-    if perishable_only:
-        formatted_products = [r for r in formatted_products if r.get("is_perishable")]
+        row = format_product(product, branch_overrides=overrides) if overrides else format_product(product)
+        units = sold_map.get(product.product_id, 0)
+        row["stock_quantity"] = quantity
+        row["stock_state"] = sales_velocity_service.stock_state(quantity, product.low_stock_threshold or 10)
+        row["units_sold_30d"] = units
+        row["movement"] = sales_velocity_service.classify(units)
+        row["is_on_quick_sale"] = bool(product.is_active and on_sale)
+        formatted_products.append(row)
 
     return {
         "success": True,

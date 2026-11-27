@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import and_, delete, func, literal, or_, select
+from sqlalchemy import and_, case, delete, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -40,7 +40,7 @@ from app.schemas.product import (
     ProductVariantCreate,
 )
 from app.services import catalog_search_service as catalog_search
-from app.services import festival_offer
+from app.services import festival_offer, sales_velocity_service
 from app.services import weight_options_service as weight_options
 from app.services.category_service import CategoryService
 from app.services.storage import get_storage
@@ -102,6 +102,20 @@ class ProductService:
         )
 
     @staticmethod
+    def catalog_inventory_query(branch_id: Optional[UUID]):
+        query = select(
+            BranchInventory.product_id,
+            func.sum(BranchInventory.stock_quantity).label("quantity"),
+            func.max(case(
+                (BranchInventory.is_active.is_(True) & BranchInventory.is_on_sale.is_(True), 1),
+                else_=0,
+            )).label("on_sale"),
+        ).group_by(BranchInventory.product_id)
+        if branch_id is not None:
+            query = query.where(BranchInventory.branch_id == branch_id)
+        return query
+
+    @staticmethod
     async def get_all(
         db: AsyncSession,
         limit: int = 20,
@@ -118,6 +132,11 @@ class ProductService:
         include_inactive: bool = False,
         is_active: Optional[bool] = None,
         price_review_level: Optional[str] = None,
+        catalog_branch_id: Optional[UUID] = None,
+        movement: Optional[str] = None,
+        stock_state: Optional[str] = None,
+        on_quick_sale: Optional[bool] = None,
+        perishable_only: bool = False,
     ) -> Tuple[List[Product], int]:
         """Get all products with filtering and pagination.
 
@@ -181,20 +200,56 @@ class ProductService:
             else:
                 query = query.where(Product.stock_quantity <= 0)
 
+        if perishable_only:
+            query = query.where(Product.is_perishable.is_(True))
+
+        if stock_state or on_quick_sale is not None:
+            inventory = ProductService.catalog_inventory_query(catalog_branch_id).subquery()
+            query = query.outerjoin(inventory, inventory.c.product_id == Product.product_id)
+            quantity = func.coalesce(inventory.c.quantity, 0)
+            low_threshold = func.coalesce(func.nullif(Product.low_stock_threshold, 0), 10)
+            if stock_state:
+                query = query.where({
+                    "out": quantity <= 0,
+                    "low": and_(quantity > 0, quantity < low_threshold),
+                    "in": quantity >= low_threshold,
+                    "low_or_out": quantity < low_threshold,
+                }[stock_state])
+            if on_quick_sale is not None:
+                on_sale = Product.is_active.is_(True) & (func.coalesce(inventory.c.on_sale, 0) == 1)
+                query = query.where(on_sale if on_quick_sale else ~on_sale)
+
+        sort_column = getattr(Product, sort_by, Product.created_at)
+        if movement or sort_by == "units_sold_30d":
+            sales = sales_velocity_service.units_sold_query(catalog_branch_id).subquery()
+            query = query.outerjoin(sales, sales.c.product_id == Product.product_id)
+            units = func.coalesce(sales.c.units, 0)
+            if movement:
+                fast, steady = sales_velocity_service.thresholds_for(
+                    sales_velocity_service.VELOCITY_WINDOW_DAYS
+                )
+                query = query.where({
+                    "fast": units >= fast,
+                    "steady": and_(units >= steady, units < fast),
+                    "slow": and_(units > 0, units < steady),
+                    "none": units == 0,
+                }[movement])
+            if sort_by == "units_sold_30d":
+                sort_column = units
+
         # Count total
         count_query = select(func.count()).select_from(query.subquery())
         total_result = await db.execute(count_query)
         total = total_result.scalar()
 
         # Apply sorting
-        sort_column = getattr(Product, sort_by, Product.created_at)
         if sort_order.lower() == "asc":
             query = query.order_by(sort_column.asc())
         else:
             query = query.order_by(sort_column.desc())
 
         # Apply pagination
-        query = query.limit(limit).offset(offset)
+        query = query.order_by(Product.product_id).limit(limit).offset(offset)
 
         # Execute
         result = await db.execute(query)
