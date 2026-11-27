@@ -134,3 +134,22 @@ async def test_no_lock_while_the_feature_is_off(api, db, world, make_product, ma
     r = await api.put(f"/api/v1/admin/inventory/{inv.inventory_id}", headers=manager.headers,
                       json={"branch_price": "150.00"})
     assert r.status_code == 200, r.text
+
+
+async def test_a_loose_products_partner_count_goes_in_grams(api, db, world, make_product):
+    from app.models.product import Product
+
+    pid = await make_product(price="300.00", stock=0)
+    product = await db.get(Product, pid)
+    product.stock_mode = "loose"
+    await db.commit()
+    await _group(db, world, pid, "external_daily")
+    await _flag(api, world)
+    r = await api.put("/internal/supply/partner-stock", headers=AUTH, json={
+        "branch_id": str(world.branch_id), "items": [{"product_id": str(pid), "stock": 0}]})
+    assert r.json()["results"][0]["result"] == "needs_grams"
+    r = await api.put("/internal/supply/partner-stock", headers=AUTH, json={
+        "branch_id": str(world.branch_id),
+        "items": [{"product_id": str(pid), "stock": 0, "grams": 5500}]})
+    assert r.json()["results"][0]["result"] == "set", r.text
+    assert (await _inv(db, world, pid)).stock_grams == 5500

@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import settings
 from app.models.branch import Branch
-from app.models.product import BranchInventory
+from app.models.product import BranchInventory, Product
 from app.services import stock_keeping, weight_options_service
 
 EXTERNAL = ("external_daily", "external_slow")
@@ -96,10 +96,19 @@ async def set_stock(db: AsyncSession, branch_id: UUID, items: list) -> list[dict
         if not await is_partner_item(db, branch_id, it.product_id):
             out.append({"product_id": str(it.product_id), "result": "not_partner"})
             continue
-        item = await stock_keeping.item(db, it.product_id, it.variant_id)
-        if item.mode == "loose":
-            out.append({"product_id": str(it.product_id), "result": "loose"})
+        mode = (await db.execute(select(Product.stock_mode).where(
+            Product.product_id == it.product_id))).scalar_one_or_none()
+        if mode == "loose":
+            # weighed into the bag per order: the partner's count is grams on the product
+            if it.grams is None:
+                out.append({"product_id": str(it.product_id), "result": "needs_grams"})
+                continue
+            done = await stock_keeping.set_level(
+                db, branch_id, stock_keeping.Item("loose", it.product_id, None, None), it.grams)
+            out.append({"product_id": str(it.product_id), "variant_id": None,
+                        "result": "set" if done else "refused"})
             continue
+        item = await stock_keeping.item(db, it.product_id, it.variant_id)
         done = await stock_keeping.set_level(db, branch_id, item, it.stock)
         out.append({"product_id": str(it.product_id),
                     "variant_id": str(it.variant_id) if it.variant_id else None,

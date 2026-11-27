@@ -63,7 +63,7 @@ async def test_catalog_has_sinhala_name_and_size(api, db, make_product):
     assert row["is_active"] is True and row["variants"] == []
     assert set(row) == {"product_id", "sku", "name", "name_si", "display_size",
                         "display_size_unit", "category", "is_active", "image_url", "variants", "weight_grams",
-                        "listings"}
+                        "listings", "stock_mode"}
 
 
 async def test_catalog_has_the_main_photo(api, db, make_product):

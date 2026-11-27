@@ -127,6 +127,7 @@ class PartnerStockItem(BaseModel):
     product_id: uuid.UUID
     variant_id: uuid.UUID | None = None
     stock: int = Field(ge=0, le=1_000_000)
+    grams: int | None = Field(default=None, ge=0, le=1_000_000_000)  # a loose product's
 
 
 class PartnerStockIn(BaseModel):
@@ -237,6 +238,7 @@ async def supply_catalog(
              "image_url": image.get(p.product_id),
              "weight_grams": weight_grams(p.weight, p.weight_unit),
              "variants": variants.get(p.product_id, []),
+             "stock_mode": p.stock_mode or "unit",
              "listings": listings.get(p.product_id, [])}
             for p in products],
     }
