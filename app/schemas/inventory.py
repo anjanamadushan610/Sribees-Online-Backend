@@ -12,7 +12,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-
 SourcingGroup = Literal["store", "external_daily", "external_slow"]
 SourcingFilter = Literal["store", "external", "external_daily", "external_slow", "unclassified"]
 

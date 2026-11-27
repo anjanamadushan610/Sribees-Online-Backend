@@ -33,7 +33,11 @@ from app.models.product import (
     Product,
     ProductVariant,
 )
-from app.schemas.inventory import BranchOverrideCreate, InventoryUpdateRequest, SourcingFilter
+from app.schemas.inventory import (
+    BranchOverrideCreate,
+    InventoryUpdateRequest,
+    SourcingFilter,
+)
 from app.services import branch_cashback, inventory_batches
 from app.services.product_service import ProductService
 from app.services.referral_commission.rate_admin import describe_rates
