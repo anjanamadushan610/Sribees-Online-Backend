@@ -1591,6 +1591,7 @@ class ProductService:
         price_review_level: Optional[str] = None,
         stock_state: Optional[str] = None,
         low_stock_only: bool = False,
+        sourcing_group: Optional[str] = None,
     ) -> Tuple[List[Tuple[BranchInventory, Product, "Branch"]], int]:
         """
         List branch_inventory rows joined with their product and branch.
@@ -1638,10 +1639,17 @@ class ProductService:
                 BranchInventory.stock_quantity > BranchInventory.low_stock_threshold
             )
 
+        if sourcing_group == "external":
+            query = query.where(BranchInventory.sourcing_group.in_(("external_daily", "external_slow")))
+        elif sourcing_group == "unclassified":
+            query = query.where(BranchInventory.sourcing_group.is_(None))
+        elif sourcing_group:
+            query = query.where(BranchInventory.sourcing_group == sourcing_group)
+
         count_q = select(func.count()).select_from(query.subquery())
         total = (await db.execute(count_q)).scalar() or 0
 
-        query = query.order_by(Product.name).limit(limit).offset(offset)
+        query = query.order_by(Product.name, BranchInventory.inventory_id).limit(limit).offset(offset)
         rows = (await db.execute(query)).all()
         return [tuple(r) for r in rows], total
 

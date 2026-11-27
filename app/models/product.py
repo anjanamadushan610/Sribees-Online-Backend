@@ -264,6 +264,7 @@ class BranchInventory(Base):
     # migration 100: a loose product's grams; stock_quantity then shows packs of its
     # smallest weight option (app/services/stock_keeping.py keeps the two together)
     stock_grams = Column(Integer, nullable=False, default=0, server_default="0")
+    sourcing_group = Column(String(20), nullable=True)
     reserved_quantity = Column(
         Integer,
         default=0,
