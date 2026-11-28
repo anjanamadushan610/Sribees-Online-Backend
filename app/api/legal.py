@@ -45,10 +45,11 @@ share it with.</p>
 
 <h2>Information we collect</h2>
 <ul>
-<li><strong>Account &amp; identity:</strong> full name, National Identity
-Card (NIC) number, email address, and phone number. The NIC is required to
-open an account and is used to verify identity and prevent duplicate or
-fraudulent accounts; phone number is verified by an OTP code sent over SMS.</li>
+<li><strong>Account details:</strong> full name, email address and phone
+number. When you sign in by phone, we verify it using an SMS code.
+A National Identity Card (NIC) number is not required to register or shop in
+the app. Some existing accounts may have an NIC number provided under the
+previous registration process.</li>
 <li><strong>Delivery address:</strong> the address(es) you save for
 delivery.</li>
 <li><strong>Orders &amp; purchases:</strong> your order history, items
@@ -144,7 +145,7 @@ public.</p>
 <p>We keep account and order data for as long as your account is active.
 If you delete your account, we remove your profile and personal data
 straight away and keep only the records we are required to keep &mdash;
-your NIC, past orders (with the delivery address and contact number used
+your previously supplied NIC (if any), past orders (with the delivery address and contact number used
 for them) and payment and wallet records &mdash; for five years after the
 account is closed, to meet tax, accounting and delivery-dispute obligations.
 They are not used for marketing or any other new purpose. See
@@ -164,7 +165,7 @@ removed and what we are required to keep.</li>
 </ul>
 
 <h2>Children's privacy</h2>
-<p>Sribees Online requires a valid NIC to register and is not directed at,
+<p>Sribees Online is not directed at,
 or intended for use by, children.</p>
 
 <h2>Security</h2>
@@ -247,7 +248,7 @@ Your phone number, email and Google or Apple account are released and may
 be used to open a new account.</p>
 
 <h2>What we are required to keep, for five years</h2>
-<p>Your NIC, your past orders (including the delivery address and contact
+<p>Your previously supplied NIC (if any), your past orders (including the delivery address and contact
 number each was sent to), and payment and wallet records stay in our
 records for five years after the account is closed. Sri Lankan tax,
 accounting, and delivery-dispute rules require us to keep them. They are no

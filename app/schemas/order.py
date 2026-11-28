@@ -104,6 +104,7 @@ class OrderItemResponse(BaseModel):
     unit_price: float
     subtotal: float
     tax_amount: float = 0
+    is_gift: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -136,6 +137,11 @@ class OrderStatusStep(BaseModel):
 # Order Request Schemas
 # ============================================================================
 
+class ExpectedGift(BaseModel):
+    product_id: UUID
+    quantity: int = Field(ge=1, le=20)
+
+
 class CreateOrderRequest(BaseModel):
     """Request to create an order."""
     delivery_address_id: str
@@ -150,6 +156,8 @@ class CreateOrderRequest(BaseModel):
     payment_method: str = "COD"
     coupon_code: Optional[str] = None
     expected_referral_free_delivery: bool = False
+    expected_subtotal: Optional[Decimal] = Field(None, ge=0)
+    expected_gifts: Optional[list[ExpectedGift]] = Field(None, max_length=10)
     # When true, the wallet is applied to reduce the total. Defaults to the
     # full available balance (capped at the order total); wallet_amount
     # narrows that to a smaller customer-chosen amount — see
@@ -420,6 +428,8 @@ class OrderQuoteBreakdown(BaseModel):
     wallet_balance: float
     wallet_applied: bool
     item_count: int
+    priced_lines: Optional[list[dict]] = None
+    gifts: list[dict] = Field(default_factory=list)
     # The coupon on this order and what it did: `applied` false with a
     # `reason` (in the customer's language) when checkout would not take it,
     # so the app never shows "Coupon applied" over a zero discount. Null when

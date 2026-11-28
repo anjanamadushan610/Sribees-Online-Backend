@@ -62,6 +62,10 @@ class Branch(Base):
     # New branches start inactive: a Super Admin creates the branch, but only
     # its Branch Manager can bring it live (PATCH /admin/branches/{id}/status).
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    # migration 132: Sribees Supply's fulfilment partner fills this branch's Other Products
+    fulfilment_partner_active: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     # The SribeesExpress outlet registered for this branch under the ACCOUNT
     # key (contract section 12, migration 052). Only a branch that books with
     # the account-wide key needs one: a branch holding its own key IS its own

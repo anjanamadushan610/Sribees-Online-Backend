@@ -135,3 +135,32 @@ async def edit(promotion_id: UUID, body: CampaignBody, db: AsyncSession = Depend
     if row is None:
         raise HTTPException(404, 'Campaign not found.')
     return await save(db, body, row)
+
+
+class ExtendCampaignBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    ends_at: datetime
+
+
+@router.patch('/admin/referral-promotions/{promotion_id}/extend')
+async def extend_campaign(
+    promotion_id: UUID,
+    body: ExtendCampaignBody,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_super_admin),
+):
+    if body.ends_at.utcoffset() is None:
+        raise HTTPException(400, 'End date must include a timezone.')
+    row = await db.scalar(select(ReferralPromotion).where(
+        ReferralPromotion.promotion_id == promotion_id
+    ).with_for_update().execution_options(populate_existing=True))
+    if row is None:
+        raise HTTPException(404, 'Campaign not found.')
+    if body.ends_at == row.ends_at and body.ends_at > datetime.now(timezone.utc):
+        return {'success': True, 'data': serialize(row)}
+    if body.ends_at <= max(row.ends_at, datetime.now(timezone.utc)):
+        raise HTTPException(400, 'Choose an end date later than the current end date and current time.')
+    row.ends_at = body.ends_at
+    await db.commit()
+    await db.refresh(row)
+    return {'success': True, 'data': serialize(row)}

@@ -82,3 +82,40 @@ async def test_a_branch_manager_cannot_change_the_global_product(api, db, world,
     r = await api.put(f"/api/v1/admin/products/{product}", json={"is_active": True}, headers=manager.headers)
     assert r.status_code == 200
     assert (await api.get(f"/api/v1/products/{product}", headers=headers)).status_code == 200
+
+
+@pytest.mark.parametrize("role", ["super_admin", "marketing_manager"])
+async def test_catalog_filters_before_pagination(api, db, make_admin, make_product, role):
+    from sqlalchemy import update
+
+    from app.models.product import BranchInventory, Product
+
+    prefix = f"Catalog filter {uuid.uuid4().hex}"
+    low = await make_product(stock=3)
+    out = await make_product(stock=0)
+    plenty = await make_product(stock=80)
+    for product_id, suffix in [(plenty, "A"), (low, "B"), (out, "C")]:
+        await db.execute(update(Product).where(Product.product_id == product_id).values(
+            name=f"{prefix} {suffix}"
+        ))
+    await db.execute(update(BranchInventory).where(BranchInventory.product_id == out).values(
+        is_on_sale=True
+    ))
+    await db.commit()
+
+    admin = await make_admin(role, api=api)
+    params = {
+        "search": prefix, "stock_state": "low_or_out", "movement": "none",
+        "sort_by": "name", "sort_order": "asc", "limit": 1,
+    }
+    for page, expected in [(1, low), (2, out)]:
+        response = await api.get("/api/v1/admin/products", headers=admin.headers,
+                                 params={**params, "page": page})
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["pagination"]["total"] == 2
+        assert [row["product_id"] for row in data["products"]] == [str(expected)]
+
+    rows = await _list(api, admin, **{**params, "on_quick_sale": True})
+    assert [row["product_id"] for row in rows] == [str(out)]
+    assert rows[0]["is_on_quick_sale"] is True

@@ -10,6 +10,7 @@ Enforces **Strict Branch-Specific Visibility**:
 """
 from decimal import Decimal
 from typing import List, Literal, Optional
+from unicodedata import normalize
 from uuid import UUID
 
 from fastapi import (
@@ -138,6 +139,7 @@ def format_product(
         # (migration 123). Cards show "choose a shade" and open the product page.
         "option_label": getattr(product, "option_label", None),
         "weight":float(product.weight) if getattr(product, "weight", None) is not None else None,
+        "delivery_fee_per_kg": float(product.delivery_fee_per_kg) if getattr(product, "delivery_fee_per_kg", None) is not None else None,
         "weight_unit": getattr(product, "weight_unit", None) or "kg",
         "display_size": getattr(product, "display_size", None),
         "display_size_unit": getattr(product, "display_size_unit", None),
@@ -304,10 +306,15 @@ async def _format_listing(db: AsyncSession, items: list, lang: str) -> list:
     ratings = await ProductReviewService.get_rating_summaries(
         db, [item["product"].product_id for item in items]
     )
+    from app.services import inventory_batches
+
+    prices = await inventory_batches.catalog_prices(
+        db, [item["effective"]["inventory_id"] for item in items if item["effective"].get("inventory_id")],
+    )
     return [
         format_product(
             item["product"],
-            branch_overrides=item["effective"],
+            branch_overrides=inventory_batches.apply_catalog_price(item["effective"], prices),
             rating=ratings.get(item["product"].product_id),
             lang=lang,
         )
@@ -543,6 +550,28 @@ async def get_popular_products(
     }
 
 
+_RICE_SEARCH_ALIASES = frozenset({"rice", "sahal", "hal", "haal", "සහල්", "හාල්"})
+_RICE_SUBCATEGORY_SLUG = "grocery-essentials-rice"
+
+
+async def _search_storefront(db, branch_id, query, limit, offset):
+    if normalize("NFC", query).strip().casefold() not in _RICE_SEARCH_ALIASES:
+        return await ProductService.get_all_for_branch(
+            db, branch_id=branch_id, limit=limit, offset=offset, search=query,
+        )
+
+    rice = await CategoryService.get_by_slug(db, _RICE_SUBCATEGORY_SLUG)
+    if rice is None or not rice.is_active:
+        return [], 0
+    shelf = await CategoryService.get_branch_category(db, rice.category_id, branch_id)
+    if shelf is None or not shelf.is_active:
+        return [], 0
+    return await ProductService.get_all_for_branch(
+        db, branch_id=branch_id, limit=limit, offset=offset,
+        subcategory_id=rice.category_id, sort_by="name", sort_order="asc",
+    )
+
+
 @router.get("/search", response_model=dict)
 async def search_products(
     request: Request,
@@ -569,13 +598,7 @@ async def search_products(
         branch_id = UUID(context["branch_id"])
         offset = (page - 1) * limit
 
-        items, total = await ProductService.get_all_for_branch(
-            db,
-            branch_id=branch_id,
-            limit=limit,
-            offset=offset,
-            search=q,
-        )
+        items, total = await _search_storefront(db, branch_id, q, limit, offset)
 
         if page == 1:
             session_id = (
@@ -754,12 +777,17 @@ async def get_product(
 
         options = await product_options.options_for(db, product, branch_id)
 
+    from app.services import inventory_batches
+
+    effective = result["effective"]
+    inventory_id = effective.get("inventory_id")
+    prices = await inventory_batches.catalog_prices(db, [inventory_id] if inventory_id else [])
     return {
         "success": True,
         "data": format_product(
             product,
             include_variants=True,
-            branch_overrides=result["effective"],
+            branch_overrides=inventory_batches.apply_catalog_price(effective, prices),
             rating={"average": average, "count": count},
             lang=lang,
             weight_options=weight_options,

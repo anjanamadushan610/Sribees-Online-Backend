@@ -398,6 +398,21 @@ class Settings(BaseSettings):
         default="",
         description="Bearer token Online presents on Supply's /internal/online/* (Supply keeps its SHA-256).",
     )
+    supply_stock_in_enabled: bool = Field(
+        default=False,
+        description=(
+            "Let Sribees Supply add received goods to a branch's stock "
+            "(POST /internal/supply/receipts). Off = that route does not exist (404)."
+        ),
+    )
+    supply_partner_enabled: bool = Field(
+        default=False,
+        description=(
+            "Let Sribees Supply's fulfilment partner set the branch price and stock of a "
+            "branch's Other Products (PUT /internal/supply/partner-*). Off = those routes do "
+            "not exist (404) and no price is locked."
+        ),
+    )
     finance_stock_authority: bool = Field(
         default=False,
         description=(

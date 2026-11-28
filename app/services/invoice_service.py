@@ -237,6 +237,8 @@ class InvoiceService:
             ret_qty = returned_qty_map.get(it_id_str, 0)
 
             prod_title = it.product_name or "—"
+            if getattr(it, "is_gift", False):
+                prod_title += " (Free gift)"
             qty_text = str(it.quantity)
 
             if is_return_active and ret_qty > 0:
@@ -297,6 +299,14 @@ class InvoiceService:
         if float(getattr(order, "wallet_deduction", 0) or 0) > 0:
             totals_data.append(total_row("Wallet Applied", f"- {_money(order.wallet_deduction)}",
                                          color=brand))
+
+        delivery_saved = max(0, getattr(order, "referral_delivery_discount", 0) or 0)
+        if delivery_saved:
+            totals_data.append(total_row("Delivery Savings", _money(delivery_saved),
+                                         color=colors.HexColor("#2E7D32")))
+            savings = delivery_saved + (order.discount_amount or 0)
+            totals_data.append(total_row("Total Savings", _money(savings),
+                                         color=colors.HexColor("#2E7D32")))
 
         refund_amt = float(getattr(order, "refund_amount", 0) or 0)
         orig_total = float(order.total_amount or 0)

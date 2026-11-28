@@ -70,6 +70,10 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     # credential bound to the current password hash; row-locked single use.
     # Covered by test_partner_invitation and test_partner_invitation_database.
     ("POST", "/api/v1/partner/auth/set-password"),
+    # The opaque invitation proves access to the account's registered contact.
+    # Acceptance consumes the credential under a row lock and checks the contact again.
+    ("POST", "/api/v1/partner/auth/team-invitation"),
+    ("POST", "/api/v1/partner/auth/team-invitation/accept"),
     # --- signed or static callbacks -----------------------------------------
     ("POST", "/api/v1/payments/webhook"),  # Stripe signature, see test_webhooks
     ("GET", "/api/v1/whatsapp/webhook"),  # Meta verification token
@@ -83,6 +87,7 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/internal/finance/totals"),
     ("GET", "/internal/finance/opening-snapshot"),
     ("GET", "/internal/finance/stock-compare"),
+    ("GET", "/internal/finance/branches"),
     ("GET", "/internal/finance/catalog"),
     ("GET", "/internal/finance/cod-remittances"),
     ("PUT", "/internal/finance/stock-levels"),
@@ -90,6 +95,17 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/internal/supply/catalog"),
     # pack scan (phase E): Supply reads the order events; same locks as the catalog
     ("GET", "/internal/supply/events"),
+    ("POST", "/internal/supply/stock-info"),
+    ("GET", "/internal/supply/stock-levels"),
+    ("POST", "/internal/supply/receipts"),
+    # Fulfilment partner (Supply, owner 2026-11-27): same supply service-token locks; the
+    # partner-* routes also 404 unless SUPPLY_PARTNER_ENABLED. See
+    # tests/integration/test_supply_internal.py::test_order_delivery_for_the_partner_app and
+    # tests/integration/test_supply_partner.py::test_the_partner_routes_are_off_by_default_and_locked.
+    ("GET", "/internal/supply/orders/{order_id}"),
+    ("PUT", "/internal/supply/branches/{branch_id}/partner"),
+    ("PUT", "/internal/supply/partner-price"),
+    ("PUT", "/internal/supply/partner-stock"),
     # --- app bootstrap -------------------------------------------------------
     ("GET", "/api/v1/app/splash-config"),
     ("GET", "/api/v1/app/support-info"),

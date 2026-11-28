@@ -23,9 +23,9 @@ priced from the SribeesExpress outlet registered for it, which is why
 """
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import List, Optional
 from uuid import UUID
 
@@ -207,11 +207,13 @@ async def quote_for_cart(
     if destination.postal_city_id is None or destination.branch_id is None:
         return DeliveryQuote(status=DELIVERY_NOT_SERVICEABLE), destination
 
+    from app.services import inventory_batches
     from app.services.order_service import OrderService
 
     # Quote requests may carry stale/client-supplied prices. Eligibility must use
     # the same catalogue subtotal order creation will charge.
     items = await OrderService._attach_server_prices(db, items, destination.branch_id, strict=False)
+    items = await inventory_batches.price_lines(db, destination.branch_id, items, strict=False)
     weighted = await OrderService._attach_weights(db, items)
     async with courier_credentials.optional_for_branch(db, destination.branch_id) as target:
         outlet_id = await outlet_for(db, destination.branch_id)
@@ -220,27 +222,79 @@ async def quote_for_cart(
             if target is not None
             else None
         )
-        if key is not None:
-            cached = await _read_cached(redis, key)
-            if cached is not None:
-                subtotal = sum(Decimal(str(i.get('price', 0))) * Decimal(str(i['quantity'])) for i in weighted)
-                return await _with_offers(db, user_id, destination.branch_id, subtotal, cached), destination
-        quote = await PricingService.quote_delivery(
-            weighted,
-            postal_city_id=destination.postal_city_id,
-            payment_method=payment_method,
-            outlet_id=outlet_id,
+        quote = await _read_cached(redis, key) if key is not None else None
+        if quote is None:
+            quote = await PricingService.quote_delivery(
+                weighted, postal_city_id=destination.postal_city_id,
+                payment_method=payment_method, outlet_id=outlet_id,
+            )
+            if key is not None:
+                await _write_cached(redis, key, quote)
+        if not quote.available:
+            return quote, destination
+        ordinary, fixed_fee = await split_delivery_items(db, weighted)
+        eligible = await ordinary_delivery_quote(
+            ordinary, weighted, quote, postal_city_id=destination.postal_city_id,
+            payment_method=payment_method, outlet_id=outlet_id,
         )
-        if key is not None:
-            await _write_cached(redis, key, quote)
-    subtotal = sum(Decimal(str(i.get('price', 0))) * Decimal(str(i['quantity'])) for i in weighted)
-    return await _with_offers(db, user_id, destination.branch_id, subtotal, quote), destination
+    if not eligible.available:
+        return eligible, destination
+    subtotal = delivery_subtotal(weighted)
+    waived = await free_delivery_service.apply_to_quote(db, user_id, destination.branch_id, subtotal, eligible)
+    applied = waived or await ReferralPromotionService.quote(db, user_id, subtotal, eligible)
+    return replace(
+        quote,
+        fee=fixed_fee + applied.fee,
+        original_fee=fixed_fee + eligible.fee if applied.promotion else None,
+        promotion=applied.promotion,
+    ), destination
 
 
-async def _with_offers(db, user_id, branch_id, subtotal, quote: DeliveryQuote) -> DeliveryQuote:
-    """One offer at most on a delivery; free delivery goes first, as it has no use limit."""
-    waived = await free_delivery_service.apply_to_quote(db, user_id, branch_id, subtotal, quote)
-    return waived or await ReferralPromotionService.quote(db, user_id, subtotal, quote)
+def delivery_subtotal(items):
+    return sum(
+        (Decimal(str(item.get("price", 0))) * Decimal(str(item["quantity"])) for item in items),
+        Decimal("0.00"),
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+async def split_delivery_items(db, items):
+    """Return ordinary lines and the admin's configured charges by shipping weight."""
+    from app.models.product import Product
+
+    product_ids = set()
+    for item in items:
+        try:
+            product_ids.add(UUID(str(item.get("product_id"))))
+        except ValueError:
+            continue
+    if not product_ids:
+        return items, Decimal("0.00")
+    rates = {
+        str(product_id): rate
+        for product_id, rate in (await db.execute(
+            select(Product.product_id, Product.delivery_fee_per_kg).where(
+                Product.product_id.in_(product_ids), Product.delivery_fee_per_kg.isnot(None)
+            )
+        )).all()
+    }
+    ordinary = []
+    fixed_fee = Decimal(0)
+    for item in items:
+        rate = rates.get(str(item.get("product_id")))
+        if rate is None:
+            ordinary.append(item)
+            continue
+        weight = max(Decimal(0), Decimal(str(item.get("weight_kg") or 0)))
+        fixed_fee += rate * weight * Decimal(str(item["quantity"]))
+    return ordinary, fixed_fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+async def ordinary_delivery_quote(ordinary, items, full_quote, **destination):
+    if not ordinary:
+        return replace(full_quote, fee=Decimal("0.00"))
+    if len(ordinary) == len(items):
+        return full_quote
+    return await PricingService.quote_delivery(ordinary, **destination)
 
 
 def delivery_payload(quote: DeliveryQuote, destination: DeliveryDestination) -> dict:
@@ -250,7 +304,9 @@ def delivery_payload(quote: DeliveryQuote, destination: DeliveryDestination) -> 
         "available": quote.available,
         "fee": float(quote.fee) if quote.fee is not None else None,
         "message": quote.message,
-        "original_fee": float(quote.original_fee) if quote.original_fee is not None else None,
+        # Released clients use original_fee to render a fully free delivery row.
+        "original_fee": float(quote.original_fee) if quote.original_fee is not None and quote.fee == 0 else None,
+        "savings": float(quote.original_fee - quote.fee) if quote.original_fee is not None and quote.fee is not None else 0,
         "promotion": quote.promotion,
         "address_id": str(destination.address.address_id) if destination.address is not None else None,
         "postal_city": destination.postal_city,

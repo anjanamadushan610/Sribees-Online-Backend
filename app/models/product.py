@@ -4,11 +4,14 @@ Product SQLAlchemy Models
 import uuid
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     Numeric,
@@ -89,6 +92,7 @@ class Product(Base):
     # migration 100: unit / loose (branch stock in grams) / packed (stock per weight option)
     stock_mode = Column(String(8), nullable=False, default="unit", server_default="unit")
     low_stock_threshold = Column(Integer, default=10)
+    delivery_fee_per_kg = Column(Numeric(10, 2), nullable=True)
     weight = Column(Numeric(10, 3), nullable=True)
     weight_unit = Column(String(10), default="kg")
     # Customer-facing retail size, independent of courier weight above.
@@ -260,6 +264,7 @@ class BranchInventory(Base):
     # migration 100: a loose product's grams; stock_quantity then shows packs of its
     # smallest weight option (app/services/stock_keeping.py keeps the two together)
     stock_grams = Column(Integer, nullable=False, default=0, server_default="0")
+    sourcing_group = Column(String(20), nullable=True)
     reserved_quantity = Column(
         Integer,
         default=0,
@@ -274,6 +279,9 @@ class BranchInventory(Base):
         server_default="10",
         comment="Branch-level low-stock alert threshold",
     )
+    # migration 130: Sribees Supply orders up to this when stock falls below the threshold
+    max_stock_level = Column(Integer, nullable=True,
+                             comment="Most the branch holds; NULL = not reordered automatically")
     discount_percentage = Column(
         Float,
         nullable=True,
@@ -326,6 +334,44 @@ class BranchInventory(Base):
 
     def __repr__(self):
         return f"<BranchInventory product={self.product_id} branch={self.branch_id}>"
+
+
+class InventoryBatch(Base):
+    """An immutable receipt with a mutable sellable balance."""
+
+    __tablename__ = "inventory_batches"
+
+    batch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    inventory_id = Column(UUID(as_uuid=True), ForeignKey("branch_inventory.inventory_id"), nullable=False)
+    sequence = Column(BigInteger, Identity(), nullable=False, unique=True)
+    received_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    lot_code = Column(String(80))
+    expires_on = Column(Date)
+    quantity_received = Column(Integer, nullable=False)
+    remaining = Column(Integer, nullable=False)
+    purchase_cost = Column(Numeric(10, 2))
+    listed_price = Column(Numeric(10, 2), nullable=False)
+    selling_price = Column(Numeric(10, 2), nullable=False)
+
+    __table_args__ = (Index("ix_inventory_batches_fifo", "inventory_id", "sequence"),)
+
+
+class SupplyStockReceipt(Base):
+    """One goods-received line of Sribees Supply that was added to a branch's stock
+    (migration 128). The line id is the key, so a line is never added twice."""
+
+    __tablename__ = "supply_stock_receipts"
+
+    line_id = Column(UUID(as_uuid=True), primary_key=True)
+    receipt_no = Column(String(40), nullable=False)
+    branch_id = Column(UUID(as_uuid=True), nullable=False)
+    product_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    variant_id = Column(UUID(as_uuid=True))
+    units = Column(Integer, nullable=False)
+    grams = Column(Integer)
+    purchase_cost = Column(Numeric(10, 2))
+    batch_id = Column(UUID(as_uuid=True))
+    applied_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class ProductImage(Base):

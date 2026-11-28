@@ -570,3 +570,57 @@ async def test_promoted_master_keeps_customer_wallet_and_can_receive_a_new_partn
     application = await PartnerWalletService.apply(db, new_user.user_id, secrets.token_urlsafe(24))
     child = await PartnerWalletService.decide_application(db, application.application_id, admin_id, True, promoted.partner_id, 'Approved test Partner')
     assert child.role == 'partner' and child.parent_partner_id == promoted.partner_id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_browser_team_invitation_checks_contact_and_is_consumed_once(money_db):
+    import hashlib
+    import secrets
+    from datetime import datetime, timedelta, timezone
+
+    from app.api.v1.linked_partner_wallet import (
+        AcceptTeamInvitationBody,
+        TeamInvitationToken,
+        accept_team_invitation,
+        inspect_team_invitation,
+        team_contact_stamp,
+    )
+    from app.models.partner_wallet import PartnerTeamInvitation
+
+    db, user = money_db
+    master = Partner(
+        email=f'{uuid4().hex}@example.test', full_name='Test Master',
+        role='master_partner', password_hash=secrets.token_urlsafe(32), is_active=True,
+    )
+    db.add(master)
+    await db.flush()
+    token = secrets.token_urlsafe(32)
+    original_email = user.email
+    invitation = PartnerTeamInvitation(
+        master_id=master.partner_id, user_id=user.user_id, channel='email',
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
+        contact_stamp=team_contact_stamp(token, original_email),
+        contact_hint='x***@example.test', delivery_state='sent',
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    db.add(invitation)
+    await db.flush()
+    review = TeamInvitationToken(token=token)
+    assert (await inspect_team_invitation(review, db=db))['data']['masterName'] == 'Test Master'
+
+    user.email = f'{uuid4().hex}@example.test'
+    await db.flush()
+    with pytest.raises(HTTPException) as changed:
+        await inspect_team_invitation(review, db=db)
+    assert changed.value.status_code == 404
+    user.email = original_email
+    await db.flush()
+
+    body = AcceptTeamInvitationBody(token=token, password=secrets.token_urlsafe(20))
+    result = await accept_team_invitation(body, db=db)
+    assert result['data']['masterPartnerId'] == str(master.partner_id)
+    assert invitation.accepted_at is not None
+    with pytest.raises(HTTPException) as reused:
+        await accept_team_invitation(body, db=db)
+    assert reused.value.status_code == 404

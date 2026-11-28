@@ -197,6 +197,9 @@ class OrderService:
         repriced = []
         for item in items:
             line = dict(item)
+            line.pop("inventory_batch_id", None)
+            line.pop("batch_label", None)
+            line.pop("variant_name", None)
             product_id = str(item.get("product_id") or "")
             variant = variants.get(str(item.get("variant_id") or ""))
             if strict and product_id in need_option and (
@@ -436,7 +439,10 @@ class OrderService:
         # Authoritative prices, before anything below reads a line's price:
         # the coupon's eligible subtotal, the pricing breakdown and the stored
         # order lines all use these.
+        from app.services import inventory_batches
+
         order_items = await OrderService._attach_server_prices(db, order_items, branch_id)
+        order_items = await inventory_batches.price_lines(db, branch_id, order_items, lock=True)
 
         # Authoritative coupon: re-validate against the database at checkout and
         # use the DB discount values — never the discount stored in the Redis
@@ -548,44 +554,79 @@ class OrderService:
         # its outlet. Always a fresh quote, never the cart's cached one: this is
         # the quote that gets confirmed and later booked.
         async with courier_credentials.optional_for_branch(db, branch_id):
+            destination = {
+                "postal_city_id": postal_city_id,
+                "payment_method": to_courier_payment_method(data.payment_method),
+                "outlet_id": await delivery_quote_service.outlet_for(db, branch_id),
+            }
             breakdown = await PricingService.quote(
-                items=priced_items,
-                coupon=coupon_for_pricing,
-                use_wallet=data.use_wallet,
-                wallet_balance=wallet_balance,
-                tax_rate=pricing_config["tax_rate"],
-                postal_city_id=postal_city_id,
-                payment_method=to_courier_payment_method(data.payment_method),
-                wallet_amount=data.wallet_amount,
-                outlet_id=await delivery_quote_service.outlet_for(db, branch_id),
+                items=priced_items, coupon=coupon_for_pricing, use_wallet=data.use_wallet,
+                wallet_balance=wallet_balance, wallet_amount=data.wallet_amount,
+                tax_rate=pricing_config["tax_rate"], **destination,
             )
+            if data.expected_subtotal is not None and data.expected_subtotal != breakdown.subtotal:
+                raise ValueError("Product prices have changed. Refresh checkout to review the new total.")
             if not breakdown.delivery_available:
-                # No price, no order. There is no flat fee to fall back to, and
-                # an order placed without a delivery charge is either a gift of
-                # the delivery or a customer billed after the fact.
                 raise DeliveryNotAvailableError(
                     breakdown.delivery_status,
                     DELIVERY_MESSAGES.get(breakdown.delivery_status)
                     or "Delivery to this address can't be priced right now.",
                 )
-            confirmed_quote = await OrderService._confirm_courier_quote(breakdown.courier_quote_id)
+            full_quote = DeliveryQuote(
+                status=breakdown.delivery_status, fee=breakdown.delivery_fee,
+                quote_id=breakdown.courier_quote_id, expires_at=breakdown.courier_quote_expires_at,
+            )
+            ordinary, fixed_delivery_fee = await delivery_quote_service.split_delivery_items(db, priced_items)
+            ordinary_quote = await delivery_quote_service.ordinary_delivery_quote(
+                ordinary, priced_items, full_quote, **destination,
+            )
+            if not ordinary_quote.available:
+                raise DeliveryNotAvailableError(ordinary_quote.status, ordinary_quote.message)
+            from app.services import order_gifts
 
-        original_delivery_fee = breakdown.delivery_fee
+            gifts = await order_gifts.qualify(
+                db, branch_id, breakdown.subtotal, breakdown.discount, priced_items,
+            )
+            if data.expected_gifts is not None and {
+                (str(item.product_id), item.quantity) for item in data.expected_gifts
+            } != {(item["product_id"], item["quantity"]) for item in gifts}:
+                raise ValueError("Your order gifts have changed. Refresh checkout to review them.")
+            booking_quote = full_quote
+            if gifts:
+                weighted_gifts = await OrderService._attach_weights(db, gifts)
+                booking_quote = await PricingService.quote_delivery(
+                    [*priced_items, *weighted_gifts],
+                    cod_amount=(
+                        breakdown.subtotal - breakdown.discount + breakdown.tax
+                        if destination["payment_method"] == "cod" else Decimal("0")
+                    ),
+                    **destination,
+                )
+                if not booking_quote.available:
+                    raise DeliveryNotAvailableError(booking_quote.status, booking_quote.message)
+            confirmed_quote = await OrderService._confirm_courier_quote(booking_quote.quote_id)
+
+        eligible_delivery_fee = ordinary_quote.fee
+        subtotal = breakdown.subtotal
         free_delivery = (
-            await free_delivery_service.covering_source(db, user_id, branch_id, breakdown.subtotal)
-            if original_delivery_fee and original_delivery_fee > 0
+            await free_delivery_service.covering_source(db, user_id, branch_id, subtotal)
+            if eligible_delivery_fee > 0
             else None
         )
         delivery_benefit = None if free_delivery else await ReferralPromotionService.delivery(
-            db, user_id, breakdown.subtotal, original_delivery_fee, lock=True)
+            db, user_id, subtotal, eligible_delivery_fee, lock=True)
         if data.expected_referral_free_delivery and not (delivery_benefit or free_delivery):
             raise ValueError('Your free delivery offer is no longer available. Refresh checkout to review the delivery charge.')
-        if delivery_benefit or free_delivery:
+        waived_delivery_fee = eligible_delivery_fee if delivery_benefit or free_delivery else Decimal("0.00")
+        customer_delivery_fee = fixed_delivery_fee + eligible_delivery_fee - waived_delivery_fee
+        if customer_delivery_fee != full_quote.fee:
             breakdown = await PricingService.quote(
                 items=priced_items, coupon=coupon_for_pricing, use_wallet=data.use_wallet,
-                wallet_balance=wallet_balance, wallet_amount=data.wallet_amount, tax_rate=pricing_config["tax_rate"],
-                delivery=DeliveryQuote(status=breakdown.delivery_status, fee=Decimal('0.00'),
-                    quote_id=breakdown.courier_quote_id, expires_at=breakdown.courier_quote_expires_at))
+                wallet_balance=wallet_balance, wallet_amount=data.wallet_amount,
+                tax_rate=pricing_config["tax_rate"],
+                delivery=DeliveryQuote(status=full_quote.status, fee=customer_delivery_fee,
+                    quote_id=full_quote.quote_id, expires_at=full_quote.expires_at),
+            )
 
         wallet_deduction = breakdown.wallet_deduction
         cashback_earned = breakdown.cashback_earned
@@ -669,8 +710,8 @@ class OrderService:
             gateway_tr_id=gateway_tr_id,
             courier_quote_id=confirmed_quote.quote_id,
             courier_quote_expires_at=confirmed_quote.expires_at,
-            courier_quote_amount=original_delivery_fee,
-            referral_delivery_discount=original_delivery_fee if (delivery_benefit or free_delivery) else Decimal('0.00'),
+            courier_quote_amount=booking_quote.fee,
+            referral_delivery_discount=waived_delivery_fee,
             free_delivery_source=free_delivery,
             courier_quote_confirmed_at=datetime.now(timezone.utc),
         )
@@ -679,7 +720,7 @@ class OrderService:
         await db.flush()  # Get order_id
         offer_cap_service.stage_usage(db, user_id, order.order_id, offer_verdict)
         if delivery_benefit:
-            await ReferralPromotionService.reserve(db, order, delivery_benefit[0].benefit_id, original_delivery_fee)
+            await ReferralPromotionService.reserve(db, order, delivery_benefit[0].benefit_id, eligible_delivery_fee)
 
         history = OrderStatusHistory(
             order_id=order.order_id,
@@ -737,7 +778,9 @@ class OrderService:
                     await stock_keeping.take(
                         db, branch_id, p_id,
                         item.get("variant_id") if item.get("variant_name") else None,
-                        int(item["quantity"]))
+                        int(item["quantity"]),
+                        **({"batch_id": item["inventory_batch_id"]} if item.get("inventory_batch_id") else {}),
+                    )
                 except stock_keeping.OutOfStock as short:
                     left = short.left
                     await db.rollback()
@@ -772,6 +815,21 @@ class OrderService:
                         raise ValueError(
                             f"Only {left} available for {item_name}."
                         )
+
+        allocated_gifts = []
+        if gifts:
+            for gift in gifts:
+                try:
+                    parts = await stock_keeping.take(
+                        db, branch_id, UUID(gift["product_id"]), None, gift["quantity"],
+                    )
+                    allocated_gifts.extend(
+                        {**gift, "inventory_batch_id": batch_id, "quantity": quantity}
+                        for batch_id, quantity in parts
+                    )
+                except stock_keeping.OutOfStock:
+                    await db.rollback()
+                    raise ValueError("A gift went out of stock. Refresh checkout to review your gifts.") from None
 
         # Whether each product may be returned, read from the catalog rather
         # than the cart payload (which the client wrote), and frozen onto the
@@ -817,6 +875,8 @@ class OrderService:
                     UUID(str(item["variant_id"]))
                     if item.get("variant_id") and item.get("variant_name") else None
                 ),
+                inventory_batch_id=item.get("inventory_batch_id"),
+                inventory_batch_label=item.get("batch_label"),
                 variant_name=item.get("variant_name"),
                 product_name=item.get("name") or item.get("product_name", ""),
                 display_size=item.get("display_size"),
@@ -838,6 +898,17 @@ class OrderService:
                 coupon_discount=coupon_share,
             )
             db.add(order_item)
+
+        for gift in allocated_gifts:
+            db.add(OrderItem(
+                order_id=order.order_id, product_id=UUID(gift["product_id"]),
+                inventory_batch_id=gift["inventory_batch_id"],
+                product_name=gift["name"], product_sku=gift["sku"],
+                display_size=gift["display_size"], display_size_unit=gift["display_size_unit"],
+                quantity=gift["quantity"], unit_price=Decimal("0"), subtotal=Decimal("0"),
+                is_gift=True, is_returnable=False,
+                cashback_percentage=Decimal("0"), referral_commission_percentage=Decimal("0"),
+            ))
 
         # Record wallet movements atomically with the order.
         # Spend first so the earned cashback isn't immediately spendable on the
@@ -1283,6 +1354,8 @@ class OrderService:
         """
         lines = []
         for item in order.items:
+            if getattr(item, "is_gift", False):
+                continue
             product = await db.get(Product, item.product_id)
             if not product or not product.is_active:
                 lines.append((item, None, float(item.unit_price), 0))
@@ -2201,12 +2274,16 @@ class OrderService:
         from app.services import stock_keeping
 
         rows = await db.execute(
-            select(OrderItem.product_id, OrderItem.variant_id, func.sum(OrderItem.quantity))
+            select(OrderItem.product_id, OrderItem.variant_id, OrderItem.inventory_batch_id,
+                   func.sum(OrderItem.quantity))
             .where(OrderItem.order_id == order.order_id)
-            .group_by(OrderItem.product_id, OrderItem.variant_id)
+            .group_by(OrderItem.product_id, OrderItem.variant_id, OrderItem.inventory_batch_id)
         )
-        for product_id, variant_id, quantity in rows.all():
-            await stock_keeping.give_back(db, order.branch_id, product_id, variant_id, int(quantity))
+        for product_id, variant_id, batch_id, quantity in rows.all():
+            await stock_keeping.give_back(
+                db, order.branch_id, product_id, variant_id, int(quantity),
+                **({"batch_id": batch_id} if batch_id else {}),
+            )
 
     @staticmethod
     async def cancel_order(
